@@ -12,7 +12,13 @@
     "request_timeout_secs": 30,
     "ams_net_id": "0.0.0.0.1.1",
     "ams_tcp_port": 48898,
-    "ads_port": 16150
+    "ads_port": 16150,
+    "max_connections": 100,
+    "idle_timeout_secs": 300,
+    "max_connections_per_ip": 10,
+    "rate_limit_per_sec_per_ip": 10,
+    "keepalive_interval_secs": 60,
+    "send_buffer_size": 1048576
   },
   "export": {
     "endpoint": "http://localhost:3100/otlp/v1/logs",

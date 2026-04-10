@@ -51,6 +51,24 @@ pub struct ReceiverConfig {
     /// ADS port for AMS/TCP server (default 16150)
     #[serde(default = "default_ads_port")]
     pub ads_port: u16,
+    /// Maximum concurrent connections (default 100)
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Idle connection timeout in seconds (default 300)
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    /// Maximum connections per IP address (default 10)
+    #[serde(default = "default_max_connections_per_ip")]
+    pub max_connections_per_ip: usize,
+    /// Max new connections per second from a single IP (default 10)
+    #[serde(default = "default_rate_limit_per_sec_per_ip")]
+    pub rate_limit_per_sec_per_ip: usize,
+    /// Keep-alive heartbeat interval in seconds (default 60)
+    #[serde(default = "default_keepalive_interval_secs")]
+    pub keepalive_interval_secs: u64,
+    /// Send buffer size limit per connection in bytes (default 1MB)
+    #[serde(default = "default_send_buffer_size")]
+    pub send_buffer_size: usize,
 }
 
 fn default_ams_net_id() -> String {
@@ -65,6 +83,30 @@ fn default_ads_port() -> u16 {
     16150
 }
 
+fn default_max_connections() -> usize {
+    100
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    300
+}
+
+fn default_max_connections_per_ip() -> usize {
+    10
+}
+
+fn default_rate_limit_per_sec_per_ip() -> usize {
+    10
+}
+
+fn default_keepalive_interval_secs() -> u64 {
+    60
+}
+
+fn default_send_buffer_size() -> usize {
+    1_048_576 // 1 MB
+}
+
 impl Default for ReceiverConfig {
     fn default() -> Self {
         Self {
@@ -76,6 +118,12 @@ impl Default for ReceiverConfig {
             ams_net_id: "0.0.0.0.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            max_connections: default_max_connections(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+            max_connections_per_ip: default_max_connections_per_ip(),
+            rate_limit_per_sec_per_ip: default_rate_limit_per_sec_per_ip(),
+            keepalive_interval_secs: default_keepalive_interval_secs(),
+            send_buffer_size: default_send_buffer_size(),
         }
     }
 }
@@ -239,6 +287,7 @@ mod tests {
             ams_net_id: "192.168.1.100.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert_eq!(config.host, "0.0.0.0");
@@ -377,6 +426,7 @@ mod tests {
             ams_net_id: "127.0.0.1.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert!(config.http_port > 0);
@@ -393,6 +443,7 @@ mod tests {
             ams_net_id: "127.0.0.1.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert_eq!(config.max_body_size, 100 * 1024 * 1024);

@@ -7,6 +7,7 @@ use crate::ams::{
     AdsWriteRequest, AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
     ADS_CMD_READ_STATE, ADS_CMD_WRITE,
 };
+use crate::connection_manager::{ConnectionConfig, ConnectionManager};
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
@@ -25,6 +26,7 @@ pub struct AmsTcpServer {
     ads_port: u16,
     log_tx: mpsc::Sender<LogEntry>,
     registry: Arc<TaskRegistry>,
+    conn_manager: Arc<ConnectionManager>,
 }
 
 impl AmsTcpServer {
@@ -41,12 +43,23 @@ impl AmsTcpServer {
             ads_port,
             log_tx,
             registry: Arc::new(TaskRegistry::new()),
+            conn_manager: Arc::new(ConnectionManager::new(ConnectionConfig::default())),
         }
     }
 
     pub fn with_registry(mut self, registry: Arc<TaskRegistry>) -> Self {
         self.registry = registry;
         self
+    }
+
+    pub fn with_connection_config(mut self, config: ConnectionConfig) -> Self {
+        self.conn_manager = Arc::new(ConnectionManager::new(config));
+        self
+    }
+
+    /// Get a reference to the connection manager
+    pub fn connection_manager(&self) -> &Arc<ConnectionManager> {
+        &self.conn_manager
     }
 
     pub async fn start(&self) -> crate::Result<()> {
@@ -58,9 +71,10 @@ impl AmsTcpServer {
         })?;
 
         tracing::info!(
-            "AMS/TCP server listening on {} with Net ID {}",
+            "AMS/TCP server listening on {} with Net ID {} (max {} connections)",
             tcp_addr,
-            self.net_id.to_string()
+            self.net_id.to_string(),
+            self.conn_manager.max_connections()
         );
 
         // Start UDP route discovery listener
@@ -78,6 +92,21 @@ impl AmsTcpServer {
                 .accept()
                 .await
                 .map_err(|e| crate::AdsError::BufferError(format!("Accept error: {}", e)))?;
+
+            // Enforce connection limits
+            let permit = match self.conn_manager.try_acquire(peer_addr.ip()) {
+                Ok(permit) => permit,
+                Err(rejection) => {
+                    tracing::warn!(
+                        "AMS/TCP connection rejected from {}: {}",
+                        peer_addr,
+                        rejection
+                    );
+                    drop(stream);
+                    continue;
+                }
+            };
+
             tracing::trace!("AMS/TCP connection from {}", peer_addr);
 
             let net_id = self.net_id;
@@ -86,6 +115,7 @@ impl AmsTcpServer {
             let registry = self.registry.clone();
 
             tokio::spawn(async move {
+                let _permit = permit; // Hold permit until connection ends
                 if let Err(e) =
                     Self::handle_connection(stream, peer_addr, net_id, ads_port, log_tx, registry)
                         .await

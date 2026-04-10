@@ -8,6 +8,7 @@
 
 pub mod ams;
 pub mod ams_server;
+pub mod connection_manager;
 pub mod error;
 pub mod listener;
 pub mod parser;
@@ -19,6 +20,7 @@ pub use ams::{
     ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
 pub use ams_server::AmsTcpServer;
+pub use connection_manager::{ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection};
 pub use error::{AdsError, Result};
 pub use listener::AdsListener;
 pub use parser::AdsParser;

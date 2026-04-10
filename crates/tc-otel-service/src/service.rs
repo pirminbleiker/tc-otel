@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::str::FromStr;
 use std::time::Duration;
-use tc_otel_ads::{AmsNetId, AmsTcpServer};
+use tc_otel_ads::{AmsNetId, AmsTcpServer, ConnectionConfig};
 use tc_otel_core::AppSettings;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
@@ -35,12 +35,23 @@ impl Log4TcService {
         let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
             .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
 
+        let conn_config = ConnectionConfig {
+            max_connections: self.settings.receiver.max_connections,
+            idle_timeout_secs: self.settings.receiver.idle_timeout_secs,
+            max_connections_per_ip: self.settings.receiver.max_connections_per_ip,
+            rate_limit_per_sec_per_ip: self.settings.receiver.rate_limit_per_sec_per_ip,
+            keepalive_interval_secs: self.settings.receiver.keepalive_interval_secs,
+            send_buffer_size: self.settings.receiver.send_buffer_size,
+            shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
+        };
+
         let ams_server = AmsTcpServer::new(
             self.settings.receiver.host.clone(),
             net_id,
             self.settings.receiver.ads_port,
             log_tx.clone(),
-        );
+        )
+        .with_connection_config(conn_config);
 
         let mut shutdown_rx_ams = shutdown_tx.subscribe();
         let ams_handle = tokio::spawn(async move {

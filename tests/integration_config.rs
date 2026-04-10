@@ -1,6 +1,6 @@
 //! Integration tests for configuration parsing and handling
 
-use tc_otel_core::{AppSettings, LoggingConfig, LogFormat, ReceiverConfig, ServiceConfig, OutputConfig};
+use tc_otel_core::{AppSettings, ExportConfig, LoggingConfig, LogFormat, ReceiverConfig, ServiceConfig, OutputConfig};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -18,7 +18,9 @@ fn test_config_complete_structure() {
             grpc_port: 4317,
             max_body_size: 4 * 1024 * 1024,
             request_timeout_secs: 30,
+            ..Default::default()
         },
+        export: ExportConfig::default(),
         outputs: vec![],
         service: ServiceConfig {
             name: "Log4TcService".to_string(),
@@ -83,6 +85,7 @@ fn test_receiver_config_various_hosts() {
             grpc_port: 4317,
             max_body_size: 4 * 1024 * 1024,
             request_timeout_secs: 30,
+            ..Default::default()
         };
 
         assert_eq!(config.host, host);
@@ -177,6 +180,7 @@ fn test_receiver_config_high_buffer_size() {
         grpc_port: 4317,
         max_body_size: 512 * 1024 * 1024, // 512 MB
         request_timeout_secs: 60,
+        ..Default::default()
     };
 
     assert_eq!(config.max_body_size, 512 * 1024 * 1024);
@@ -212,6 +216,7 @@ fn test_config_serialization_roundtrip() {
         grpc_port: 9090,
         max_body_size: 50 * 1024 * 1024,
         request_timeout_secs: 45,
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&original).unwrap();
