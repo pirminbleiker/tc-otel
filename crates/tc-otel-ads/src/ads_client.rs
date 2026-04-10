@@ -272,6 +272,7 @@ impl AdsClient {
 }
 
 /// Build an AMS/TCP frame for an ADS READ request (for testing/external use)
+#[allow(clippy::too_many_arguments)]
 pub fn build_read_request_frame(
     source_net_id: AmsNetId,
     source_port: u16,
