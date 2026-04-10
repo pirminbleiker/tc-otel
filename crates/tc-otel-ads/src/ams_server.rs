@@ -208,25 +208,22 @@ impl AmsTcpServer {
             if cmd == ADS_CMD_READ_STATE || cmd == ADS_CMD_READ || cmd == ADS_CMD_READ_DEVICE_INFO {
                 // Heartbeat/system query - build response in-place, zero allocation
                 let resp_len = Self::build_fast_response(data, cmd, &mut resp_buf);
-                if resp_len > 0 {
-                    if stream.write_all(&resp_buf[..resp_len]).await.is_err() {
-                        break;
-                    }
+                if resp_len > 0 && stream.write_all(&resp_buf[..resp_len]).await.is_err() {
+                    break;
                 }
             } else if cmd == ADS_CMD_WRITE {
                 // Log data - full processing path
-                match Self::handle_frame(data, ads_port, peer_addr, &log_tx, &registry).await {
-                    Ok(ams_response) => {
-                        // Wrap in AMS/TCP header (6 bytes: reserved + length)
-                        let mut full_response = Vec::with_capacity(6 + ams_response.len());
-                        full_response.extend_from_slice(&0u16.to_le_bytes());
-                        full_response.extend_from_slice(&(ams_response.len() as u32).to_le_bytes());
-                        full_response.extend_from_slice(&ams_response);
-                        if stream.write_all(&full_response).await.is_err() {
-                            break;
-                        }
+                if let Ok(ams_response) =
+                    Self::handle_frame(data, ads_port, peer_addr, &log_tx, &registry).await
+                {
+                    // Wrap in AMS/TCP header (6 bytes: reserved + length)
+                    let mut full_response = Vec::with_capacity(6 + ams_response.len());
+                    full_response.extend_from_slice(&0u16.to_le_bytes());
+                    full_response.extend_from_slice(&(ams_response.len() as u32).to_le_bytes());
+                    full_response.extend_from_slice(&ams_response);
+                    if stream.write_all(&full_response).await.is_err() {
+                        break;
                     }
-                    Err(_) => {}
                 }
             } else {
                 // Unknown command - success response

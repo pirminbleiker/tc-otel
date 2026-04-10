@@ -275,7 +275,7 @@ impl AdsParser {
         let mut arguments = HashMap::with_capacity(arg_count);
         for arg_idx in 0..arg_count {
             if arguments.len() >= MAX_ARGUMENTS {
-                return Err(AdsError::ParseError(format!("Too many arguments")));
+                return Err(AdsError::ParseError("Too many arguments".to_string()));
             }
             let type_id = reader.read_u8()?;
             let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
@@ -288,7 +288,9 @@ impl AdsParser {
         let mut context_idx = 0;
         for _ in 0..context_count {
             if context_idx >= MAX_CONTEXT_VARS {
-                return Err(AdsError::ParseError(format!("Too many context variables")));
+                return Err(AdsError::ParseError(
+                    "Too many context variables".to_string(),
+                ));
             }
             let scope = reader.read_u8()?;
             let prop_count = reader.read_u8()?;
@@ -453,8 +455,8 @@ impl<'a> BytesReader<'a> {
         let secs = unix_time_100ns / 10_000_000;
         let nanos = ((unix_time_100ns % 10_000_000) * 100) as u32;
 
-        Ok(DateTime::<Utc>::from_timestamp(secs as i64, nanos)
-            .ok_or(AdsError::InvalidTimestamp("Invalid timestamp".to_string()))?)
+        DateTime::<Utc>::from_timestamp(secs as i64, nanos)
+            .ok_or(AdsError::InvalidTimestamp("Invalid timestamp".to_string()))
     }
 
     fn read_u16(&mut self) -> Result<u16> {

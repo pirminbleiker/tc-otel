@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn test_format_positional_args() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("world"));
-        args.insert(1, serde_json::json!(42));
+        args.insert(1, serde_json::json!("world"));
+        args.insert(2, serde_json::json!(42));
 
         let result = MessageFormatter::format("Hello {0}, answer is {1}", &args);
         assert_eq!(result, "Hello world, answer is 42");
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_format_with_context() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("user123"));
+        args.insert(1, serde_json::json!("user123"));
 
         let mut context = HashMap::new();
         context.insert("action".to_string(), serde_json::json!("login"));
@@ -271,9 +271,9 @@ mod tests {
     #[test]
     fn test_format_extra_args() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("used"));
-        args.insert(1, serde_json::json!("unused"));
-        args.insert(2, serde_json::json!("also_unused"));
+        args.insert(1, serde_json::json!("used"));
+        args.insert(2, serde_json::json!("unused"));
+        args.insert(3, serde_json::json!("also_unused"));
 
         let result = MessageFormatter::format("Only {0} is used", &args);
         assert_eq!(result, "Only used is used");
@@ -282,9 +282,9 @@ mod tests {
     #[test]
     fn test_format_out_of_order_indices() {
         let mut args = HashMap::new();
-        args.insert(2, serde_json::json!("third"));
-        args.insert(0, serde_json::json!("first"));
-        args.insert(1, serde_json::json!("second"));
+        args.insert(3, serde_json::json!("third"));
+        args.insert(1, serde_json::json!("first"));
+        args.insert(2, serde_json::json!("second"));
 
         let result = MessageFormatter::format("Order: {0}, {1}, {2}", &args);
         assert_eq!(result, "Order: first, second, third");
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn test_format_repeated_placeholders() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("hello"));
+        args.insert(1, serde_json::json!("hello"));
 
         let result = MessageFormatter::format("{0} {0} {0}", &args);
         assert_eq!(result, "hello hello hello");
@@ -313,10 +313,10 @@ mod tests {
     #[test]
     fn test_format_arg_type_coercion() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!(42));
-        args.insert(1, serde_json::json!(3.14));
-        args.insert(2, serde_json::json!(true));
-        args.insert(3, serde_json::json!(null));
+        args.insert(1, serde_json::json!(42));
+        args.insert(2, serde_json::json!(3.14));
+        args.insert(3, serde_json::json!(true));
+        args.insert(4, serde_json::json!(null));
 
         let result = MessageFormatter::format("Int: {0}, Float: {1}, Bool: {2}, Null: {3}", &args);
         assert_eq!(result, "Int: 42, Float: 3.14, Bool: true, Null: null");
@@ -325,9 +325,9 @@ mod tests {
     #[test]
     fn test_format_special_chars_in_args() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("line1\nline2"));
-        args.insert(1, serde_json::json!("\"quoted\""));
-        args.insert(2, serde_json::json!("path\\to\\file"));
+        args.insert(1, serde_json::json!("line1\nline2"));
+        args.insert(2, serde_json::json!("\"quoted\""));
+        args.insert(3, serde_json::json!("path\\to\\file"));
 
         let result = MessageFormatter::format("Newline: {0}, Quote: {1}, Path: {2}", &args);
         assert!(result.contains("line1\nline2"));
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_format_array_argument() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!([1, 2, 3]));
+        args.insert(1, serde_json::json!([1, 2, 3]));
 
         let result = MessageFormatter::format("Array: {0}", &args);
         assert!(result.contains("["));
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn test_format_object_argument() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!({"key": "value"}));
+        args.insert(1, serde_json::json!({"key": "value"}));
 
         let result = MessageFormatter::format("Object: {0}", &args);
         assert!(result.contains("{"));
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn test_format_context_overrides_positional() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("positional"));
+        args.insert(1, serde_json::json!("positional"));
 
         let mut context = HashMap::new();
         context.insert("name".to_string(), serde_json::json!("context_value"));
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn test_format_special_placeholder_chars() {
         let mut args = HashMap::new();
-        args.insert(0, serde_json::json!("value"));
+        args.insert(1, serde_json::json!("value"));
 
         let result = MessageFormatter::format("Placeholder: {0}", &args);
         assert_eq!(result, "Placeholder: value");
@@ -432,7 +432,7 @@ mod tests {
     fn test_format_very_long_message() {
         let mut args = HashMap::new();
         let long_arg = "x".repeat(10000);
-        args.insert(0, serde_json::json!(&long_arg));
+        args.insert(1, serde_json::json!(&long_arg));
 
         let template = "Start {0} End";
         let result = MessageFormatter::format(template, &args);

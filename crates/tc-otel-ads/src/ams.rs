@@ -44,17 +44,19 @@ impl AmsNetId {
         Ok(AmsNetId(bytes))
     }
 
-    /// Convert AMS Net ID to string format
-    pub fn to_string(&self) -> String {
-        format!(
-            "{}.{}.{}.{}.{}.{}",
-            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
-        )
-    }
-
     /// Get the raw bytes
     pub fn bytes(&self) -> &[u8; 6] {
         &self.0
+    }
+}
+
+impl std::fmt::Display for AmsNetId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}.{}.{}.{}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
     }
 }
 
