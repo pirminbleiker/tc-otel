@@ -29,6 +29,205 @@ pub enum LogFormat {
     Text,
 }
 
+/// TLS/SSL configuration for the receiver
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Enable TLS for the receiver
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to server certificate (PEM)
+    #[serde(default)]
+    pub cert_path: Option<PathBuf>,
+    /// Path to server private key (PEM)
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+    /// Path to CA certificate bundle for verifying client certs
+    #[serde(default)]
+    pub ca_cert_path: Option<PathBuf>,
+    /// Require client certificate (mTLS)
+    #[serde(default)]
+    pub require_client_cert: bool,
+    /// Path to client certificate (for outbound mTLS)
+    #[serde(default)]
+    pub client_cert_path: Option<PathBuf>,
+    /// Path to client private key (for outbound mTLS)
+    #[serde(default)]
+    pub client_key_path: Option<PathBuf>,
+    /// Skip server certificate verification (INSECURE — rejected in validation)
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+    /// Minimum TLS version (default: "TLSv1_2")
+    #[serde(default = "default_min_tls_version")]
+    pub min_version: String,
+    /// Maximum TLS version (default: "TLSv1_3")
+    #[serde(default = "default_max_tls_version")]
+    pub max_version: String,
+    /// Allowed cipher suites (empty = use defaults)
+    #[serde(default)]
+    pub ciphers: Vec<String>,
+}
+
+fn default_min_tls_version() -> String {
+    "TLSv1_2".to_string()
+}
+
+fn default_max_tls_version() -> String {
+    "TLSv1_3".to_string()
+}
+
+/// Known weak cipher patterns that must be rejected
+const WEAK_CIPHER_PATTERNS: &[&str] = &[
+    "DES", "RC4", "RC2", "MD5", "NULL", "EXPORT", "anon", "ADH", "AECDH",
+];
+
+/// Valid TLS versions in order
+const VALID_TLS_VERSIONS: &[&str] = &["TLSv1_0", "TLSv1_1", "TLSv1_2", "TLSv1_3"];
+
+/// Minimum acceptable TLS version (TLSv1_2)
+const MIN_ACCEPTABLE_TLS_VERSION: &str = "TLSv1_2";
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
+            require_client_cert: false,
+            client_cert_path: None,
+            client_key_path: None,
+            insecure_skip_verify: false,
+            min_version: default_min_tls_version(),
+            max_version: default_max_tls_version(),
+            ciphers: Vec::new(),
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Validate the TLS configuration. Returns a list of errors if invalid.
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if !self.enabled {
+            return Ok(());
+        }
+
+        // insecure_skip_verify is never allowed
+        if self.insecure_skip_verify {
+            errors.push(
+                "insecure_skip_verify=true is not allowed: \
+                 certificate verification must not be disabled"
+                    .to_string(),
+            );
+        }
+
+        // Server cert and key are required when TLS is enabled
+        if self.cert_path.is_none() {
+            errors.push("TLS enabled but cert_path is not set".to_string());
+        }
+        if self.key_path.is_none() {
+            errors.push("TLS enabled but key_path is not set".to_string());
+        }
+
+        // Client cert requirement needs client cert paths
+        if self.require_client_cert {
+            if self.ca_cert_path.is_none() {
+                errors.push(
+                    "require_client_cert=true but ca_cert_path is not set: \
+                     CA certificate is needed to verify client certificates"
+                        .to_string(),
+                );
+            }
+        }
+
+        // Validate TLS versions
+        if let Err(e) = Self::validate_tls_version(&self.min_version) {
+            errors.push(format!("min_version: {}", e));
+        }
+        if let Err(e) = Self::validate_tls_version(&self.max_version) {
+            errors.push(format!("max_version: {}", e));
+        }
+
+        // Ensure min_version meets minimum acceptable threshold
+        if let Err(e) = Self::check_minimum_acceptable_version(&self.min_version) {
+            errors.push(e);
+        }
+
+        // Ensure min <= max
+        if Self::tls_version_ord(&self.min_version) > Self::tls_version_ord(&self.max_version) {
+            errors.push(format!(
+                "min_version ({}) is greater than max_version ({})",
+                self.min_version, self.max_version
+            ));
+        }
+
+        // Validate cipher suites
+        for cipher in &self.ciphers {
+            if let Err(e) = Self::validate_cipher_suite(cipher) {
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate a TLS version string
+    pub fn validate_tls_version(version: &str) -> std::result::Result<(), String> {
+        if VALID_TLS_VERSIONS.contains(&version) {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid TLS version '{}': must be one of {:?}",
+                version, VALID_TLS_VERSIONS
+            ))
+        }
+    }
+
+    /// Check that a TLS version meets the minimum acceptable threshold (TLSv1_2)
+    pub fn check_minimum_acceptable_version(version: &str) -> std::result::Result<(), String> {
+        let ord = Self::tls_version_ord(version);
+        let min_ord = Self::tls_version_ord(MIN_ACCEPTABLE_TLS_VERSION);
+        if ord < min_ord {
+            Err(format!(
+                "TLS version '{}' is below minimum acceptable version ({})",
+                version, MIN_ACCEPTABLE_TLS_VERSION
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Validate a cipher suite name — rejects known weak ciphers
+    pub fn validate_cipher_suite(cipher: &str) -> std::result::Result<(), String> {
+        let upper = cipher.to_uppercase();
+        for weak in WEAK_CIPHER_PATTERNS {
+            if upper.contains(weak) {
+                return Err(format!(
+                    "weak cipher suite '{}': contains banned pattern '{}'",
+                    cipher, weak
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return numeric ordering for TLS version strings
+    fn tls_version_ord(version: &str) -> u8 {
+        match version {
+            "TLSv1_0" => 0,
+            "TLSv1_1" => 1,
+            "TLSv1_2" => 2,
+            "TLSv1_3" => 3,
+            _ => 0,
+        }
+    }
+}
+
 /// Receiver configuration (OTEL listener)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiverConfig {
@@ -69,6 +268,12 @@ pub struct ReceiverConfig {
     /// Send buffer size limit per connection in bytes (default 1MB)
     #[serde(default = "default_send_buffer_size")]
     pub send_buffer_size: usize,
+    /// Enforce HTTPS-only for endpoints
+    #[serde(default)]
+    pub https_only: bool,
+    /// TLS configuration
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 fn default_ams_net_id() -> String {
@@ -124,6 +329,60 @@ impl Default for ReceiverConfig {
             rate_limit_per_sec_per_ip: default_rate_limit_per_sec_per_ip(),
             keepalive_interval_secs: default_keepalive_interval_secs(),
             send_buffer_size: default_send_buffer_size(),
+            https_only: false,
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
+impl ReceiverConfig {
+    /// Validate an endpoint URL against security policy.
+    /// When `https_only` is true, only HTTPS endpoints are accepted.
+    /// When TLS is enabled, HTTP endpoints are rejected (downgrade prevention).
+    pub fn validate_endpoint(&self, endpoint: &str) -> std::result::Result<(), String> {
+        let lower = endpoint.to_lowercase();
+
+        if self.https_only && lower.starts_with("http://") {
+            return Err(format!(
+                "endpoint '{}' uses HTTP but https_only is enabled: \
+                 only HTTPS endpoints are allowed",
+                endpoint
+            ));
+        }
+
+        if self.tls.enabled && lower.starts_with("http://") {
+            return Err(format!(
+                "endpoint '{}' uses HTTP but TLS is enabled: \
+                 cannot downgrade from HTTPS to HTTP",
+                endpoint
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate the entire receiver configuration
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        // Validate TLS config
+        if let Err(tls_errors) = self.tls.validate() {
+            errors.extend(tls_errors);
+        }
+
+        // When https_only is set, TLS should be enabled
+        if self.https_only && !self.tls.enabled {
+            errors.push(
+                "https_only=true but TLS is not enabled: \
+                 enable TLS to enforce HTTPS-only mode"
+                    .to_string(),
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }

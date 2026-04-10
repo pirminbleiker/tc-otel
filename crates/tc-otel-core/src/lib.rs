@@ -10,7 +10,7 @@ pub mod models;
 
 pub use config::{
     AppSettings, ExportConfig, LogFormat, LoggingConfig, OutputConfig, ReceiverConfig,
-    ServiceConfig,
+    ServiceConfig, TlsConfig,
 };
 pub use error::{Error, Result};
 pub use formatter::MessageFormatter;
