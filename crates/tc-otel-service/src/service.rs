@@ -18,16 +18,13 @@ use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebSta
 pub struct Log4TcService {
     settings: AppSettings,
     config_path: Option<PathBuf>,
-    log_dispatcher: LogDispatcher,
 }
 
 impl Log4TcService {
     pub async fn new(settings: AppSettings) -> Result<Self> {
-        let dispatcher = LogDispatcher::new(&settings).await?;
         Ok(Self {
             settings,
             config_path: None,
-            log_dispatcher: dispatcher,
         })
     }
 
@@ -43,13 +40,18 @@ impl Log4TcService {
         let (log_tx, mut log_rx) = mpsc::channel(self.settings.service.channel_capacity);
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
-        // Start config watcher if a config path was provided
-        let config_watcher_handle = if let Some(ref config_path) = self.config_path {
-            let (watcher, _rx) = ConfigWatcher::new(
+        // Start config watcher if a config path was provided, and get the
+        // receiver for hot-reloading downstream components.
+        let (config_watcher_handle, config_rx) = if let Some(ref config_path) = self.config_path {
+            let (watcher, rx) = ConfigWatcher::new(
                 config_path.clone(),
                 self.settings.clone(),
                 Duration::from_secs(2),
             );
+
+            // Clone receiver for logging reload
+            let logging_rx = rx.clone();
+
             let mut shutdown_rx_watcher = shutdown_tx.subscribe();
             let handle = tokio::spawn(async move {
                 tokio::select! {
@@ -59,14 +61,22 @@ impl Log4TcService {
                     }
                 }
             });
+
+            // Spawn logging reload task
+            let shutdown_rx_logging = shutdown_tx.subscribe();
+            tokio::spawn(Self::logging_reload_task(logging_rx, shutdown_rx_logging));
+
             tracing::info!(
                 "Config hot-reload enabled, watching {}",
                 config_path.display()
             );
-            Some(handle)
+            (Some(handle), Some(rx))
         } else {
-            None
+            (None, None)
         };
+
+        // Create dispatcher with config watch receiver for hot-reload
+        let log_dispatcher = LogDispatcher::new(&self.settings, config_rx).await?;
 
         // Start AMS/TCP server (receives ADS from PLC via AMS routing)
         let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
@@ -110,7 +120,7 @@ impl Log4TcService {
         });
 
         // Start dispatcher with diagnostic stats tracking
-        let dispatcher = self.log_dispatcher.clone();
+        let dispatcher = log_dispatcher.clone();
         let stats_for_dispatcher = diagnostic_stats.clone();
         let dispatcher_handle = tokio::spawn(async move {
             let mut processed = 0u64;
@@ -180,5 +190,37 @@ impl Log4TcService {
 
         tracing::info!("Log4TC Service stopped");
         Ok(())
+    }
+
+    /// Task that watches for logging configuration changes and applies them.
+    /// Updates the tracing EnvFilter when log_level changes.
+    async fn logging_reload_task(
+        mut config_rx: tokio::sync::watch::Receiver<AppSettings>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) {
+        let mut current_level = config_rx.borrow().logging.log_level.clone();
+
+        loop {
+            tokio::select! {
+                result = config_rx.changed() => {
+                    if result.is_err() {
+                        break; // Channel closed
+                    }
+                    let new_settings = config_rx.borrow().clone();
+                    if new_settings.logging.log_level != current_level {
+                        tracing::info!(
+                            "Hot-reload: log level changed from {} to {}",
+                            current_level,
+                            new_settings.logging.log_level,
+                        );
+                        current_level = new_settings.logging.log_level;
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    tracing::debug!("Logging reload task shutdown");
+                    break;
+                }
+            }
+        }
     }
 }
