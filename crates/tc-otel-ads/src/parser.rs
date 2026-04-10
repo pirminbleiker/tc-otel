@@ -4,7 +4,7 @@ use crate::error::*;
 use crate::protocol::*;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use tc_otel_core::LogLevel;
+use tc_otel_core::{LogLevel, SpanKind, SpanStatusCode};
 
 // Security limits for protocol parsing
 /// Maximum length for individual strings (65 KB)
@@ -15,12 +15,17 @@ const MAX_ARGUMENTS: usize = 32;
 const MAX_CONTEXT_VARS: usize = 64;
 /// Maximum total message size (1 MB)
 const MAX_MESSAGE_SIZE: usize = 1_048_576;
+/// Maximum number of events allowed per span
+const MAX_SPAN_EVENTS: usize = 128;
+/// Maximum number of attributes allowed per span or event
+const MAX_SPAN_ATTRIBUTES: usize = 64;
 
-/// Result of parsing a buffer containing both log entries and registrations
+/// Result of parsing a buffer containing log entries, registrations, and spans
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     pub entries: Vec<AdsLogEntry>,
     pub registrations: Vec<RegistrationMessage>,
+    pub spans: Vec<AdsSpanEntry>,
 }
 
 /// Parser for ADS binary protocol messages
@@ -40,6 +45,7 @@ impl AdsParser {
 
         let mut entries = Vec::new();
         let mut registrations = Vec::new();
+        let mut spans = Vec::new();
         let mut reader = BytesReader::new(data);
 
         while reader.remaining() > 0 {
@@ -116,6 +122,26 @@ impl AdsParser {
                         }
                     }
                 }
+                5 => {
+                    // Span entry
+                    match Self::parse_span_from_reader(&mut reader) {
+                        Ok(span) => spans.push(span),
+                        Err(e) => {
+                            if !entries.is_empty()
+                                || !registrations.is_empty()
+                                || !spans.is_empty()
+                            {
+                                tracing::debug!(
+                                    "Partial span at buffer end ({} bytes remaining): {}",
+                                    reader.remaining(),
+                                    e
+                                );
+                                break;
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
                 _ => {
                     // Unknown message type, stop
                     tracing::warn!("Unknown message type: {}", message_type);
@@ -127,6 +153,7 @@ impl AdsParser {
         Ok(ParseResult {
             entries,
             registrations,
+            spans,
         })
     }
 
@@ -349,6 +376,173 @@ impl AdsParser {
             app_name,
             project_name,
             online_change_count,
+        })
+    }
+
+    /// Parse a span entry from the binary stream (wire type 0x05).
+    ///
+    /// Wire format:
+    /// ```text
+    /// [0x05]           - 1 byte: message type
+    /// [entry_length]   - 2 bytes: u16 LE, total length after this field
+    /// [trace_id]       - 16 bytes: trace ID
+    /// [span_id]        - 8 bytes: span ID
+    /// [parent_span_id] - 8 bytes: parent span ID (all zeros = root)
+    /// [kind]           - 1 byte: SpanKind (0-4)
+    /// [status_code]    - 1 byte: SpanStatusCode (0-2)
+    /// [start_time]     - 8 bytes: FILETIME
+    /// [end_time]       - 8 bytes: FILETIME
+    /// [task_index]     - 1 byte: task index
+    /// [cycle_counter]  - 4 bytes: u32 LE
+    /// [event_count]    - 1 byte: number of events
+    /// [attr_count]     - 1 byte: number of attributes
+    /// [name]           - string: span name
+    /// [status_message] - string: status message (empty if ok)
+    /// [events...]      - variable: event_count events
+    /// [attributes...]  - variable: attr_count attributes
+    /// ```
+    ///
+    /// Each event:
+    /// ```text
+    /// [name]           - string: event name
+    /// [timestamp]      - 8 bytes: FILETIME
+    /// [attr_count]     - 1 byte: number of event attributes
+    /// [attributes...]  - variable: key-value pairs
+    /// ```
+    ///
+    /// Each attribute (span or event):
+    /// ```text
+    /// [key]            - string: attribute name
+    /// [type_id]        - 1 byte: value type
+    /// [value]          - variable: typed value
+    /// ```
+    fn parse_span_from_reader(reader: &mut BytesReader) -> Result<AdsSpanEntry> {
+        // Type byte (should be 5)
+        let type_byte = reader.read_u8()?;
+        if type_byte != 5 {
+            return Err(AdsError::ParseError(format!(
+                "Invalid span type: {}",
+                type_byte
+            )));
+        }
+
+        // Entry length
+        let entry_length = reader.read_u16()? as usize;
+        let entry_start = reader.pos;
+
+        // Trace identity
+        let trace_id_bytes = reader.read_bytes(16)?;
+        let mut trace_id = [0u8; 16];
+        trace_id.copy_from_slice(trace_id_bytes);
+
+        let span_id_bytes = reader.read_bytes(8)?;
+        let mut span_id = [0u8; 8];
+        span_id.copy_from_slice(span_id_bytes);
+
+        let parent_span_id_bytes = reader.read_bytes(8)?;
+        let mut parent_span_id = [0u8; 8];
+        parent_span_id.copy_from_slice(parent_span_id_bytes);
+
+        // Span metadata
+        let kind_byte = reader.read_u8()?;
+        let kind = SpanKind::from_u8(kind_byte).ok_or(AdsError::ParseError(format!(
+            "Invalid span kind: {}",
+            kind_byte
+        )))?;
+
+        let status_byte = reader.read_u8()?;
+        let status_code =
+            SpanStatusCode::from_u8(status_byte).ok_or(AdsError::ParseError(format!(
+                "Invalid span status code: {}",
+                status_byte
+            )))?;
+
+        // Timestamps
+        let start_time = reader.read_filetime()?;
+        let end_time = reader.read_filetime()?;
+
+        // Task metadata
+        let task_index = reader.read_u8()? as i32;
+        let cycle_counter = reader.read_u32()?;
+
+        // Counts
+        let event_count = reader.read_u8()? as usize;
+        let attr_count = reader.read_u8()? as usize;
+
+        if event_count > MAX_SPAN_EVENTS {
+            return Err(AdsError::ParseError(format!(
+                "Too many span events: {} exceeds maximum {}",
+                event_count, MAX_SPAN_EVENTS
+            )));
+        }
+        if attr_count > MAX_SPAN_ATTRIBUTES {
+            return Err(AdsError::ParseError(format!(
+                "Too many span attributes: {} exceeds maximum {}",
+                attr_count, MAX_SPAN_ATTRIBUTES
+            )));
+        }
+
+        // Strings
+        let name = reader.read_string()?;
+        let status_message = reader.read_string()?;
+
+        // Events
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let event_name = reader.read_string()?;
+            let event_timestamp = reader.read_filetime()?;
+            let event_attr_count = reader.read_u8()? as usize;
+
+            if event_attr_count > MAX_SPAN_ATTRIBUTES {
+                return Err(AdsError::ParseError(format!(
+                    "Too many event attributes: {} exceeds maximum {}",
+                    event_attr_count, MAX_SPAN_ATTRIBUTES
+                )));
+            }
+
+            let mut event_attrs = HashMap::with_capacity(event_attr_count);
+            for _ in 0..event_attr_count {
+                let key = reader.read_string()?;
+                let type_id = reader.read_u8()?;
+                let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+                let value = reader.read_value_with_type(type_id_i32)?;
+                event_attrs.insert(key, value);
+            }
+
+            events.push(AdsSpanEvent {
+                name: event_name,
+                timestamp: event_timestamp,
+                attributes: event_attrs,
+            });
+        }
+
+        // Span attributes
+        let mut attributes = HashMap::with_capacity(attr_count);
+        for _ in 0..attr_count {
+            let key = reader.read_string()?;
+            let type_id = reader.read_u8()?;
+            let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+            let value = reader.read_value_with_type(type_id_i32)?;
+            attributes.insert(key, value);
+        }
+
+        // Sync to entry boundary
+        reader.pos = entry_start + entry_length;
+
+        Ok(AdsSpanEntry {
+            trace_id,
+            span_id,
+            parent_span_id,
+            name,
+            kind,
+            status_code,
+            status_message,
+            start_time,
+            end_time,
+            task_index,
+            task_cycle_counter: cycle_counter,
+            events,
+            attributes,
         })
     }
 
@@ -1679,5 +1873,428 @@ mod tests {
         assert_eq!(result.entries.len(), 2);
         assert_eq!(result.entries[0].message, "First");
         assert_eq!(result.entries[1].message, "Second");
+    }
+
+    // === Span parser tests ===
+
+    /// Build a minimal span payload for wire type 0x05.
+    /// Returns (payload, entry_length_offset) for tests that need to manipulate length.
+    fn build_span_payload(
+        name: &str,
+        kind: u8,
+        status_code: u8,
+        events: &[(
+            &str,
+            &[(&str, u8, &[u8])], // (event_name, &[(attr_key, type_id, value_bytes)])
+        )],
+        attrs: &[(&str, u8, &[u8])], // (attr_key, type_id, value_bytes)
+    ) -> Vec<u8> {
+        let mut payload = vec![5u8]; // type = span
+
+        // entry_length placeholder
+        let len_pos = payload.len();
+        payload.extend_from_slice(&0u16.to_le_bytes());
+
+        // trace_id (16 bytes)
+        let trace_id: [u8; 16] = [
+            0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56,
+            0x78, 0x90,
+        ];
+        payload.extend_from_slice(&trace_id);
+
+        // span_id (8 bytes)
+        let span_id: [u8; 8] = [0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef];
+        payload.extend_from_slice(&span_id);
+
+        // parent_span_id (8 bytes, zeros = root span)
+        payload.extend_from_slice(&[0u8; 8]);
+
+        // kind, status_code
+        payload.push(kind);
+        payload.push(status_code);
+
+        // Timestamps (FILETIME)
+        let filetime = (Utc::now().timestamp() as u64 * 10_000_000) + 116444736000000000;
+        payload.extend_from_slice(&filetime.to_le_bytes()); // start_time
+        payload.extend_from_slice(&filetime.to_le_bytes()); // end_time
+
+        // task_index, cycle_counter
+        payload.push(1); // task_index
+        payload.extend_from_slice(&500u32.to_le_bytes()); // cycle_counter
+
+        // event_count, attr_count
+        payload.push(events.len() as u8);
+        payload.push(attrs.len() as u8);
+
+        // name string
+        payload.push(name.len() as u8);
+        payload.extend_from_slice(name.as_bytes());
+
+        // status_message (empty)
+        payload.push(0);
+
+        // Events
+        for (event_name, event_attrs) in events {
+            payload.push(event_name.len() as u8);
+            payload.extend_from_slice(event_name.as_bytes());
+            payload.extend_from_slice(&filetime.to_le_bytes()); // event timestamp
+            payload.push(event_attrs.len() as u8);
+
+            for (key, type_id, value_bytes) in *event_attrs {
+                payload.push(key.len() as u8);
+                payload.extend_from_slice(key.as_bytes());
+                payload.push(*type_id);
+                payload.extend_from_slice(value_bytes);
+            }
+        }
+
+        // Span attributes
+        for (key, type_id, value_bytes) in attrs {
+            payload.push(key.len() as u8);
+            payload.extend_from_slice(key.as_bytes());
+            payload.push(*type_id);
+            payload.extend_from_slice(value_bytes);
+        }
+
+        // Update entry_length
+        let entry_len = (payload.len() - len_pos - 2) as u16;
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
+
+        payload
+    }
+
+    /// Helper to encode a string value for the test payload (type 12 = STRING)
+    fn string_attr_bytes(s: &str) -> Vec<u8> {
+        let mut bytes = vec![s.len() as u8];
+        bytes.extend_from_slice(s.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn test_parse_span_minimal() {
+        let payload = build_span_payload("motor_cycle", 0, 0, &[], &[]);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        assert_eq!(result.entries.len(), 0);
+        assert_eq!(result.registrations.len(), 0);
+        assert_eq!(result.spans.len(), 1);
+
+        let span = &result.spans[0];
+        assert_eq!(span.name, "motor_cycle");
+        assert_eq!(span.kind, SpanKind::Internal);
+        assert_eq!(span.status_code, SpanStatusCode::Unset);
+        assert_eq!(span.trace_id_hex(), "abcdef1234567890abcdef1234567890");
+        assert_eq!(span.span_id_hex(), "1234567890abcdef");
+        assert_eq!(span.parent_span_id_hex(), ""); // all zeros
+        assert!(span.events.is_empty());
+        assert!(span.attributes.is_empty());
+        assert_eq!(span.task_index, 1);
+        assert_eq!(span.task_cycle_counter, 500);
+    }
+
+    #[test]
+    fn test_parse_span_all_kinds() {
+        for (kind_byte, expected_kind) in [
+            (0u8, SpanKind::Internal),
+            (1, SpanKind::Server),
+            (2, SpanKind::Client),
+            (3, SpanKind::Producer),
+            (4, SpanKind::Consumer),
+        ] {
+            let payload = build_span_payload("test", kind_byte, 0, &[], &[]);
+            let result = AdsParser::parse_all(&payload).unwrap();
+            assert_eq!(
+                result.spans[0].kind, expected_kind,
+                "Kind mismatch for byte {}",
+                kind_byte
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_span_all_status_codes() {
+        for (status_byte, expected_status) in [
+            (0u8, SpanStatusCode::Unset),
+            (1, SpanStatusCode::Ok),
+            (2, SpanStatusCode::Error),
+        ] {
+            let payload = build_span_payload("test", 0, status_byte, &[], &[]);
+            let result = AdsParser::parse_all(&payload).unwrap();
+            assert_eq!(
+                result.spans[0].status_code, expected_status,
+                "Status mismatch for byte {}",
+                status_byte
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_span_with_state_machine_attributes() {
+        let sm_name = string_attr_bytes("MotorController");
+        let old_state = string_attr_bytes("IDLE");
+        let new_state = string_attr_bytes("RUNNING");
+
+        let attrs: Vec<(&str, u8, &[u8])> = vec![
+            ("state_machine.name", 12, &sm_name),
+            ("state_machine.transition.old_state", 12, &old_state),
+            ("state_machine.transition.new_state", 12, &new_state),
+        ];
+
+        let payload = build_span_payload("state_machine_cycle", 0, 1, &[], &attrs);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        let span = &result.spans[0];
+
+        assert_eq!(span.name, "state_machine_cycle");
+        assert_eq!(span.status_code, SpanStatusCode::Ok);
+        assert_eq!(span.attributes.len(), 3);
+        assert_eq!(
+            span.attributes["state_machine.name"],
+            serde_json::json!("MotorController")
+        );
+        assert_eq!(
+            span.attributes["state_machine.transition.old_state"],
+            serde_json::json!("IDLE")
+        );
+        assert_eq!(
+            span.attributes["state_machine.transition.new_state"],
+            serde_json::json!("RUNNING")
+        );
+    }
+
+    #[test]
+    fn test_parse_span_with_event() {
+        let old_state = string_attr_bytes("IDLE");
+        let new_state = string_attr_bytes("RUNNING");
+
+        let event_attrs: Vec<(&str, u8, &[u8])> = vec![
+            ("state_machine.transition.old_state", 12, &old_state),
+            ("state_machine.transition.new_state", 12, &new_state),
+        ];
+
+        let events: Vec<(&str, &[(&str, u8, &[u8])])> =
+            vec![("state_transition", event_attrs.as_slice())];
+
+        let payload = build_span_payload("pump_cycle", 0, 0, &events, &[]);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        let span = &result.spans[0];
+
+        assert_eq!(span.events.len(), 1);
+        assert_eq!(span.events[0].name, "state_transition");
+        assert_eq!(span.events[0].attributes.len(), 2);
+        assert_eq!(
+            span.events[0].attributes["state_machine.transition.old_state"],
+            serde_json::json!("IDLE")
+        );
+        assert_eq!(
+            span.events[0].attributes["state_machine.transition.new_state"],
+            serde_json::json!("RUNNING")
+        );
+    }
+
+    #[test]
+    fn test_parse_span_with_multiple_events() {
+        let old1 = string_attr_bytes("IDLE");
+        let new1 = string_attr_bytes("STARTING");
+        let old2 = string_attr_bytes("STARTING");
+        let new2 = string_attr_bytes("RUNNING");
+
+        let event1_attrs: Vec<(&str, u8, &[u8])> = vec![
+            ("state_machine.transition.old_state", 12, &old1),
+            ("state_machine.transition.new_state", 12, &new1),
+        ];
+        let event2_attrs: Vec<(&str, u8, &[u8])> = vec![
+            ("state_machine.transition.old_state", 12, &old2),
+            ("state_machine.transition.new_state", 12, &new2),
+        ];
+
+        let events: Vec<(&str, &[(&str, u8, &[u8])])> = vec![
+            ("transition_1", event1_attrs.as_slice()),
+            ("transition_2", event2_attrs.as_slice()),
+        ];
+
+        let payload = build_span_payload("motor_startup", 0, 0, &events, &[]);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        let span = &result.spans[0];
+
+        assert_eq!(span.events.len(), 2);
+        assert_eq!(span.events[0].name, "transition_1");
+        assert_eq!(span.events[1].name, "transition_2");
+        assert_eq!(
+            span.events[0].attributes["state_machine.transition.new_state"],
+            serde_json::json!("STARTING")
+        );
+        assert_eq!(
+            span.events[1].attributes["state_machine.transition.new_state"],
+            serde_json::json!("RUNNING")
+        );
+    }
+
+    #[test]
+    fn test_parse_span_invalid_kind() {
+        // Build manually with invalid kind byte
+        let mut payload = vec![5u8]; // type = span
+        let len_pos = payload.len();
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 16]); // trace_id
+        payload.extend_from_slice(&[0u8; 8]); // span_id
+        payload.extend_from_slice(&[0u8; 8]); // parent_span_id
+        payload.push(99); // invalid kind
+        // Don't need more — should fail here
+
+        let entry_len = (payload.len() - len_pos - 2) as u16;
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
+
+        let result = AdsParser::parse_all(&payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_span_invalid_status_code() {
+        let mut payload = vec![5u8];
+        let len_pos = payload.len();
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 16]); // trace_id
+        payload.extend_from_slice(&[0u8; 8]); // span_id
+        payload.extend_from_slice(&[0u8; 8]); // parent_span_id
+        payload.push(0); // valid kind
+        payload.push(99); // invalid status code
+
+        let entry_len = (payload.len() - len_pos - 2) as u16;
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
+
+        let result = AdsParser::parse_all(&payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_mixed_logs_and_spans() {
+        let mut payload = Vec::new();
+
+        // First: v1 log entry
+        let v1 = build_test_payload("Log message", "logger", 2);
+        payload.extend_from_slice(&v1);
+
+        // Second: span entry
+        let span = build_span_payload("motor_cycle", 0, 1, &[], &[]);
+        payload.extend_from_slice(&span);
+
+        // Third: registration
+        payload.push(3); // type = registration
+        payload.push(1); // task_index
+        payload.push(4);
+        payload.extend_from_slice(b"Task");
+        payload.push(3);
+        payload.extend_from_slice(b"App");
+        payload.push(4);
+        payload.extend_from_slice(b"Proj");
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.spans.len(), 1);
+        assert_eq!(result.registrations.len(), 1);
+
+        assert_eq!(result.entries[0].message, "Log message");
+        assert_eq!(result.spans[0].name, "motor_cycle");
+        assert_eq!(result.registrations[0].task_name, "Task");
+    }
+
+    #[test]
+    fn test_parse_span_with_numeric_attribute() {
+        let dint_bytes = 42i32.to_le_bytes();
+        let attrs: Vec<(&str, u8, &[u8])> = vec![("retry_count", 8, &dint_bytes)];
+
+        let payload = build_span_payload("operation", 0, 0, &[], &attrs);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        let span = &result.spans[0];
+
+        assert_eq!(span.attributes.len(), 1);
+        assert_eq!(span.attributes["retry_count"], serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_parse_span_with_parent() {
+        // Build manually to set a non-zero parent_span_id
+        let mut payload = vec![5u8];
+        let len_pos = payload.len();
+        payload.extend_from_slice(&0u16.to_le_bytes());
+
+        // trace_id
+        payload.extend_from_slice(&[0xaa; 16]);
+        // span_id
+        payload.extend_from_slice(&[0xbb; 8]);
+        // parent_span_id (non-zero)
+        payload.extend_from_slice(&[0xcc; 8]);
+
+        payload.push(0); // kind = Internal
+        payload.push(0); // status = Unset
+
+        let filetime = (Utc::now().timestamp() as u64 * 10_000_000) + 116444736000000000;
+        payload.extend_from_slice(&filetime.to_le_bytes());
+        payload.extend_from_slice(&filetime.to_le_bytes());
+
+        payload.push(1); // task_index
+        payload.extend_from_slice(&100u32.to_le_bytes());
+        payload.push(0); // event_count
+        payload.push(0); // attr_count
+
+        let name = "child_span";
+        payload.push(name.len() as u8);
+        payload.extend_from_slice(name.as_bytes());
+        payload.push(0); // status_message empty
+
+        let entry_len = (payload.len() - len_pos - 2) as u16;
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        let span = &result.spans[0];
+
+        assert_eq!(span.name, "child_span");
+        assert_eq!(span.parent_span_id_hex(), "cccccccccccccccc");
+        assert_eq!(span.span_id_hex(), "bbbbbbbbbbbbbbbb");
+        assert_eq!(
+            span.trace_id_hex(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_spans() {
+        let mut payload = Vec::new();
+
+        let span1 = build_span_payload("span_one", 0, 1, &[], &[]);
+        let span2 = build_span_payload("span_two", 1, 0, &[], &[]);
+        payload.extend_from_slice(&span1);
+        payload.extend_from_slice(&span2);
+
+        let result = AdsParser::parse_all(&payload).unwrap();
+        assert_eq!(result.spans.len(), 2);
+        assert_eq!(result.spans[0].name, "span_one");
+        assert_eq!(result.spans[0].kind, SpanKind::Internal);
+        assert_eq!(result.spans[0].status_code, SpanStatusCode::Ok);
+        assert_eq!(result.spans[1].name, "span_two");
+        assert_eq!(result.spans[1].kind, SpanKind::Server);
+        assert_eq!(result.spans[1].status_code, SpanStatusCode::Unset);
+    }
+
+    #[test]
+    fn test_parse_span_incomplete_buffer() {
+        // Just a type byte and partial length
+        let payload = vec![5u8, 0xFF];
+        let result = AdsParser::parse_all(&payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_result_spans_default_empty() {
+        // Verify that parsing a buffer with only log entries
+        // still produces an empty spans vector
+        let payload = build_test_payload("Test", "logger", 2);
+        let result = AdsParser::parse_all(&payload).unwrap();
+        assert!(result.spans.is_empty());
     }
 }

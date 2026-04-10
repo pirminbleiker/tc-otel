@@ -241,9 +241,451 @@ impl LogRecord {
     }
 }
 
+/// OpenTelemetry SpanKind, per the OTEL specification
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum SpanKind {
+    Internal = 0,
+    Server = 1,
+    Client = 2,
+    Producer = 3,
+    Consumer = 4,
+}
+
+impl SpanKind {
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(SpanKind::Internal),
+            1 => Some(SpanKind::Server),
+            2 => Some(SpanKind::Client),
+            3 => Some(SpanKind::Producer),
+            4 => Some(SpanKind::Consumer),
+            _ => None,
+        }
+    }
+
+    pub fn to_otel_string(&self) -> &'static str {
+        match self {
+            SpanKind::Internal => "SPAN_KIND_INTERNAL",
+            SpanKind::Server => "SPAN_KIND_SERVER",
+            SpanKind::Client => "SPAN_KIND_CLIENT",
+            SpanKind::Producer => "SPAN_KIND_PRODUCER",
+            SpanKind::Consumer => "SPAN_KIND_CONSUMER",
+        }
+    }
+}
+
+impl std::fmt::Display for SpanKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpanKind::Internal => write!(f, "Internal"),
+            SpanKind::Server => write!(f, "Server"),
+            SpanKind::Client => write!(f, "Client"),
+            SpanKind::Producer => write!(f, "Producer"),
+            SpanKind::Consumer => write!(f, "Consumer"),
+        }
+    }
+}
+
+/// OpenTelemetry span status code
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum SpanStatusCode {
+    Unset = 0,
+    Ok = 1,
+    Error = 2,
+}
+
+impl SpanStatusCode {
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(SpanStatusCode::Unset),
+            1 => Some(SpanStatusCode::Ok),
+            2 => Some(SpanStatusCode::Error),
+            _ => None,
+        }
+    }
+
+    pub fn to_otel_string(&self) -> &'static str {
+        match self {
+            SpanStatusCode::Unset => "STATUS_CODE_UNSET",
+            SpanStatusCode::Ok => "STATUS_CODE_OK",
+            SpanStatusCode::Error => "STATUS_CODE_ERROR",
+        }
+    }
+}
+
+impl std::fmt::Display for SpanStatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpanStatusCode::Unset => write!(f, "Unset"),
+            SpanStatusCode::Ok => write!(f, "Ok"),
+            SpanStatusCode::Error => write!(f, "Error"),
+        }
+    }
+}
+
+/// An event within a span (e.g. a state machine transition)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEvent {
+    pub name: String,
+    pub timestamp: DateTime<Utc>,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+/// A span entry representing a trace span from a PLC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEntry {
+    pub id: String,
+
+    // Trace identity
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_span_id: String,
+
+    // Span metadata
+    pub name: String,
+    pub kind: SpanKind,
+    pub status_code: SpanStatusCode,
+    pub status_message: String,
+
+    // Timestamps
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+
+    // Source identification (same as LogEntry)
+    pub source: String,
+    pub hostname: String,
+    pub ams_net_id: String,
+    pub ams_source_port: u16,
+
+    // Task metadata
+    pub task_index: i32,
+    pub task_name: String,
+    pub task_cycle_counter: u32,
+
+    // Application metadata
+    pub app_name: String,
+    pub project_name: String,
+
+    // Events (state transitions, annotations)
+    pub events: Vec<SpanEvent>,
+
+    // Attributes (includes state_machine.name, old_state, new_state for transitions)
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+impl SpanEntry {
+    pub fn new(
+        name: String,
+        kind: SpanKind,
+        trace_id: String,
+        span_id: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            trace_id,
+            span_id,
+            parent_span_id: String::new(),
+            name,
+            kind,
+            status_code: SpanStatusCode::Unset,
+            status_message: String::new(),
+            start_time: now,
+            end_time: now,
+            source: String::new(),
+            hostname: String::new(),
+            ams_net_id: String::new(),
+            ams_source_port: 0,
+            task_index: 0,
+            task_name: String::new(),
+            task_cycle_counter: 0,
+            app_name: String::new(),
+            project_name: String::new(),
+            events: Vec::new(),
+            attributes: HashMap::new(),
+        }
+    }
+
+    /// Check if this span represents a state machine transition
+    pub fn is_state_machine_transition(&self) -> bool {
+        self.attributes.contains_key("state_machine.name")
+            && self.attributes.contains_key("state_machine.transition.old_state")
+            && self.attributes.contains_key("state_machine.transition.new_state")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // === SpanKind tests ===
+
+    #[test]
+    fn test_span_kind_conversion() {
+        assert_eq!(SpanKind::from_u8(0), Some(SpanKind::Internal));
+        assert_eq!(SpanKind::from_u8(1), Some(SpanKind::Server));
+        assert_eq!(SpanKind::from_u8(2), Some(SpanKind::Client));
+        assert_eq!(SpanKind::from_u8(3), Some(SpanKind::Producer));
+        assert_eq!(SpanKind::from_u8(4), Some(SpanKind::Consumer));
+        assert_eq!(SpanKind::from_u8(5), None);
+        assert_eq!(SpanKind::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_span_kind_as_u8() {
+        assert_eq!(SpanKind::Internal.as_u8(), 0);
+        assert_eq!(SpanKind::Server.as_u8(), 1);
+        assert_eq!(SpanKind::Client.as_u8(), 2);
+        assert_eq!(SpanKind::Producer.as_u8(), 3);
+        assert_eq!(SpanKind::Consumer.as_u8(), 4);
+    }
+
+    #[test]
+    fn test_span_kind_display() {
+        assert_eq!(SpanKind::Internal.to_string(), "Internal");
+        assert_eq!(SpanKind::Server.to_string(), "Server");
+        assert_eq!(SpanKind::Client.to_string(), "Client");
+        assert_eq!(SpanKind::Producer.to_string(), "Producer");
+        assert_eq!(SpanKind::Consumer.to_string(), "Consumer");
+    }
+
+    #[test]
+    fn test_span_kind_otel_string() {
+        assert_eq!(SpanKind::Internal.to_otel_string(), "SPAN_KIND_INTERNAL");
+        assert_eq!(SpanKind::Server.to_otel_string(), "SPAN_KIND_SERVER");
+        assert_eq!(SpanKind::Client.to_otel_string(), "SPAN_KIND_CLIENT");
+        assert_eq!(SpanKind::Producer.to_otel_string(), "SPAN_KIND_PRODUCER");
+        assert_eq!(SpanKind::Consumer.to_otel_string(), "SPAN_KIND_CONSUMER");
+    }
+
+    // === SpanStatusCode tests ===
+
+    #[test]
+    fn test_span_status_code_conversion() {
+        assert_eq!(SpanStatusCode::from_u8(0), Some(SpanStatusCode::Unset));
+        assert_eq!(SpanStatusCode::from_u8(1), Some(SpanStatusCode::Ok));
+        assert_eq!(SpanStatusCode::from_u8(2), Some(SpanStatusCode::Error));
+        assert_eq!(SpanStatusCode::from_u8(3), None);
+        assert_eq!(SpanStatusCode::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_span_status_code_as_u8() {
+        assert_eq!(SpanStatusCode::Unset.as_u8(), 0);
+        assert_eq!(SpanStatusCode::Ok.as_u8(), 1);
+        assert_eq!(SpanStatusCode::Error.as_u8(), 2);
+    }
+
+    #[test]
+    fn test_span_status_code_display() {
+        assert_eq!(SpanStatusCode::Unset.to_string(), "Unset");
+        assert_eq!(SpanStatusCode::Ok.to_string(), "Ok");
+        assert_eq!(SpanStatusCode::Error.to_string(), "Error");
+    }
+
+    #[test]
+    fn test_span_status_code_otel_string() {
+        assert_eq!(SpanStatusCode::Unset.to_otel_string(), "STATUS_CODE_UNSET");
+        assert_eq!(SpanStatusCode::Ok.to_otel_string(), "STATUS_CODE_OK");
+        assert_eq!(SpanStatusCode::Error.to_otel_string(), "STATUS_CODE_ERROR");
+    }
+
+    // === SpanEvent tests ===
+
+    #[test]
+    fn test_span_event_creation() {
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "state_machine.transition.old_state".to_string(),
+            serde_json::json!("IDLE"),
+        );
+        attrs.insert(
+            "state_machine.transition.new_state".to_string(),
+            serde_json::json!("RUNNING"),
+        );
+
+        let event = SpanEvent {
+            name: "state_transition".to_string(),
+            timestamp: Utc::now(),
+            attributes: attrs,
+        };
+
+        assert_eq!(event.name, "state_transition");
+        assert_eq!(event.attributes.len(), 2);
+        assert_eq!(
+            event.attributes["state_machine.transition.old_state"],
+            serde_json::json!("IDLE")
+        );
+    }
+
+    // === SpanEntry tests ===
+
+    #[test]
+    fn test_span_entry_creation() {
+        let entry = SpanEntry::new(
+            "motor_cycle".to_string(),
+            SpanKind::Internal,
+            "abcdef1234567890abcdef1234567890".to_string(),
+            "1234567890abcdef".to_string(),
+        );
+
+        assert_eq!(entry.name, "motor_cycle");
+        assert_eq!(entry.kind, SpanKind::Internal);
+        assert_eq!(entry.trace_id, "abcdef1234567890abcdef1234567890");
+        assert_eq!(entry.span_id, "1234567890abcdef");
+        assert_eq!(entry.status_code, SpanStatusCode::Unset);
+        assert!(entry.parent_span_id.is_empty());
+        assert!(entry.events.is_empty());
+        assert!(entry.attributes.is_empty());
+        assert!(!entry.id.is_empty());
+    }
+
+    #[test]
+    fn test_span_entry_unique_ids() {
+        let entry1 = SpanEntry::new(
+            "span1".to_string(),
+            SpanKind::Internal,
+            "trace1".to_string(),
+            "span1".to_string(),
+        );
+        let entry2 = SpanEntry::new(
+            "span2".to_string(),
+            SpanKind::Internal,
+            "trace1".to_string(),
+            "span2".to_string(),
+        );
+
+        assert_ne!(entry1.id, entry2.id);
+    }
+
+    #[test]
+    fn test_span_entry_state_machine_transition() {
+        let mut entry = SpanEntry::new(
+            "state_machine_cycle".to_string(),
+            SpanKind::Internal,
+            "trace1".to_string(),
+            "span1".to_string(),
+        );
+
+        // Not a state machine transition yet
+        assert!(!entry.is_state_machine_transition());
+
+        // Add state machine attributes
+        entry.attributes.insert(
+            "state_machine.name".to_string(),
+            serde_json::json!("MotorController"),
+        );
+        // Still not complete
+        assert!(!entry.is_state_machine_transition());
+
+        entry.attributes.insert(
+            "state_machine.transition.old_state".to_string(),
+            serde_json::json!("IDLE"),
+        );
+        // Still not complete
+        assert!(!entry.is_state_machine_transition());
+
+        entry.attributes.insert(
+            "state_machine.transition.new_state".to_string(),
+            serde_json::json!("RUNNING"),
+        );
+        // Now complete
+        assert!(entry.is_state_machine_transition());
+    }
+
+    #[test]
+    fn test_span_entry_with_events() {
+        let mut entry = SpanEntry::new(
+            "motor_cycle".to_string(),
+            SpanKind::Internal,
+            "trace1".to_string(),
+            "span1".to_string(),
+        );
+
+        let event = SpanEvent {
+            name: "state_transition".to_string(),
+            timestamp: Utc::now(),
+            attributes: {
+                let mut a = HashMap::new();
+                a.insert(
+                    "state_machine.transition.old_state".to_string(),
+                    serde_json::json!("IDLE"),
+                );
+                a.insert(
+                    "state_machine.transition.new_state".to_string(),
+                    serde_json::json!("RUNNING"),
+                );
+                a
+            },
+        };
+
+        entry.events.push(event);
+        assert_eq!(entry.events.len(), 1);
+        assert_eq!(entry.events[0].name, "state_transition");
+    }
+
+    #[test]
+    fn test_span_entry_with_metadata() {
+        let mut entry = SpanEntry::new(
+            "pump_cycle".to_string(),
+            SpanKind::Server,
+            "trace1".to_string(),
+            "span1".to_string(),
+        );
+
+        entry.source = "192.168.1.10:851".to_string();
+        entry.hostname = "plc-hub".to_string();
+        entry.task_name = "PumpControl".to_string();
+        entry.task_index = 3;
+        entry.task_cycle_counter = 500;
+        entry.app_name = "HydraulicSystem".to_string();
+        entry.project_name = "ProductionLine".to_string();
+        entry.parent_span_id = "parent1234".to_string();
+        entry.status_code = SpanStatusCode::Ok;
+
+        assert_eq!(entry.source, "192.168.1.10:851");
+        assert_eq!(entry.hostname, "plc-hub");
+        assert_eq!(entry.task_name, "PumpControl");
+        assert_eq!(entry.kind, SpanKind::Server);
+        assert_eq!(entry.status_code, SpanStatusCode::Ok);
+        assert_eq!(entry.parent_span_id, "parent1234");
+    }
+
+    #[test]
+    fn test_span_entry_clone() {
+        let mut entry = SpanEntry::new(
+            "test_span".to_string(),
+            SpanKind::Internal,
+            "trace1".to_string(),
+            "span1".to_string(),
+        );
+        entry.attributes.insert(
+            "state_machine.name".to_string(),
+            serde_json::json!("TestFSM"),
+        );
+        entry.events.push(SpanEvent {
+            name: "event1".to_string(),
+            timestamp: Utc::now(),
+            attributes: HashMap::new(),
+        });
+
+        let cloned = entry.clone();
+        assert_eq!(cloned.name, entry.name);
+        assert_eq!(cloned.attributes, entry.attributes);
+        assert_eq!(cloned.events.len(), entry.events.len());
+    }
+
+    // === Original LogLevel tests ===
 
     #[test]
     fn test_log_level_conversion() {
