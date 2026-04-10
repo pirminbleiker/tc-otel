@@ -141,7 +141,8 @@ pub struct CycleTimeStats {
 
 /// Thread-safe tracker for per-task cycle time metrics.
 ///
-/// Feed it observations via [`record`] and read aggregated stats via [`all_stats`].
+/// Feed it observations via [`CycleTimeTracker::record`] and read aggregated
+/// stats via [`CycleTimeTracker::all_stats`].
 pub struct CycleTimeTracker {
     tasks: RwLock<HashMap<TaskKey, TaskCycleState>>,
     window_size: usize,
