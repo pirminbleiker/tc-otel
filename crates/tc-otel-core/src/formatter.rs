@@ -17,7 +17,7 @@ impl MessageFormatter {
 
     /// Format a message with both positional and named arguments.
     /// Named placeholders like {time} are matched to arguments by order of appearance
-    /// (Serilog/MessageTemplates style): first placeholder → arg[0], second → arg[1], etc.
+    /// (Serilog/MessageTemplates style): first placeholder → arg\[0\], second → arg\[1\], etc.
     /// Numeric placeholders like {0}, {1} are matched by index directly.
     pub fn format_with_context(
         template: &str,
@@ -135,6 +135,7 @@ impl MessageFormatter {
     }
 
     /// Convert a JSON value to string representation
+    #[allow(dead_code)]
     fn value_to_string(value: &serde_json::Value) -> String {
         let mut s = String::with_capacity(32);
         write_value(&mut s, value);

@@ -51,7 +51,7 @@ impl AmsTcpServer {
 
     pub async fn start(&self) -> crate::Result<()> {
         let tcp_addr = format!("{}:{}", self.host, self.port);
-        let udp_addr = format!("{}:{}", self.host, self.port + 1); // 48899
+        let _udp_addr = format!("{}:{}", self.host, self.port + 1); // 48899
 
         let tcp_listener = TcpListener::bind(&tcp_addr)
             .await
