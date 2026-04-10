@@ -1,0 +1,17 @@
+apiVersion: v2
+name: tc-otel
+description: TwinCAT OpenTelemetry collector — converts ADS/AMS traffic to OTLP logs
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - twincat
+  - opentelemetry
+  - ads
+  - otel
+  - plc
+home: https://github.com/pirminbleiker/tc-otel
+sources:
+  - https://github.com/pirminbleiker/tc-otel
+maintainers:
+  - name: tc-otel Contributors
