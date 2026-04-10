@@ -73,6 +73,8 @@ fn test_e2e_ads_to_log_entry() {
         app_name: "MotorControl".to_string(),
         project_name: "IndustrialApp".to_string(),
         online_change_count: 1,
+        trace_id: [0u8; 16],
+        span_id: [0u8; 8],
         arguments: HashMap::new(),
         context: HashMap::new(),
     };

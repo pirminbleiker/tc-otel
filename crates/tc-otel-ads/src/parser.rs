@@ -151,6 +151,34 @@ impl AdsParser {
                         }
                     }
                 }
+                6 => {
+                    // v2 log entry with trace context
+                    let entry_pos = reader.pos;
+                    match Self::parse_v2_traced_from_reader(&mut reader) {
+                        Ok(entry) => entries.push(entry),
+                        Err(e) => {
+                            if !entries.is_empty() || !registrations.is_empty() {
+                                tracing::debug!(
+                                    "Partial traced log at buffer end ({} bytes remaining): {}",
+                                    reader.remaining(),
+                                    e
+                                );
+                                break;
+                            }
+                            // Try to skip using entry_length if available
+                            if reader.remaining() >= 3 {
+                                reader.pos = entry_pos + 1; // Skip type byte
+                                if let Ok(entry_len) = reader.read_u16() {
+                                    reader.pos = entry_pos + 1 + 2 + entry_len as usize;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
                 5 => {
                     // Span entry (completed span)
                     match Self::parse_span_from_reader(&mut reader) {
@@ -292,6 +320,8 @@ impl AdsParser {
             app_name,
             project_name,
             online_change_count,
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
             arguments,
             context,
         })
@@ -380,6 +410,112 @@ impl AdsParser {
             app_name: String::new(),     // Will be filled by registry lookup
             project_name: String::new(), // Will be filled by registry lookup
             online_change_count: 0,      // Will be filled by registry lookup
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
+            arguments,
+            context,
+        })
+    }
+
+    /// Parse a v2 log entry with trace context (message type 0x06)
+    ///
+    /// Wire format:
+    /// [type: u8 = 0x06] [entry_length: u16 LE]
+    /// [trace_id: 16 bytes] [span_id: 8 bytes]
+    /// ...rest identical to v2 format (level, timestamps, etc.)...
+    fn parse_v2_traced_from_reader(reader: &mut BytesReader) -> Result<AdsLogEntry> {
+        // Type byte (must be 6)
+        let type_byte = reader.read_u8()?;
+        if type_byte != 6 {
+            return Err(AdsError::ParseError(format!(
+                "Invalid traced log type: {}",
+                type_byte
+            )));
+        }
+
+        // Entry length (2 bytes LE)
+        let entry_length = reader.read_u16()? as usize;
+        let entry_start = reader.pos;
+
+        // Trace context: trace_id (16 bytes) + span_id (8 bytes)
+        let trace_id_bytes = reader.read_bytes(16)?;
+        let mut trace_id = [0u8; 16];
+        trace_id.copy_from_slice(trace_id_bytes);
+
+        let span_id_bytes = reader.read_bytes(8)?;
+        let mut span_id = [0u8; 8];
+        span_id.copy_from_slice(span_id_bytes);
+
+        // From here, identical to v2 format
+        let level_byte = reader.read_u8()?;
+        let level = LogLevel::from_u8(level_byte).ok_or(AdsError::ParseError(format!(
+            "Invalid log level: {}",
+            level_byte
+        )))?;
+
+        let plc_timestamp = reader.read_filetime()?;
+        let clock_timestamp = reader.read_filetime()?;
+
+        let task_index = reader.read_u8()? as i32;
+        let cycle_counter = reader.read_u32()?;
+        let arg_count = reader.read_u8()? as usize;
+        let context_count = reader.read_u8()? as usize;
+
+        let message = reader.read_string()?;
+        let logger = reader.read_string()?;
+
+        // Arguments
+        let mut arguments = HashMap::with_capacity(arg_count);
+        for arg_idx in 0..arg_count {
+            if arguments.len() >= MAX_ARGUMENTS {
+                return Err(AdsError::ParseError("Too many arguments".to_string()));
+            }
+            let type_id = reader.read_u8()?;
+            let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+            let value = reader.read_value_with_type(type_id_i32)?;
+            arguments.insert(arg_idx + 1, value);
+        }
+
+        // Context
+        let mut context = HashMap::with_capacity(context_count * 2);
+        let mut context_idx = 0;
+        for _ in 0..context_count {
+            if context_idx >= MAX_CONTEXT_VARS {
+                return Err(AdsError::ParseError(
+                    "Too many context variables".to_string(),
+                ));
+            }
+            let scope = reader.read_u8()?;
+            let prop_count = reader.read_u8()?;
+
+            for _ in 0..prop_count {
+                let name = reader.read_string()?;
+                let type_id = reader.read_u8()?;
+                let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+                let value = reader.read_value_with_type(type_id_i32)?;
+                context.insert(format!("scope_{}_{}", scope, name), value);
+                context_idx += 1;
+            }
+        }
+
+        // Sync reader position to entry boundary
+        reader.pos = entry_start + entry_length;
+
+        Ok(AdsLogEntry {
+            version: AdsProtocolVersion::V2,
+            message,
+            logger,
+            level,
+            plc_timestamp,
+            clock_timestamp,
+            task_index,
+            task_name: String::new(),
+            task_cycle_counter: cycle_counter,
+            app_name: String::new(),
+            project_name: String::new(),
+            online_change_count: 0,
+            trace_id,
+            span_id,
             arguments,
             context,
         })

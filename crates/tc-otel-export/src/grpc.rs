@@ -299,6 +299,18 @@ pub fn convert_request_to_entries(request: &ExportLogsServiceRequest) -> Vec<Log
                     }
                 }
 
+                // Propagate trace context from OTLP log record
+                if log_record.trace_id.len() == 16 {
+                    let mut trace_id = [0u8; 16];
+                    trace_id.copy_from_slice(&log_record.trace_id);
+                    entry.trace_id = trace_id;
+                }
+                if log_record.span_id.len() == 8 {
+                    let mut span_id = [0u8; 8];
+                    span_id.copy_from_slice(&log_record.span_id);
+                    entry.span_id = span_id;
+                }
+
                 // Convert log attributes to context
                 let mut context = HashMap::new();
                 for kv in &log_record.attributes {

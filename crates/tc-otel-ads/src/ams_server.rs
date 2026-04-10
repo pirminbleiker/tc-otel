@@ -538,6 +538,8 @@ impl AmsTcpServer {
                                 log_entry.context = ads_entry.context;
                                 log_entry.ams_net_id = source_net_id.clone();
                                 log_entry.ams_source_port = source_port;
+                                log_entry.trace_id = ads_entry.trace_id;
+                                log_entry.span_id = ads_entry.span_id;
 
                                 let _ = log_tx.send(log_entry).await;
                             }

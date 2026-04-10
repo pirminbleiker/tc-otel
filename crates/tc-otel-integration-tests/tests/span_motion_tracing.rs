@@ -14,6 +14,7 @@ use tc_otel_core::{SpanEntry, SpanEvent, SpanKind, SpanStatusCode};
 
 /// Build a minimal ADS binary span (type 0x05) with the given fields.
 /// Returns the raw bytes that AdsParser::parse_all can consume.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn build_ads_span_bytes(
     trace_id: [u8; 16],
     span_id: [u8; 8],
