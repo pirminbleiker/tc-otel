@@ -1,12 +1,7 @@
 [advisories]
-unmaintained = "warn"
-unsound = "deny"
-yanked = "deny"
-notice = "warn"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
@@ -21,7 +16,6 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
 ]
-copyleft = "deny"
 
 [bans]
 multiple-versions = "warn"
