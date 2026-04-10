@@ -37,6 +37,16 @@ impl TaskRegistry {
         self.metadata.read().unwrap().is_empty()
     }
 
+    /// Get all registered tasks as a snapshot
+    pub fn all_tasks(&self) -> Vec<(RegistrationKey, TaskMetadata)> {
+        self.metadata
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
     /// Clear all registrations
     pub fn clear(&self) {
         self.metadata.write().unwrap().clear();
@@ -117,6 +127,49 @@ mod tests {
         };
 
         assert!(registry.lookup(&key).is_none());
+    }
+
+    #[test]
+    fn test_all_tasks() {
+        let registry = TaskRegistry::new();
+        let key1 = RegistrationKey {
+            ams_net_id: "5.80.201.232.1.1".to_string(),
+            ams_source_port: 851,
+            task_index: 0,
+        };
+        let key2 = RegistrationKey {
+            ams_net_id: "5.80.201.232.1.1".to_string(),
+            ams_source_port: 851,
+            task_index: 1,
+        };
+        let metadata1 = TaskMetadata {
+            task_name: "Task1".to_string(),
+            app_name: "App".to_string(),
+            project_name: "Project".to_string(),
+            online_change_count: 0,
+        };
+        let metadata2 = TaskMetadata {
+            task_name: "Task2".to_string(),
+            app_name: "App".to_string(),
+            project_name: "Project".to_string(),
+            online_change_count: 0,
+        };
+
+        registry.register(key1, metadata1);
+        registry.register(key2, metadata2);
+
+        let all = registry.all_tasks();
+        assert_eq!(all.len(), 2);
+        let names: Vec<_> = all.iter().map(|(_, m)| m.task_name.as_str()).collect();
+        assert!(names.contains(&"Task1"));
+        assert!(names.contains(&"Task2"));
+    }
+
+    #[test]
+    fn test_all_tasks_empty() {
+        let registry = TaskRegistry::new();
+        let all = registry.all_tasks();
+        assert!(all.is_empty());
     }
 
     #[test]

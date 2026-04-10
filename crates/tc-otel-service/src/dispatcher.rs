@@ -5,18 +5,20 @@
 //! HTTP overhead and CPU usage.
 
 use anyhow::Result;
+use std::sync::Arc;
 use std::time::Duration;
-use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter};
+use tc_otel_core::{AppSettings, DiagnosticStats, LogEntry, LogRecord, MessageFormatter};
 use tokio::sync::mpsc;
 
 /// Log dispatcher - converts LogEntries and sends them to a batched export worker
 #[derive(Clone)]
 pub struct LogDispatcher {
     export_tx: mpsc::Sender<LogRecord>,
+    stats: Arc<DiagnosticStats>,
 }
 
 impl LogDispatcher {
-    pub async fn new(settings: &AppSettings) -> Result<Self> {
+    pub async fn new(settings: &AppSettings, stats: Arc<DiagnosticStats>) -> Result<Self> {
         // ENV override for endpoint, otherwise use config
         let endpoint = std::env::var("LOG4TC_EXPORT_ENDPOINT")
             .unwrap_or_else(|_| settings.export.endpoint.clone());
@@ -28,11 +30,13 @@ impl LogDispatcher {
         let (export_tx, export_rx) = mpsc::channel::<LogRecord>(settings.service.channel_capacity);
 
         // Spawn background batch worker
+        let worker_stats = stats.clone();
         tokio::spawn(Self::batch_worker(
             export_rx,
             endpoint,
             batch_size,
             flush_interval,
+            worker_stats,
         ));
 
         tracing::info!(
@@ -41,7 +45,7 @@ impl LogDispatcher {
             flush_interval.as_millis()
         );
 
-        Ok(Self { export_tx })
+        Ok(Self { export_tx, stats })
     }
 
     /// Dispatch a log entry - formats and sends to export worker (non-blocking)
@@ -58,7 +62,10 @@ impl LogDispatcher {
 
         // Non-blocking send - drops if channel full (backpressure)
         if self.export_tx.try_send(record).is_err() {
+            self.stats.inc_logs_dropped();
             tracing::warn!("Export channel full, dropping log");
+        } else {
+            self.stats.inc_logs_dispatched();
         }
 
         Ok(())
@@ -70,6 +77,7 @@ impl LogDispatcher {
         endpoint: String,
         batch_size: usize,
         flush_interval: Duration,
+        stats: Arc<DiagnosticStats>,
     ) {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -91,9 +99,14 @@ impl LogDispatcher {
                     batch.push(record);
                     if batch.len() >= batch_size {
                         match Self::flush_batch(&client, &endpoint, &batch, &mut payload_buf).await {
-                            Ok(n) => total_sent += n as u64,
+                            Ok(n) => {
+                                total_sent += n as u64;
+                                stats.add_logs_exported(n as u64);
+                                stats.inc_export_batches();
+                            }
                             Err(e) => {
                                 total_errors += 1;
+                                stats.inc_export_errors();
                                 tracing::error!("Batch export error: {}", e);
                             }
                         }
@@ -104,9 +117,14 @@ impl LogDispatcher {
                 _ = interval.tick() => {
                     if !batch.is_empty() {
                         match Self::flush_batch(&client, &endpoint, &batch, &mut payload_buf).await {
-                            Ok(n) => total_sent += n as u64,
+                            Ok(n) => {
+                                total_sent += n as u64;
+                                stats.add_logs_exported(n as u64);
+                                stats.inc_export_batches();
+                            }
                             Err(e) => {
                                 total_errors += 1;
+                                stats.inc_export_errors();
                                 tracing::error!("Batch export error: {}", e);
                             }
                         }

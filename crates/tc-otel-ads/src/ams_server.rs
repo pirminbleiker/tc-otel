@@ -57,6 +57,11 @@ impl AmsTcpServer {
         self
     }
 
+    pub fn with_connection_manager(mut self, conn_manager: Arc<ConnectionManager>) -> Self {
+        self.conn_manager = conn_manager;
+        self
+    }
+
     /// Get a reference to the connection manager
     pub fn connection_manager(&self) -> &Arc<ConnectionManager> {
         &self.conn_manager

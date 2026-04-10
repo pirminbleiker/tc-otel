@@ -202,6 +202,16 @@ impl ConnectionManager {
         states.get(ip).map(|s| s.active_connections).unwrap_or(0)
     }
 
+    /// Get all IPs with active connections and their counts.
+    pub fn connected_ips(&self) -> Vec<(IpAddr, usize)> {
+        let states = self.ip_states.lock().unwrap();
+        states
+            .iter()
+            .filter(|(_, s)| s.active_connections > 0)
+            .map(|(ip, s)| (*ip, s.active_connections))
+            .collect()
+    }
+
     /// Initiate graceful shutdown. New connections will be rejected.
     /// Returns a future that resolves when all active connections are closed
     /// or the shutdown timeout expires.
@@ -611,6 +621,37 @@ mod tests {
         // Should timeout because permit is never dropped
         let drained = mgr.wait_for_drain().await;
         assert!(!drained, "Should timeout with stubborn connection");
+    }
+
+    // ---- Connected IPs ----
+
+    #[test]
+    fn test_connected_ips() {
+        let config = ConnectionConfig {
+            max_connections: 100,
+            max_connections_per_ip: 10,
+            rate_limit_per_sec_per_ip: 100,
+            ..Default::default()
+        };
+        let mgr = ConnectionManager::new(config);
+
+        let _p1 = mgr.try_acquire(ip(1)).unwrap();
+        let _p2 = mgr.try_acquire(ip(1)).unwrap();
+        let _p3 = mgr.try_acquire(ip(2)).unwrap();
+
+        let ips = mgr.connected_ips();
+        assert_eq!(ips.len(), 2);
+
+        let ip1_count = ips.iter().find(|(i, _)| *i == ip(1)).map(|(_, c)| *c);
+        let ip2_count = ips.iter().find(|(i, _)| *i == ip(2)).map(|(_, c)| *c);
+        assert_eq!(ip1_count, Some(2));
+        assert_eq!(ip2_count, Some(1));
+    }
+
+    #[test]
+    fn test_connected_ips_empty() {
+        let mgr = ConnectionManager::new(ConnectionConfig::default());
+        assert!(mgr.connected_ips().is_empty());
     }
 
     // ---- Per-IP tracking ----

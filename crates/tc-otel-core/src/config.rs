@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub export: ExportConfig,
     pub outputs: Vec<OutputConfig>,
     pub service: ServiceConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Logging configuration
@@ -442,6 +444,50 @@ impl Default for ExportConfig {
     }
 }
 
+/// Web UI configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Enable web UI (default: true)
+    #[serde(default = "default_web_enabled")]
+    pub enabled: bool,
+    /// Web UI listening address (default: "127.0.0.1")
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    /// Web UI listening port (default: 9464)
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    /// Maximum number of tag subscriptions (default: 500)
+    #[serde(default = "default_max_subscriptions")]
+    pub max_subscriptions: usize,
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+
+fn default_web_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_web_port() -> u16 {
+    9464
+}
+
+fn default_max_subscriptions() -> usize {
+    500
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_enabled(),
+            host: default_web_host(),
+            port: default_web_port(),
+            max_subscriptions: default_max_subscriptions(),
+        }
+    }
+}
+
 /// Service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -654,6 +700,35 @@ mod tests {
     }
 
     #[test]
+    fn test_web_config_defaults() {
+        let config = WebConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 9464);
+        assert_eq!(config.max_subscriptions, 500);
+    }
+
+    #[test]
+    fn test_web_config_serialization() {
+        let config = WebConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: WebConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.enabled, deserialized.enabled);
+        assert_eq!(config.host, deserialized.host);
+        assert_eq!(config.port, deserialized.port);
+        assert_eq!(config.max_subscriptions, deserialized.max_subscriptions);
+    }
+
+    #[test]
+    fn test_web_config_serde_default() {
+        // When web section is missing from JSON, defaults should be used
+        let json = r#"{"logging":{"log_level":"info","format":"text"},"receiver":{"host":"127.0.0.1","http_port":4318,"grpc_port":4317,"max_body_size":4194304,"request_timeout_secs":30},"outputs":[],"service":{"name":"tc-otel","display_name":"tc-otel","channel_capacity":50000,"shutdown_timeout_secs":30}}"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.web.enabled);
+        assert_eq!(settings.web.port, 9464);
+    }
+
+    #[test]
     fn test_app_settings_structure() {
         let settings = AppSettings {
             logging: LoggingConfig {
@@ -665,6 +740,7 @@ mod tests {
             export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
+            web: WebConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");

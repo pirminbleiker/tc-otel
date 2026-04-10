@@ -34,5 +34,11 @@
     "worker_threads": null,
     "channel_capacity": 50000,
     "shutdown_timeout_secs": 30
+  },
+  "web": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 9464,
+    "max_subscriptions": 500
   }
 }

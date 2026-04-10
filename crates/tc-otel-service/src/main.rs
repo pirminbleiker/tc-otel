@@ -10,6 +10,7 @@ use tc_otel_core::AppSettings;
 
 mod dispatcher;
 mod service;
+mod web;
 
 use service::Log4TcService;
 
