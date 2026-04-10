@@ -14,6 +14,8 @@ pub struct AppSettings {
     pub service: ServiceConfig,
     #[serde(default)]
     pub web: WebConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 /// Logging configuration
@@ -485,6 +487,33 @@ impl Default for WebConfig {
     }
 }
 
+/// Metrics configuration (cycle time tracking, etc.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// Enable task cycle time tracking (default: true)
+    #[serde(default = "default_cycle_time_enabled")]
+    pub cycle_time_enabled: bool,
+    /// Rolling window size for cycle time statistics (default: 1000)
+    #[serde(default = "default_cycle_time_window")]
+    pub cycle_time_window: usize,
+}
+
+fn default_cycle_time_enabled() -> bool {
+    true
+}
+fn default_cycle_time_window() -> usize {
+    1000
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            cycle_time_enabled: default_cycle_time_enabled(),
+            cycle_time_window: default_cycle_time_window(),
+        }
+    }
+}
+
 /// Service configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -709,10 +738,26 @@ mod tests {
             outputs: vec![],
             service: ServiceConfig::default(),
             web: WebConfig::default(),
+            metrics: MetricsConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");
         assert!(settings.outputs.is_empty());
+    }
+
+    #[test]
+    fn test_metrics_config_defaults() {
+        let config = MetricsConfig::default();
+        assert!(config.cycle_time_enabled);
+        assert_eq!(config.cycle_time_window, 1000);
+    }
+
+    #[test]
+    fn test_metrics_config_serde_defaults() {
+        let json = "{}";
+        let config: MetricsConfig = serde_json::from_str(json).unwrap();
+        assert!(config.cycle_time_enabled);
+        assert_eq!(config.cycle_time_window, 1000);
     }
 
     #[test]

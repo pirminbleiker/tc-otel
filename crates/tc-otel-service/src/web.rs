@@ -19,6 +19,8 @@ use std::time::Instant;
 use tc_otel_ads::{AdsSymbolEntry, ConnectionManager, TaskRegistry};
 use tc_otel_core::WebConfig;
 
+use crate::cycle_time::CycleTimeTracker;
+
 /// Shared diagnostic counters for the service
 #[derive(Debug)]
 pub struct DiagnosticStats {
@@ -171,6 +173,7 @@ pub struct WebState {
     pub task_registry: Arc<TaskRegistry>,
     pub subscriptions: Arc<SubscriptionManager>,
     pub symbols: Arc<SymbolStore>,
+    pub cycle_tracker: Arc<CycleTimeTracker>,
     pub service_name: String,
 }
 
@@ -414,6 +417,12 @@ async fn get_symbol_by_name(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+async fn cycle_metrics(
+    State(state): State<WebState>,
+) -> Json<Vec<crate::cycle_time::CycleTimeStats>> {
+    Json(state.cycle_tracker.all_stats())
+}
+
 async fn dashboard() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -434,6 +443,7 @@ pub fn router(state: WebState) -> Router {
         .route("/api/subscriptions", delete(unsubscribe))
         .route("/api/symbols", get(get_symbols))
         .route("/api/symbols/:name", get(get_symbol_by_name))
+        .route("/api/cycle-metrics", get(cycle_metrics))
         .with_state(state)
 }
 
@@ -514,6 +524,11 @@ td{font-size:.9rem}
 </div>
 
 <div class="section">
+<h2>Task Cycle Time</h2>
+<table><thead><tr><th>AMS Net ID</th><th>Task</th><th>Avg (&mu;s)</th><th>Min (&mu;s)</th><th>Max (&mu;s)</th><th>Jitter (&mu;s)</th><th>Samples</th><th>Total Cycles</th></tr></thead><tbody id="cycle-body"></tbody></table>
+</div>
+
+<div class="section">
 <h2>Tag Subscriptions <span id="sub-count"></span></h2>
 <div class="tag-input">
 <input id="tag-input" placeholder="Enter tag name (e.g. GVL.bMotorRunning)" onkeydown="if(event.key==='Enter')addTag()">
@@ -540,9 +555,10 @@ function fmtUptime(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s
 
 async function refresh(){
   try{
-    const[st,cn,tk,sb]=await Promise.all([
+    const[st,cn,tk,sb,cy]=await Promise.all([
       fetchJson('/api/status'),fetchJson('/api/connections'),
-      fetchJson('/api/tasks'),fetchJson('/api/subscriptions')
+      fetchJson('/api/tasks'),fetchJson('/api/subscriptions'),
+      fetchJson('/api/cycle-metrics')
     ]);
     document.getElementById('stats').innerHTML=`
       <div class="card"><div class="label">Status</div><div class="value ok">${st.status}</div></div>
@@ -556,6 +572,7 @@ async function refresh(){
     document.getElementById('uptime').textContent='Uptime: '+fmtUptime(st.uptime_secs);
     document.getElementById('conn-body').innerHTML=cn.length?cn.map(c=>`<tr><td>${c.ip}</td><td>${c.count}</td></tr>`).join(''):'<tr><td colspan="2" style="color:#64748b">No active connections</td></tr>';
     document.getElementById('task-body').innerHTML=tk.length?tk.map(t=>`<tr><td>${t.ams_net_id}</td><td>${t.ams_source_port}</td><td>${t.task_name}</td><td>${t.app_name}</td><td>${t.project_name}</td><td>${t.online_change_count}</td></tr>`).join(''):'<tr><td colspan="6" style="color:#64748b">No registered tasks</td></tr>';
+    document.getElementById('cycle-body').innerHTML=cy.length?cy.map(c=>`<tr><td>${c.ams_net_id}</td><td>${c.task_name} [${c.task_index}]</td><td>${c.avg_us.toFixed(1)}</td><td>${c.min_us.toFixed(1)}</td><td>${c.max_us.toFixed(1)}</td><td>${c.jitter_us.toFixed(1)}</td><td>${c.sample_count}</td><td>${c.total_cycles.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="8" style="color:#64748b">No cycle data yet</td></tr>';
     document.getElementById('sub-count').textContent=`(${sb.count}/${sb.max})`;
     document.getElementById('tag-list').innerHTML=sb.tags.map(t=>`<span class="tag">${t}<span class="remove" onclick="removeTag('${t}')">&times;</span></span>`).join('');
     document.getElementById('last-update').textContent='Last update: '+new Date().toLocaleTimeString();
@@ -612,6 +629,7 @@ mod tests {
             task_registry: Arc::new(TaskRegistry::new()),
             subscriptions: Arc::new(SubscriptionManager::new(500)),
             symbols: Arc::new(SymbolStore::new()),
+            cycle_tracker: Arc::new(CycleTimeTracker::new(1000)),
             service_name: "test-service".to_string(),
         }
     }
@@ -1081,6 +1099,59 @@ mod tests {
         assert_eq!(json["type_name"], "BOOL");
         assert_eq!(json["size"], 1);
         assert_eq!(json["comment"], "Test flag");
+    }
+
+    #[tokio::test]
+    async fn test_cycle_metrics_endpoint_empty() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/cycle-metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cycle_metrics_endpoint_with_data() {
+        let state = test_state();
+        let t0 = chrono::Utc::now();
+        let t1 = t0 + chrono::Duration::milliseconds(1);
+        state
+            .cycle_tracker
+            .record("5.80.201.232.1.1", 0, "PlcTask", 100, t0);
+        state
+            .cycle_tracker
+            .record("5.80.201.232.1.1", 0, "PlcTask", 101, t1);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/api/cycle-metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["task_name"], "PlcTask");
+        assert_eq!(json[0]["task_index"], 0);
+        assert!(json[0]["avg_us"].as_f64().unwrap() > 0.0);
+        assert!(json[0]["min_us"].as_f64().unwrap() > 0.0);
+        assert!(json[0]["max_us"].as_f64().unwrap() > 0.0);
     }
 
     #[tokio::test]
