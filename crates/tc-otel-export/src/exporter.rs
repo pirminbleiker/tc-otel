@@ -243,6 +243,24 @@ impl OtelExporter {
         let resource_logs = records
             .iter()
             .map(|record| {
+                let mut log_record = json!({
+                    "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+                    "body": {
+                        "stringValue": record.body.as_str().unwrap_or("")
+                    },
+                    "severityNumber": record.severity_number,
+                    "severityText": record.severity_text.clone(),
+                    "attributes": Self::to_otlp_attributes(&record.log_attributes)
+                });
+
+                // Include trace context in OTLP log record when present
+                if !record.trace_id.is_empty() {
+                    log_record["traceId"] = json!(record.trace_id);
+                }
+                if !record.span_id.is_empty() {
+                    log_record["spanId"] = json!(record.span_id);
+                }
+
                 json!({
                     "resource": {
                         "attributes": Self::to_otlp_attributes(&record.resource_attributes)
@@ -253,17 +271,7 @@ impl OtelExporter {
                                 "name": "tc-otel",
                                 "attributes": Self::to_otlp_attributes(&record.scope_attributes)
                             },
-                            "logRecords": [
-                                {
-                                    "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
-                                    "body": {
-                                        "stringValue": record.body.as_str().unwrap_or("")
-                                    },
-                                    "severityNumber": record.severity_number,
-                                    "severityText": record.severity_text.clone(),
-                                    "attributes": Self::to_otlp_attributes(&record.log_attributes)
-                                }
-                            ]
+                            "logRecords": [log_record]
                         }
                     ]
                 })
@@ -316,6 +324,8 @@ mod tests {
                 );
                 map
             },
+            trace_id: String::new(),
+            span_id: String::new(),
             scope_attributes: Default::default(),
             log_attributes: Default::default(),
         };
@@ -380,6 +390,8 @@ mod tests {
                 body: serde_json::json!("Message 1"),
                 severity_number: 9,
                 severity_text: "INFO".to_string(),
+                trace_id: String::new(),
+                span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
@@ -389,6 +401,8 @@ mod tests {
                 body: serde_json::json!("Message 2"),
                 severity_number: 17,
                 severity_text: "ERROR".to_string(),
+                trace_id: String::new(),
+                span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
@@ -416,6 +430,8 @@ mod tests {
             body: serde_json::json!("Log message"),
             severity_number: 9,
             severity_text: "INFO".to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
             resource_attributes: resource_attrs,
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: log_attrs,
@@ -436,6 +452,8 @@ mod tests {
             body: serde_json::json!("Test"),
             severity_number: 9,
             severity_text: "INFO".to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),
@@ -492,6 +510,8 @@ mod tests {
             body: serde_json::json!("Message with special chars: <>&\"'"),
             severity_number: 9,
             severity_text: "INFO".to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),

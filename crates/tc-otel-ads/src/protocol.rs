@@ -49,6 +49,8 @@ pub struct AdsLogEntry {
     pub app_name: String,
     pub project_name: String,
     pub online_change_count: u32,
+    pub trace_id: [u8; 16], // Trace context (all zeros = no trace)
+    pub span_id: [u8; 8],   // Span context (all zeros = no span)
     pub arguments: HashMap<usize, serde_json::Value>,
     pub context: HashMap<String, serde_json::Value>,
 }

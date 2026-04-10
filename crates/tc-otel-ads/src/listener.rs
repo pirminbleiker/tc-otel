@@ -196,6 +196,8 @@ impl AdsListener {
         entry.online_change_count = ads_entry.online_change_count;
         entry.arguments = ads_entry.arguments;
         entry.context = ads_entry.context;
+        entry.trace_id = ads_entry.trace_id;
+        entry.span_id = ads_entry.span_id;
 
         entry
     }
@@ -221,6 +223,8 @@ mod tests {
             app_name: "TestApp".to_string(),
             project_name: "TestProject".to_string(),
             online_change_count: 0,
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
             arguments: std::collections::HashMap::new(),
             context: std::collections::HashMap::new(),
         };

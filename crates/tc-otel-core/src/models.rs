@@ -294,6 +294,10 @@ pub struct LogEntry {
     pub project_name: String,     // Project name
     pub online_change_count: u32, // Online changes
 
+    // Trace context (for log-trace correlation)
+    pub trace_id: [u8; 16], // W3C trace ID (all zeros = no trace context)
+    pub span_id: [u8; 8],   // W3C span ID (all zeros = no span context)
+
     // Variable data
     pub arguments: HashMap<usize, serde_json::Value>, // Positional arguments
     pub context: HashMap<String, serde_json::Value>,  // Context properties
@@ -324,9 +328,26 @@ impl LogEntry {
             app_name: String::new(),
             project_name: String::new(),
             online_change_count: 0,
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
             arguments: HashMap::new(),
             context: HashMap::new(),
         }
+    }
+
+    /// Check if this log entry has trace context (non-zero trace_id)
+    pub fn has_trace_context(&self) -> bool {
+        self.trace_id != [0u8; 16]
+    }
+
+    /// Format trace_id as lowercase hex string (32 chars)
+    pub fn trace_id_hex(&self) -> String {
+        self.trace_id.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Format span_id as lowercase hex string (16 chars)
+    pub fn span_id_hex(&self) -> String {
+        self.span_id.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }
 
@@ -337,6 +358,8 @@ pub struct LogRecord {
     pub body: serde_json::Value,
     pub severity_number: i32,
     pub severity_text: String,
+    pub trace_id: String,  // Hex-encoded trace ID (empty = no trace context)
+    pub span_id: String,   // Hex-encoded span ID (empty = no span context)
     pub resource_attributes: HashMap<String, serde_json::Value>,
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub log_attributes: HashMap<String, serde_json::Value>,
@@ -346,6 +369,13 @@ impl LogRecord {
     pub fn from_log_entry(entry: LogEntry) -> Self {
         let severity_number = entry.level.to_otel_severity_number();
         let severity_text = entry.level.to_otel_severity_text().to_string();
+
+        // Trace context: capture hex IDs before entry fields are moved
+        let (trace_id, span_id) = if entry.has_trace_context() {
+            (entry.trace_id_hex(), entry.span_id_hex())
+        } else {
+            (String::new(), String::new())
+        };
 
         // Pre-allocate resource attributes with expected capacity
         let mut resource_attributes = HashMap::with_capacity(5);
@@ -423,6 +453,8 @@ impl LogRecord {
             body: serde_json::Value::String(entry.message),
             severity_number,
             severity_text,
+            trace_id,
+            span_id,
             resource_attributes,
             scope_attributes,
             log_attributes,
