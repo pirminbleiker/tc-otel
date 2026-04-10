@@ -60,7 +60,7 @@ tc-otel-service = { path = "crates/tc-otel-service" }
 
 # Utilities
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 bytes = "1.5"
