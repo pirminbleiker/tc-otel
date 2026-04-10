@@ -41,7 +41,7 @@ hyper = "1.0"
 hyper-util = "0.1"
 http = "1.0"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 
 # Logging/Tracing
