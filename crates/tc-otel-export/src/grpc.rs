@@ -359,7 +359,7 @@ impl LogsService for LogsServiceImpl {
         let mut rejected = 0i64;
 
         for entry in entries {
-            if let Err(_) = self.log_tx.try_send(entry) {
+            if self.log_tx.try_send(entry).is_err() {
                 rejected += 1;
             }
         }
@@ -618,9 +618,9 @@ mod tests {
     #[test]
     fn test_any_value_double() {
         let av = AnyValue {
-            value: Some(any_value::Value::DoubleValue(3.14)),
+            value: Some(any_value::Value::DoubleValue(2.71)),
         };
-        assert_eq!(any_value_to_json(&av), serde_json::json!(3.14));
+        assert_eq!(any_value_to_json(&av), serde_json::json!(2.71));
     }
 
     #[test]
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn test_convert_timestamp() {
         // 2024-01-15T10:30:00Z in nanoseconds
-        let ts_nanos: u64 = 1705312200_000_000_000;
+        let ts_nanos: u64 = 1_705_312_200_000_000_000;
         let req = make_request(
             vec![],
             "logger",
