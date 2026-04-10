@@ -5,6 +5,195 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// ─── Span / Trace types ────────────────────────────────────────────
+
+/// OpenTelemetry span kind
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum SpanKind {
+    Internal = 0,
+    Server = 1,
+    Client = 2,
+    Producer = 3,
+    Consumer = 4,
+}
+
+impl SpanKind {
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(SpanKind::Internal),
+            1 => Some(SpanKind::Server),
+            2 => Some(SpanKind::Client),
+            3 => Some(SpanKind::Producer),
+            4 => Some(SpanKind::Consumer),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    /// Convert to OTEL SpanKind integer (matches opentelemetry-proto values)
+    pub fn to_otel_kind(&self) -> i32 {
+        match self {
+            SpanKind::Internal => 1, // SPAN_KIND_INTERNAL
+            SpanKind::Server => 2,   // SPAN_KIND_SERVER
+            SpanKind::Client => 3,   // SPAN_KIND_CLIENT
+            SpanKind::Producer => 4, // SPAN_KIND_PRODUCER
+            SpanKind::Consumer => 5, // SPAN_KIND_CONSUMER
+        }
+    }
+}
+
+impl std::fmt::Display for SpanKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpanKind::Internal => write!(f, "Internal"),
+            SpanKind::Server => write!(f, "Server"),
+            SpanKind::Client => write!(f, "Client"),
+            SpanKind::Producer => write!(f, "Producer"),
+            SpanKind::Consumer => write!(f, "Consumer"),
+        }
+    }
+}
+
+/// OpenTelemetry span status code
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum SpanStatusCode {
+    Unset = 0,
+    Ok = 1,
+    Error = 2,
+}
+
+impl SpanStatusCode {
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(SpanStatusCode::Unset),
+            1 => Some(SpanStatusCode::Ok),
+            2 => Some(SpanStatusCode::Error),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    /// Convert to OTEL StatusCode integer
+    pub fn to_otel_status(&self) -> i32 {
+        match self {
+            SpanStatusCode::Unset => 0,
+            SpanStatusCode::Ok => 1,
+            SpanStatusCode::Error => 2,
+        }
+    }
+}
+
+impl std::fmt::Display for SpanStatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpanStatusCode::Unset => write!(f, "Unset"),
+            SpanStatusCode::Ok => write!(f, "Ok"),
+            SpanStatusCode::Error => write!(f, "Error"),
+        }
+    }
+}
+
+/// An event within a span (e.g. "axis reached target position")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEvent {
+    pub timestamp: DateTime<Utc>,
+    pub name: String,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+/// A completed span entry from the ADS protocol or internal creation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEntry {
+    pub trace_id: [u8; 16],
+    pub span_id: [u8; 8],
+    pub parent_span_id: [u8; 8],
+
+    pub name: String,
+    pub kind: SpanKind,
+    pub status_code: SpanStatusCode,
+    pub status_message: String,
+
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+
+    // Source identification (mirrored from LogEntry pattern)
+    pub source: String,
+    pub hostname: String,
+    pub ams_net_id: String,
+    pub ams_source_port: u16,
+
+    // Task metadata
+    pub task_index: i32,
+    pub task_name: String,
+    pub task_cycle_counter: u32,
+
+    // Application metadata
+    pub app_name: String,
+    pub project_name: String,
+
+    pub attributes: HashMap<String, serde_json::Value>,
+    pub events: Vec<SpanEvent>,
+}
+
+impl SpanEntry {
+    /// Create a new span with the given trace/span IDs and name
+    pub fn new(trace_id: [u8; 16], span_id: [u8; 8], name: String) -> Self {
+        Self {
+            trace_id,
+            span_id,
+            parent_span_id: [0u8; 8],
+            name,
+            kind: SpanKind::Internal,
+            status_code: SpanStatusCode::Unset,
+            status_message: String::new(),
+            start_time: Utc::now(),
+            end_time: Utc::now(),
+            source: String::new(),
+            hostname: String::new(),
+            ams_net_id: String::new(),
+            ams_source_port: 0,
+            task_index: 0,
+            task_name: String::new(),
+            task_cycle_counter: 0,
+            app_name: String::new(),
+            project_name: String::new(),
+            attributes: HashMap::new(),
+            events: Vec::new(),
+        }
+    }
+
+    /// Format trace_id as lowercase hex string (32 chars)
+    pub fn trace_id_hex(&self) -> String {
+        self.trace_id.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Format span_id as lowercase hex string (16 chars)
+    pub fn span_id_hex(&self) -> String {
+        self.span_id.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Format parent_span_id as lowercase hex string (16 chars)
+    pub fn parent_span_id_hex(&self) -> String {
+        self.parent_span_id
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
+    }
+
+    /// Check if this span has a parent
+    pub fn has_parent(&self) -> bool {
+        self.parent_span_id != [0u8; 8]
+    }
+}
+
 /// Log severity level, mapped from ADS binary protocol
 /// Values match the .NET Log4Tc.Model.LogLevel enumeration
 #[repr(u8)]
@@ -591,5 +780,163 @@ mod tests {
 
         assert_eq!(cloned.message, entry.message);
         assert_eq!(cloned.arguments, entry.arguments);
+    }
+
+    // ─── Span type tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_span_kind_from_u8() {
+        assert_eq!(SpanKind::from_u8(0), Some(SpanKind::Internal));
+        assert_eq!(SpanKind::from_u8(1), Some(SpanKind::Server));
+        assert_eq!(SpanKind::from_u8(2), Some(SpanKind::Client));
+        assert_eq!(SpanKind::from_u8(3), Some(SpanKind::Producer));
+        assert_eq!(SpanKind::from_u8(4), Some(SpanKind::Consumer));
+        assert_eq!(SpanKind::from_u8(5), None);
+        assert_eq!(SpanKind::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_span_kind_roundtrip() {
+        for val in 0..5u8 {
+            let kind = SpanKind::from_u8(val).unwrap();
+            assert_eq!(kind.as_u8(), val);
+        }
+    }
+
+    #[test]
+    fn test_span_kind_otel_mapping() {
+        assert_eq!(SpanKind::Internal.to_otel_kind(), 1);
+        assert_eq!(SpanKind::Server.to_otel_kind(), 2);
+        assert_eq!(SpanKind::Client.to_otel_kind(), 3);
+        assert_eq!(SpanKind::Producer.to_otel_kind(), 4);
+        assert_eq!(SpanKind::Consumer.to_otel_kind(), 5);
+    }
+
+    #[test]
+    fn test_span_kind_display() {
+        assert_eq!(SpanKind::Internal.to_string(), "Internal");
+        assert_eq!(SpanKind::Server.to_string(), "Server");
+        assert_eq!(SpanKind::Client.to_string(), "Client");
+        assert_eq!(SpanKind::Producer.to_string(), "Producer");
+        assert_eq!(SpanKind::Consumer.to_string(), "Consumer");
+    }
+
+    #[test]
+    fn test_span_status_code_from_u8() {
+        assert_eq!(SpanStatusCode::from_u8(0), Some(SpanStatusCode::Unset));
+        assert_eq!(SpanStatusCode::from_u8(1), Some(SpanStatusCode::Ok));
+        assert_eq!(SpanStatusCode::from_u8(2), Some(SpanStatusCode::Error));
+        assert_eq!(SpanStatusCode::from_u8(3), None);
+    }
+
+    #[test]
+    fn test_span_status_code_roundtrip() {
+        for val in 0..3u8 {
+            let code = SpanStatusCode::from_u8(val).unwrap();
+            assert_eq!(code.as_u8(), val);
+        }
+    }
+
+    #[test]
+    fn test_span_status_code_otel_mapping() {
+        assert_eq!(SpanStatusCode::Unset.to_otel_status(), 0);
+        assert_eq!(SpanStatusCode::Ok.to_otel_status(), 1);
+        assert_eq!(SpanStatusCode::Error.to_otel_status(), 2);
+    }
+
+    #[test]
+    fn test_span_entry_creation() {
+        let trace_id = [1u8; 16];
+        let span_id = [2u8; 8];
+        let entry = SpanEntry::new(trace_id, span_id, "axis.move".to_string());
+
+        assert_eq!(entry.trace_id, trace_id);
+        assert_eq!(entry.span_id, span_id);
+        assert_eq!(entry.parent_span_id, [0u8; 8]);
+        assert_eq!(entry.name, "axis.move");
+        assert_eq!(entry.kind, SpanKind::Internal);
+        assert_eq!(entry.status_code, SpanStatusCode::Unset);
+        assert!(!entry.has_parent());
+    }
+
+    #[test]
+    fn test_span_entry_has_parent() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        assert!(!entry.has_parent());
+
+        entry.parent_span_id = [3u8; 8];
+        assert!(entry.has_parent());
+    }
+
+    #[test]
+    fn test_span_entry_hex_ids() {
+        let trace_id: [u8; 16] = [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89,
+        ];
+        let span_id: [u8; 8] = [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10];
+
+        let entry = SpanEntry::new(trace_id, span_id, "test".to_string());
+
+        assert_eq!(entry.trace_id_hex(), "abcdef0123456789abcdef0123456789");
+        assert_eq!(entry.span_id_hex(), "fedcba9876543210");
+        assert_eq!(entry.parent_span_id_hex(), "0000000000000000");
+    }
+
+    #[test]
+    fn test_span_event_creation() {
+        let event = SpanEvent {
+            timestamp: Utc::now(),
+            name: "axis.target_reached".to_string(),
+            attributes: {
+                let mut attrs = HashMap::new();
+                attrs.insert("axis.position".to_string(), serde_json::json!(150.5));
+                attrs
+            },
+        };
+
+        assert_eq!(event.name, "axis.target_reached");
+        assert_eq!(event.attributes.len(), 1);
+        assert_eq!(event.attributes["axis.position"], serde_json::json!(150.5));
+    }
+
+    #[test]
+    fn test_span_entry_with_motion_attributes() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "motion.axis_move".to_string());
+        entry.kind = SpanKind::Internal;
+        entry.status_code = SpanStatusCode::Ok;
+        entry
+            .attributes
+            .insert("motion.axis_id".to_string(), serde_json::json!(1));
+        entry.attributes.insert(
+            "motion.target_position".to_string(),
+            serde_json::json!(250.0),
+        );
+        entry
+            .attributes
+            .insert("motion.velocity".to_string(), serde_json::json!(100.0));
+
+        assert_eq!(entry.attributes.len(), 3);
+        assert_eq!(entry.name, "motion.axis_move");
+        assert_eq!(entry.kind, SpanKind::Internal);
+        assert_eq!(entry.status_code, SpanStatusCode::Ok);
+    }
+
+    #[test]
+    fn test_span_entry_clone() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        entry
+            .attributes
+            .insert("key".to_string(), serde_json::json!("value"));
+        entry.events.push(SpanEvent {
+            timestamp: Utc::now(),
+            name: "event1".to_string(),
+            attributes: HashMap::new(),
+        });
+
+        let cloned = entry.clone();
+        assert_eq!(cloned.name, entry.name);
+        assert_eq!(cloned.attributes, entry.attributes);
+        assert_eq!(cloned.events.len(), entry.events.len());
     }
 }

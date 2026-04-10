@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_core::LogLevel;
 
+use tc_otel_core::{SpanKind, SpanStatusCode};
+
 // Security limits for protocol parsing
 /// Maximum length for individual strings (65 KB)
 const MAX_STRING_LENGTH: usize = 65_536;
@@ -15,12 +17,17 @@ const MAX_ARGUMENTS: usize = 32;
 const MAX_CONTEXT_VARS: usize = 64;
 /// Maximum total message size (1 MB)
 const MAX_MESSAGE_SIZE: usize = 1_048_576;
+/// Maximum number of events per span
+const MAX_SPAN_EVENTS: usize = 128;
+/// Maximum number of attributes per span or span event
+const MAX_SPAN_ATTRIBUTES: usize = 64;
 
-/// Result of parsing a buffer containing both log entries and registrations
+/// Result of parsing a buffer containing log entries, registrations, and spans
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     pub entries: Vec<AdsLogEntry>,
     pub registrations: Vec<RegistrationMessage>,
+    pub spans: Vec<AdsSpanEntry>,
 }
 
 /// Parser for ADS binary protocol messages
@@ -40,6 +47,7 @@ impl AdsParser {
 
         let mut entries = Vec::new();
         let mut registrations = Vec::new();
+        let mut spans = Vec::new();
         let mut reader = BytesReader::new(data);
 
         while reader.remaining() > 0 {
@@ -116,6 +124,23 @@ impl AdsParser {
                         }
                     }
                 }
+                5 => {
+                    // Span entry (completed span)
+                    match Self::parse_span_from_reader(&mut reader) {
+                        Ok(span) => spans.push(span),
+                        Err(e) => {
+                            if entries.is_empty() && registrations.is_empty() && spans.is_empty() {
+                                return Err(e);
+                            }
+                            tracing::debug!(
+                                "Partial span at buffer end ({} bytes remaining): {}",
+                                reader.remaining(),
+                                e
+                            );
+                            break;
+                        }
+                    }
+                }
                 _ => {
                     // Unknown message type, stop
                     tracing::warn!("Unknown message type: {}", message_type);
@@ -127,6 +152,7 @@ impl AdsParser {
         Ok(ParseResult {
             entries,
             registrations,
+            spans,
         })
     }
 
@@ -349,6 +375,147 @@ impl AdsParser {
             app_name,
             project_name,
             online_change_count,
+        })
+    }
+
+    /// Parse a span entry from the reader (message type 0x05)
+    ///
+    /// Wire format:
+    /// [type: u8 = 0x05] [entry_length: u16 LE]
+    /// [trace_id: 16 bytes] [span_id: 8 bytes] [parent_span_id: 8 bytes]
+    /// [kind: u8] [status_code: u8]
+    /// [start_time: FILETIME] [end_time: FILETIME]
+    /// [task_index: u8] [cycle_counter: u32 LE]
+    /// [attr_count: u8] [event_count: u8]
+    /// [name: string] [status_message: string]
+    /// [attributes...] [events...]
+    fn parse_span_from_reader(reader: &mut BytesReader) -> Result<AdsSpanEntry> {
+        // Type byte (must be 5)
+        let type_byte = reader.read_u8()?;
+        if type_byte != 5 {
+            return Err(AdsError::ParseError(format!(
+                "Invalid span type: {}",
+                type_byte
+            )));
+        }
+
+        // Entry length (2 bytes LE)
+        let entry_length = reader.read_u16()? as usize;
+        let entry_start = reader.pos;
+
+        // Trace ID (16 bytes)
+        let trace_id_bytes = reader.read_bytes(16)?;
+        let mut trace_id = [0u8; 16];
+        trace_id.copy_from_slice(trace_id_bytes);
+
+        // Span ID (8 bytes)
+        let span_id_bytes = reader.read_bytes(8)?;
+        let mut span_id = [0u8; 8];
+        span_id.copy_from_slice(span_id_bytes);
+
+        // Parent Span ID (8 bytes)
+        let parent_bytes = reader.read_bytes(8)?;
+        let mut parent_span_id = [0u8; 8];
+        parent_span_id.copy_from_slice(parent_bytes);
+
+        // Kind (1 byte)
+        let kind_byte = reader.read_u8()?;
+        let kind = SpanKind::from_u8(kind_byte).ok_or(AdsError::ParseError(format!(
+            "Invalid span kind: {}",
+            kind_byte
+        )))?;
+
+        // Status code (1 byte)
+        let status_byte = reader.read_u8()?;
+        let status_code = SpanStatusCode::from_u8(status_byte).ok_or(AdsError::ParseError(
+            format!("Invalid span status: {}", status_byte),
+        ))?;
+
+        // Timestamps (FILETIME)
+        let start_time = reader.read_filetime()?;
+        let end_time = reader.read_filetime()?;
+
+        // Task metadata
+        let task_index = reader.read_u8()? as i32;
+        let cycle_counter = reader.read_u32()?;
+
+        // Counts
+        let attr_count = reader.read_u8()? as usize;
+        let event_count = reader.read_u8()? as usize;
+
+        if attr_count > MAX_SPAN_ATTRIBUTES {
+            return Err(AdsError::ParseError(format!(
+                "Span attribute count {} exceeds maximum {}",
+                attr_count, MAX_SPAN_ATTRIBUTES
+            )));
+        }
+        if event_count > MAX_SPAN_EVENTS {
+            return Err(AdsError::ParseError(format!(
+                "Span event count {} exceeds maximum {}",
+                event_count, MAX_SPAN_EVENTS
+            )));
+        }
+
+        // Name (string)
+        let name = reader.read_string()?;
+
+        // Status message (string)
+        let status_message = reader.read_string()?;
+
+        // Attributes
+        let mut attributes = HashMap::with_capacity(attr_count);
+        for _ in 0..attr_count {
+            let key = reader.read_string()?;
+            let type_id = reader.read_u8()?;
+            let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+            let value = reader.read_value_with_type(type_id_i32)?;
+            attributes.insert(key, value);
+        }
+
+        // Events
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let ev_timestamp = reader.read_filetime()?;
+            let ev_name = reader.read_string()?;
+            let ev_attr_count = reader.read_u8()? as usize;
+            if ev_attr_count > MAX_SPAN_ATTRIBUTES {
+                return Err(AdsError::ParseError(format!(
+                    "Span event attribute count {} exceeds maximum {}",
+                    ev_attr_count, MAX_SPAN_ATTRIBUTES
+                )));
+            }
+            let mut ev_attrs = HashMap::with_capacity(ev_attr_count);
+            for _ in 0..ev_attr_count {
+                let key = reader.read_string()?;
+                let type_id = reader.read_u8()?;
+                let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+                let value = reader.read_value_with_type(type_id_i32)?;
+                ev_attrs.insert(key, value);
+            }
+            events.push(AdsSpanEvent {
+                timestamp: ev_timestamp,
+                name: ev_name,
+                attributes: ev_attrs,
+            });
+        }
+
+        // Sync reader position to entry boundary (like v2 parsing)
+        reader.pos = entry_start + entry_length;
+
+        Ok(AdsSpanEntry {
+            trace_id,
+            span_id,
+            parent_span_id,
+            name,
+            kind,
+            status_code,
+            status_message,
+            start_time,
+            end_time,
+            task_index,
+            task_cycle_counter: cycle_counter,
+            attributes,
+            events,
         })
     }
 

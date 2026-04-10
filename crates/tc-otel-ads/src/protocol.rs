@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tc_otel_core::LogLevel;
+use tc_otel_core::{LogLevel, SpanKind, SpanStatusCode};
 
 /// ADS protocol version currently supported
 pub const ADS_PROTOCOL_VERSION: u8 = 1;
@@ -97,6 +97,53 @@ pub struct TaskMetadata {
     pub online_change_count: u32,
 }
 
+/// Wire-level span event (as received from ADS protocol, type 0x05)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdsSpanEvent {
+    pub timestamp: DateTime<Utc>,
+    pub name: String,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+/// Wire-level completed span entry (ADS message type 0x05)
+///
+/// Binary format:
+/// ```text
+/// [type: u8 = 0x05]
+/// [entry_length: u16 LE]  -- total bytes after this field
+/// [trace_id: 16 bytes]
+/// [span_id: 8 bytes]
+/// [parent_span_id: 8 bytes]
+/// [kind: u8]
+/// [status_code: u8]
+/// [start_time: 8 bytes FILETIME]
+/// [end_time: 8 bytes FILETIME]
+/// [task_index: u8]
+/// [cycle_counter: u32 LE]
+/// [attr_count: u8]
+/// [event_count: u8]
+/// [name: string]
+/// [status_message: string]
+/// [attributes: attr_count × (key: string, value_type: u8, value: typed)]
+/// [events: event_count × (timestamp: FILETIME, name: string, attr_count: u8, attrs...)]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdsSpanEntry {
+    pub trace_id: [u8; 16],
+    pub span_id: [u8; 8],
+    pub parent_span_id: [u8; 8],
+    pub name: String,
+    pub kind: SpanKind,
+    pub status_code: SpanStatusCode,
+    pub status_message: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub task_index: i32,
+    pub task_cycle_counter: u32,
+    pub attributes: HashMap<String, serde_json::Value>,
+    pub events: Vec<AdsSpanEvent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +152,43 @@ mod tests {
     fn test_ads_version_conversion() {
         assert_eq!(AdsProtocolVersion::from_u8(1), Some(AdsProtocolVersion::V1));
         assert_eq!(AdsProtocolVersion::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_ads_span_entry_creation() {
+        let entry = AdsSpanEntry {
+            trace_id: [1u8; 16],
+            span_id: [2u8; 8],
+            parent_span_id: [0u8; 8],
+            name: "motion.axis_move".to_string(),
+            kind: SpanKind::Internal,
+            status_code: SpanStatusCode::Ok,
+            status_message: String::new(),
+            start_time: Utc::now(),
+            end_time: Utc::now(),
+            task_index: 1,
+            task_cycle_counter: 500,
+            attributes: HashMap::new(),
+            events: Vec::new(),
+        };
+
+        assert_eq!(entry.name, "motion.axis_move");
+        assert_eq!(entry.kind, SpanKind::Internal);
+    }
+
+    #[test]
+    fn test_ads_span_event_creation() {
+        let event = AdsSpanEvent {
+            timestamp: Utc::now(),
+            name: "axis.target_reached".to_string(),
+            attributes: {
+                let mut m = HashMap::new();
+                m.insert("position".to_string(), serde_json::json!(100.0));
+                m
+            },
+        };
+
+        assert_eq!(event.name, "axis.target_reached");
+        assert_eq!(event.attributes.len(), 1);
     }
 }
