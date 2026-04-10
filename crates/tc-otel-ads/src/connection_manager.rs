@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Semaphore, TryAcquireError};
@@ -112,6 +112,8 @@ pub struct ConnectionManager {
     shutdown_tx: broadcast::Sender<()>,
     active_count: Arc<AtomicUsize>,
     shutting_down: Arc<std::sync::atomic::AtomicBool>,
+    total_accepted: Arc<AtomicU64>,
+    total_rejected: Arc<AtomicU64>,
 }
 
 impl ConnectionManager {
@@ -126,6 +128,8 @@ impl ConnectionManager {
             shutdown_tx,
             active_count: Arc::new(AtomicUsize::new(0)),
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            total_accepted: Arc::new(AtomicU64::new(0)),
+            total_rejected: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -139,6 +143,7 @@ impl ConnectionManager {
     pub fn try_acquire(&self, ip: IpAddr) -> Result<ConnectionPermit, ConnectionRejection> {
         // Check shutdown state first
         if self.shutting_down.load(Ordering::Acquire) {
+            self.total_rejected.fetch_add(1, Ordering::Relaxed);
             return Err(ConnectionRejection::ShuttingDown);
         }
 
@@ -146,9 +151,11 @@ impl ConnectionManager {
         let semaphore_permit = match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => {
+                self.total_rejected.fetch_add(1, Ordering::Relaxed);
                 return Err(ConnectionRejection::MaxConnectionsReached);
             }
             Err(TryAcquireError::Closed) => {
+                self.total_rejected.fetch_add(1, Ordering::Relaxed);
                 return Err(ConnectionRejection::ShuttingDown);
             }
         };
@@ -162,6 +169,7 @@ impl ConnectionManager {
             if state.active_connections >= self.config.max_connections_per_ip {
                 // Drop semaphore permit before returning
                 drop(semaphore_permit);
+                self.total_rejected.fetch_add(1, Ordering::Relaxed);
                 return Err(ConnectionRejection::PerIpLimitReached {
                     ip,
                     current: state.active_connections,
@@ -173,6 +181,7 @@ impl ConnectionManager {
             state.prune_timestamps(now);
             if state.connection_timestamps.len() >= self.config.rate_limit_per_sec_per_ip {
                 drop(semaphore_permit);
+                self.total_rejected.fetch_add(1, Ordering::Relaxed);
                 return Err(ConnectionRejection::RateLimitExceeded { ip });
             }
 
@@ -182,6 +191,7 @@ impl ConnectionManager {
         }
 
         self.active_count.fetch_add(1, Ordering::Release);
+        self.total_accepted.fetch_add(1, Ordering::Relaxed);
 
         Ok(ConnectionPermit {
             ip,
@@ -258,6 +268,16 @@ impl ConnectionManager {
     /// Get the per-IP connection limit.
     pub fn max_connections_per_ip(&self) -> usize {
         self.config.max_connections_per_ip
+    }
+
+    /// Get the total number of connections accepted since startup.
+    pub fn total_accepted(&self) -> u64 {
+        self.total_accepted.load(Ordering::Relaxed)
+    }
+
+    /// Get the total number of connections rejected since startup.
+    pub fn total_rejected(&self) -> u64 {
+        self.total_rejected.load(Ordering::Relaxed)
     }
 
     /// Wait for all active connections to drain, with timeout.
