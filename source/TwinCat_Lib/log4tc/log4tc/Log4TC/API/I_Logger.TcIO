@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <Itf Name="I_Logger" Id="{8b7a3ede-9c91-0d75-34fd-1cfbab5e4360}">
+    <Declaration><![CDATA[// Fluent builder interface for composing log entries.
+// Obtain an instance via F_Log() or FB_Log.Log(), chain methods, and call CreateLog() to emit.
+INTERFACE I_Logger
+]]></Declaration>
+    <Method Name="CreateLog" Id="{c36020e1-7629-0123-1b40-b63c6b460407}">
+      <Declaration><![CDATA[// Finalizes and sends the log entry. Must be called to emit the log.
+// After CreateLog(), the builder is consumed — do not reuse without a new F_Log() call.
+METHOD CreateLog
+]]></Declaration>
+    </Method>
+    <Method Name="WithAnyArg" Id="{555dd333-7171-0d36-075f-37b8e2570086}">
+      <Declaration><![CDATA[// Adds a log argument. Supports all IEC 61131-3 types (BOOL, INT, REAL, STRING, etc.).
+// Arguments are referenced by position in the message template: '{0}', '{1}', ...
+// Values are serialized immediately — safe to call in loops with changing variables.
+METHOD WithAnyArg : I_Logger
+VAR_INPUT
+	stArg		: ANY;
+END_VAR
+]]></Declaration>
+    </Method>
+    <Method Name="WithTArg" Id="{d5ace616-21ca-09f8-328c-30dbd866d03e}">
+      <Declaration><![CDATA[// Adds a pre-typed argument (T_Arg from Tc2_Utilities).
+// Prefer WithAnyArg for most cases. WithTArg is for compatibility with Tc2 formatting functions.
+METHOD INTERNAL WithTArg : I_Logger
+VAR_INPUT
+	stArg		: T_Arg;
+END_VAR
+]]></Declaration>
+    </Method>
+  </Itf>
+</TcPlcObject>

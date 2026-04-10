@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__twincat__getStatus",
+      "Bash(podman ps:*)",
+      "Bash(podman.exe ps:*)",
+      "Bash(podman.exe network:*)",
+      "Bash(podman.exe machine:*)"
+    ]
+  }
+}

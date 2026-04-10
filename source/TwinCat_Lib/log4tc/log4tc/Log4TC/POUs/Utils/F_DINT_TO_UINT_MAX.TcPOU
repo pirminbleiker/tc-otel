@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
+  <POU Name="F_DINT_TO_UINT_MAX" Id="{20684c05-24ad-4be4-8683-cc3c1b8a5be5}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION INTERNAL F_DINT_TO_UINT_MAX : UINT
+VAR_INPUT
+	nValue			: DINT;
+	nMaxValue		: UINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF nValue < 0 THEN
+	F_DINT_TO_UINT_MAX := 0;
+ELSIF nValue > nMaxValue THEN
+	F_DINT_TO_UINT_MAX := nMaxValue;
+ELSE
+	F_DINT_TO_UINT_MAX := DINT_TO_UINT(nValue);
+END_IF
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

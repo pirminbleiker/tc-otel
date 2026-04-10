@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <Itf Name="I_WithContext" Id="{449596c7-422a-0b36-3e3d-0d838674fb28}">
+    <Declaration><![CDATA[// Fluent builder interface for composing log entries.
+// Obtain an instance via F_Log() or FB_Log.Log(), chain methods, and call CreateLog() to emit.
+INTERFACE I_WithContext EXTENDS I_Logger
+]]></Declaration>
+    <Method Name="WithContext" Id="{8f3ae027-986c-0245-1eea-dea78c28d234}">
+      <Declaration><![CDATA[// Attaches context properties to this log entry.
+// Use F_Context() to create a temporary context, or pass an FB_ContextBuilder instance.
+METHOD WithContext : I_Logger
+VAR_INPUT
+	iContextBuilder	: I_ContextBuilder;
+END_VAR
+]]></Declaration>
+    </Method>
+  </Itf>
+</TcPlcObject>

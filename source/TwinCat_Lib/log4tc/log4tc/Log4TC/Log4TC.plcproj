@@ -1,0 +1,572 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <FileVersion>1.0.0.0</FileVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{04fdcb5e-8373-4851-a688-cbab70cd7d8e}</ProjectGuid>
+    <SubObjectsSortedByName>True</SubObjectsSortedByName>
+    <DownloadApplicationInfo>true</DownloadApplicationInfo>
+    <WriteProductVersion>true</WriteProductVersion>
+    <GenerateTpy>false</GenerateTpy>
+    <Name>Log4TC</Name>
+    <ProgramVersion>3.1.4026.20</ProgramVersion>
+    <Application>{27d1f106-c41a-4b9a-a7ee-188b391db3f7}</Application>
+    <TypeSystem>{e596c1dd-8124-4a1a-bf40-bb2ad03cf4cb}</TypeSystem>
+    <Implicit_Task_Info>{137bf246-6a75-4baf-ac45-03c4a11fd411}</Implicit_Task_Info>
+    <Implicit_KindOfTask>{d1a215c7-737a-4fba-bed2-2b0568fb69e5}</Implicit_KindOfTask>
+    <Implicit_Jitter_Distribution>{84071a80-9789-41db-b27e-27e3ab204fa1}</Implicit_Jitter_Distribution>
+    <LibraryReferences>{b74f17a3-49cb-46e0-b639-d8e1c2b0c59a}</LibraryReferences>
+    <Company>AVM Engineering</Company>
+    <Released>false</Released>
+    <Title>log4tc</Title>
+    <ProjectVersion>0.2.4</ProjectVersion>
+    <CompilerDefines>DEBUG</CompilerDefines>
+    <DocFormat>reStructuredText</DocFormat>
+    <Author>Pirmin Bleiker</Author>
+    <Description>
+    </Description>
+    <LibraryCategories>
+      <LibraryCategory xmlns="">
+        <Id>{74d110c6-7213-4765-be2b-3ff0f1e344fb}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>BuildingAutomation</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>Communication</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{348d807f-e1d6-47d4-ad2a-dc8d5fd59f05}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        </ParentCategory>
+        <DefaultName>IEC60870</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{ae647248-ff09-4c38-932e-10ab7e9eb9ea}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        </ParentCategory>
+        <DefaultName>IEC61850</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{54e90195-1c5a-4ae5-80f5-579d92dd9aa8}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        </ParentCategory>
+        <DefaultName>Serial</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{23b71de8-3c4d-47a7-8969-e84f015c9e5d}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        </ParentCategory>
+        <DefaultName>TcpIp</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{e800ea8a-cc01-4f20-bd63-4e34f39b75da}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{f85b699a-03a4-49e3-9943-d193548feecb}</Id>
+        </ParentCategory>
+        <DefaultName>Modbus</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{fafce590-c801-4d05-974c-d391e08bd390}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>Controller</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{313ea83d-0856-4423-8239-36856a823d0a}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>DataAccess</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{0c2d2cc2-1178-495d-a2c5-dd48e484d8c0}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>IO</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{425113a0-360b-49bc-b3be-a0c2f5666343}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{0c2d2cc2-1178-495d-a2c5-dd48e484d8c0}</Id>
+        </ParentCategory>
+        <DefaultName>Drive</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{fbd49470-7a3e-4d8c-bec7-8a262b18d231}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>Math</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>Motion</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{ed65ed00-ff03-42ce-9a93-7e375f85ad34}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>PTP</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{e51270e5-11f0-4f5a-961b-9a4c48fe1dc0}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>Camming</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{592129c5-c82e-42b0-b712-006f68958ecb}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>FlyingSaw</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{2a41f279-94f2-4e37-a241-97286347c638}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>Drive</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{186d654a-b252-4ca2-9854-7e23939f7967}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>NCI</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{a1b11c77-e75e-471f-9e45-11fc4eef760b}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>CNC</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{35857722-d45d-45b1-a229-0a409661ea78}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>Hydraulics</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{dc2f4ff8-2ce2-4f1f-bce2-d5b9c174a46a}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>Packaging</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{42e61ec8-3941-4853-92b4-9d204cebc40e}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{90603686-1a10-42a3-90e5-27c0c69154f7}</Id>
+        </ParentCategory>
+        <DefaultName>XFC</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>System</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{ba75baba-ddc3-4479-b5b3-3c8059bcba99}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+        </ParentCategory>
+        <DefaultName>CX-Series</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{7c091802-871e-4487-8dcb-28c32dcb0a30}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+        </ParentCategory>
+        <DefaultName>IPC-Series</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{cb610b82-b544-44a3-8551-c878e5389b18}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+        </ParentCategory>
+        <DefaultName>Visu</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{22803ce1-8755-4889-b7b0-5920397c55f8}</Id>
+        <Version>1.0.0.0</Version>
+        <ParentCategory>
+          <Id>{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+        </ParentCategory>
+        <DefaultName>Obsolete</DefaultName>
+      </LibraryCategory>
+      <LibraryCategory xmlns="">
+        <Id>{196fe72f-48df-4527-8662-d9036e12ac55}</Id>
+        <Version>1.0.0.0</Version>
+        <DefaultName>TwinSAFE</DefaultName>
+      </LibraryCategory>
+    </LibraryCategories>
+    <SelectedLibraryCategories>
+      <Id xmlns="">{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
+    </SelectedLibraryCategories>
+    <DefaultNamespace>log4tc</DefaultNamespace>
+    <Placeholder>log4tc</Placeholder>
+    <CompilerVersion>
+    </CompilerVersion>
+    <Licenses>
+    </Licenses>
+    <CombineIds>true</CombineIds>
+    <GlobalVersionStructureIncluded>true</GlobalVersionStructureIncluded>
+  </PropertyGroup>
+  <ItemGroup>
+    <Folder Include="API" />
+    <Folder Include="API\Context" />
+    <Folder Include="GVLs" />
+    <Folder Include="ITFs" />
+    <Folder Include="DUTs" />
+    <Folder Include="Test" />
+    <Folder Include="POUs" />
+    <Folder Include="POUs\Utils" />
+    <Folder Include="Version" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="API\Context\FB_ScopedContext.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\Context\F_Context.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\Context\I_ContextBuilder.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\E_LogLevel.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\FB_Log.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\F_Log.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\I_LogBuilder.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\I_WithLogger.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\I_WithContext.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\I_Logger.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\PRG_TaskLog.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\E_CustomTypes.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\E_Scope.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_Log4TcTaskInfo.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_ScopedContextStack.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\E_TypeIdV2.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_LogEntryHeaderV2.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="GVLs\Config.TcGVL">
+      <SubType>Code</SubType>
+      <LinkAlways>true</LinkAlways>
+    </Compile>
+    <Compile Include="GVLs\Const.TcGVL">
+      <SubType>Code</SubType>
+      <LinkAlways>true</LinkAlways>
+    </Compile>
+    <Compile Include="GVLs\Log4TcInfo.TcGVL">
+      <SubType>Code</SubType>
+      <LinkAlways>true</LinkAlways>
+    </Compile>
+    <Compile Include="ITFs\I_LogEntry.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ITFs\I_LogEntryAdder.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\FB_ContextBuilder.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\FB_Log4TcTask.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\FB_LogBuilder.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\FB_LogEntry.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\F_InternalLog.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\PRG_ScopedContextStack.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Utils\FB_LogBuffer.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Utils\FB_RTC_Sync.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Utils\F_DINT_TO_UINT_MAX.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Utils\IncUDINT.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ApiTest.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Test\FB_ContextBuilder_Test.TcPOU">
+      <SubType>Code</SubType>
+      <CompilerDefines>DEBUG</CompilerDefines>
+    </Compile>
+    <Compile Include="Test\PlcTask.TcTTO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Test\PRG_Test.TcPOU">
+      <SubType>Code</SubType>
+      <CompilerDefines>DEBUG</CompilerDefines>
+    </Compile>
+    <Compile Include="Version\Global_Version.TcGVL">
+      <SubType>Code</SubType>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <PlaceholderReference Include="Tc2_Standard">
+      <DefaultResolution>Tc2_Standard, * (Beckhoff Automation GmbH)</DefaultResolution>
+      <Namespace>Tc2_Standard</Namespace>
+    </PlaceholderReference>
+    <PlaceholderReference Include="Tc2_System">
+      <DefaultResolution>Tc2_System, * (Beckhoff Automation GmbH)</DefaultResolution>
+      <Namespace>Tc2_System</Namespace>
+    </PlaceholderReference>
+    <PlaceholderReference Include="Tc2_Utilities">
+      <DefaultResolution>Tc2_Utilities, * (Beckhoff Automation GmbH)</DefaultResolution>
+      <Namespace>Tc2_Utilities</Namespace>
+    </PlaceholderReference>
+    <PlaceholderReference Include="Tc3_Module">
+      <DefaultResolution>Tc3_Module, * (Beckhoff Automation GmbH)</DefaultResolution>
+      <Namespace>Tc3_Module</Namespace>
+    </PlaceholderReference>
+    <PlaceholderReference Include="TcUnit">
+      <DefaultResolution>TcUnit, * (www.tcunit.org)</DefaultResolution>
+      <Namespace>TcUnit</Namespace>
+      <HideWhenReferencedAsDependency>true</HideWhenReferencedAsDependency>
+      <Optional>true</Optional>
+    </PlaceholderReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Log4TC.tmc">
+      <SubType>Content</SubType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <LibraryReference Include="Base Interfaces,newest,System">
+      <Namespace>IBaseLibrary</Namespace>
+    </LibraryReference>
+  </ItemGroup>
+  <ItemGroup>
+    <SubObject Include="FB_ContextBuilder._BufferCount">
+      <CompilerDefines>DEBUG</CompilerDefines>
+    </SubObject>
+    <SubObject Include="FB_ContextBuilder._ContextCount">
+      <CompilerDefines>DEBUG</CompilerDefines>
+    </SubObject>
+    <SubObject Include="FB_ContextBuilder\Test">
+      <CompilerDefines>DEBUG</CompilerDefines>
+    </SubObject>
+  </ItemGroup>
+  <ItemGroup>
+    <PlaceholderResolution Include="SysDir">
+      <Resolution>SysDir, 3.5.12.0 (System)</Resolution>
+    </PlaceholderResolution>
+  </ItemGroup>
+  <ProjectExtensions>
+    <PlcProjectOptions>
+      <XmlArchive>
+        <Data>
+          <o xml:space="preserve" t="OptionKey">
+      <v n="Name">"&lt;ProjectRoot&gt;"</v>
+      <d n="SubKeys" t="Hashtable" ckt="String" cvt="OptionKey">
+        <v>{192FAD59-8248-4824-A8DE-9177C94C195A}</v>
+        <o>
+          <v n="Name">"{192FAD59-8248-4824-A8DE-9177C94C195A}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" />
+        </o>
+        <v>{246001F4-279D-43AC-B241-948EB31120E1}</v>
+        <o>
+          <v n="Name">"{246001F4-279D-43AC-B241-948EB31120E1}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" ckt="String" cvt="String">
+            <v>GlobalVisuImageFilePath</v>
+            <v>%APPLICATIONPATH%</v>
+          </d>
+        </o>
+        <v>{29BD8D0C-3586-4548-BB48-497B9A01693F}</v>
+        <o>
+          <v n="Name">"{29BD8D0C-3586-4548-BB48-497B9A01693F}"</v>
+          <d n="SubKeys" t="Hashtable" ckt="String" cvt="OptionKey">
+            <v>NamingConventions</v>
+            <o>
+              <v n="Name">"NamingConventions"</v>
+              <d n="SubKeys" t="Hashtable" />
+              <d n="Values" t="Hashtable" />
+            </o>
+            <v>Rules</v>
+            <o>
+              <v n="Name">"Rules"</v>
+              <d n="SubKeys" t="Hashtable" ckt="String" cvt="OptionKey">
+                <v>167</v>
+                <o>
+                  <v n="Name">"167"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+                <v>27</v>
+                <o>
+                  <v n="Name">"27"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+                <v>28</v>
+                <o>
+                  <v n="Name">"28"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+                <v>33</v>
+                <o>
+                  <v n="Name">"33"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+                <v>4</v>
+                <o>
+                  <v n="Name">"4"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+                <v>6</v>
+                <o>
+                  <v n="Name">"6"</v>
+                  <d n="SubKeys" t="Hashtable" />
+                  <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+                    <v>bActive</v>
+                    <v>False</v>
+                  </d>
+                </o>
+              </d>
+              <d n="Values" t="Hashtable" />
+            </o>
+          </d>
+          <d n="Values" t="Hashtable" />
+        </o>
+        <v>{40450F57-0AA3-4216-96F3-5444ECB29763}</v>
+        <o>
+          <v n="Name">"{40450F57-0AA3-4216-96F3-5444ECB29763}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" ckt="String" cvt="String">
+            <v>ActiveVisuProfile</v>
+            <v>IR0whWr8bwfwBwAAhiaVXgAAAABVAgAAWdTSaQAAAAABAAAAAAAAAAEaUwB5AHMAdABlAG0ALgBTAHQAcgBpAG4AZwACTHsAZgA5ADUAYgBiADQAMgA2AC0ANQA1ADIANAAtADQAYgA0ADUALQA5ADQAMAAwAC0AZgBiADAAZgAyAGUANwA3AGUANQAxAGIAfQADCE4AYQBtAGUABDBUAHcAaQBuAEMAQQBUACAAMwAuADEAIABCAHUAaQBsAGQAIAA0ADAAMgA0AC4AMAAFFlAAcgBvAGYAaQBsAGUARABhAHQAYQAGTHsAMQA2AGUANQA1AGIANgAwAC0ANwAwADQAMwAtADQAYQA2ADMALQBiADYANQBiAC0ANgAxADQANwAxADMAOAA3ADgAZAA0ADIAfQAHEkwAaQBiAHIAYQByAGkAZQBzAAhMewAzAGIAZgBkADUANAA1ADkALQBiADAANwBmAC0ANABkADYAZQAtAGEAZQAxAGEALQBhADgAMwAzADUANgBhADUANQAxADQAMgB9AAlMewA5AGMAOQA1ADgAOQA2ADgALQAyAGMAOAA1AC0ANAAxAGIAYgAtADgAOAA3ADEALQA4ADkANQBmAGYAMQBmAGUAZABlADEAYQB9AAoOVgBlAHIAcwBpAG8AbgALBmkAbgB0AAwKVQBzAGEAZwBlAA0KVABpAHQAbABlAA4aVgBpAHMAdQBFAGwAZQBtAE0AZQB0AGUAcgAPDkMAbwBtAHAAYQBuAHkAEAxTAHkAcwB0AGUAbQARElYAaQBzAHUARQBsAGUAbQBzABIwVgBpAHMAdQBFAGwAZQBtAHMAUwBwAGUAYwBpAGEAbABDAG8AbgB0AHIAbwBsAHMAEyhWAGkAcwB1AEUAbABlAG0AcwBXAGkAbgBDAG8AbgB0AHIAbwBsAHMAFCRWAGkAcwB1AEUAbABlAG0AVABlAHgAdABFAGQAaQB0AG8AcgAVIlYAaQBzAHUATgBhAHQAaQB2AGUAQwBvAG4AdAByAG8AbAAWFHYAaQBzAHUAaQBuAHAAdQB0AHMAFwxzAHkAcwB0AGUAbQAYGFYAaQBzAHUARQBsAGUAbQBCAGEAcwBlABkmRABlAHYAUABsAGEAYwBlAGgAbwBsAGQAZQByAHMAVQBzAGUAZAAaCGIAbwBvAGwAGyJQAGwAdQBnAGkAbgBDAG8AbgBzAHQAcgBhAGkAbgB0AHMAHEx7ADQAMwBkADUAMgBiAGMAZQAtADkANAAyAGMALQA0ADQAZAA3AC0AOQBlADkANAAtADEAYgBmAGQAZgAzADEAMABlADYAMwBjAH0AHRxBAHQATABlAGEAcwB0AFYAZQByAHMAaQBvAG4AHhRQAGwAdQBnAGkAbgBHAHUAaQBkAB8WUwB5AHMAdABlAG0ALgBHAHUAaQBkACBIYQBmAGMAZAA1ADQANAA2AC0ANAA5ADEANAAtADQAZgBlADcALQBiAGIANwA4AC0AOQBiAGYAZgBlAGIANwAwAGYAZAAxADcAIRRVAHAAZABhAHQAZQBJAG4AZgBvACJMewBiADAAMwAzADYANgBhADgALQBiADUAYwAwAC0ANABiADkAYQAtAGEAMAAwAGUALQBlAGIAOAA2ADAAMQAxADEAMAA0AGMAMwB9ACMOVQBwAGQAYQB0AGUAcwAkTHsAMQA4ADYAOABmAGYAYwA5AC0AZQA0AGYAYwAtADQANQAzADIALQBhAGMAMAA2AC0AMQBlADMAOQBiAGIANQA1ADcAYgA2ADkAfQAlTHsAYQA1AGIAZAA0ADgAYwAzAC0AMABkADEANwAtADQAMQBiADUALQBiADEANgA0AC0ANQBmAGMANgBhAGQAMgBiADkANgBiADcAfQAmFk8AYgBqAGUAYwB0AHMAVAB5AHAAZQAnVFUAcABkAGEAdABlAEwAYQBuAGcAdQBhAGcAZQBNAG8AZABlAGwARgBvAHIAQwBvAG4AdgBlAHIAdABpAGIAbABlAEwAaQBiAHIAYQByAGkAZQBzACgQTABpAGIAVABpAHQAbABlACkUTABpAGIAQwBvAG0AcABhAG4AeQAqHlUAcABkAGEAdABlAFAAcgBvAHYAaQBkAGUAcgBzACs4UwB5AHMAdABlAG0ALgBDAG8AbABsAGUAYwB0AGkAbwBuAHMALgBIAGEAcwBoAHQAYQBiAGwAZQAsEnYAaQBzAHUAZQBsAGUAbQBzAC1INgBjAGIAMQBjAGQAZQAxAC0AZAA1AGQAYwAtADQAYQAzAGIALQA5ADAANQA0AC0AMgAxAGYAYQA3ADUANgBhADMAZgBhADQALihJAG4AdABlAHIAZgBhAGMAZQBWAGUAcgBzAGkAbwBuAEkAbgBmAG8AL0x7AGMANgAxADEAZQA0ADAAMAAtADcAZgBiADkALQA0AGMAMwA1AC0AYgA5AGEAYwAtADQAZQAzADEANABiADUAOQA5ADYANAAzAH0AMBhNAGEAagBvAHIAVgBlAHIAcwBpAG8AbgAxGE0AaQBuAG8AcgBWAGUAcgBzAGkAbwBuADIMTABlAGcAYQBjAHkAMzBMAGEAbgBnAHUAYQBnAGUATQBvAGQAZQBsAFYAZQByAHMAaQBvAG4ASQBuAGYAbwA0MEwAbwBhAGQATABpAGIAcgBhAHIAaQBlAHMASQBuAHQAbwBQAHIAbwBqAGUAYwB0ADUaQwBvAG0AcABhAHQAaQBiAGkAbABpAHQAeQDQAAIaA9ADAS0E0AUGGgfQBwgaAUUHCQjQAAkaBEUKCwQDAAAABQAAAA0AAAAAAAAA0AwLrQIAAADQDQEtDtAPAS0Q0AAJGgRFCgsEAwAAAAUAAAANAAAAFQAAANAMC60BAAAA0A0BLRHQDwEtENAACRoERQoLBAMAAAAFAAAADQAAAAAAAADQDAutAgAAANANAS0S0A8BLRDQAAkaBEUKCwQDAAAABQAAAA0AAAAUAAAA0AwLrQIAAADQDQEtE9APAS0Q0AAJGgRFCgsEAwAAAAUAAAANAAAAAAAAANAMC60CAAAA0A0BLRTQDwEtENAACRoERQoLBAMAAAAFAAAADQAAAAAAAADQDAutAgAAANANAS0V0A8BLRDQAAkaBEUKCwQDAAAABQAAAA0AAAAAAAAA0AwLrQIAAADQDQEtFtAPAS0X0AAJGgRFCgsEAwAAAAUAAAANAAAAFQAAANAMC60EAAAA0A0BLRjQDwEtENAZGq0BRRscAdAAHBoCRR0LBAMAAAAFAAAADQAAAAAAAADQHh8tINAhIhoCRSMkAtAAJRoFRQoLBAMAAAADAAAAAAAAAAoAAADQJgutAAAAANADAS0n0CgBLRHQKQEtENAAJRoFRQoLBAMAAAADAAAAAAAAAAoAAADQJgutAQAAANADAS0n0CgBLRHQKQEtEJoqKwFFAAEC0AABLSzQAAEtF9AAHy0t0C4vGgPQMAutAQAAANAxC60XAAAA0DIarQDQMy8aA9AwC60CAAAA0DELrQMAAADQMhqtANA0Gq0A0DUarQA=</v>
+          </d>
+        </o>
+        <v>{535658C0-5AF5-460d-99A4-BFFB984A829A}</v>
+        <o>
+          <v n="Name">"{535658C0-5AF5-460d-99A4-BFFB984A829A}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" ckt="String" cvt="NewestVersionConstraintToSave">
+            <v>VersionConstraint</v>
+            <o />
+          </d>
+        </o>
+        <v>{8A0FB252-96EB-4DCC-A5B4-B4804D05E2D6}</v>
+        <o>
+          <v n="Name">"{8A0FB252-96EB-4DCC-A5B4-B4804D05E2D6}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" ckt="String" cvt="Boolean">
+            <v>WriteLineIDs</v>
+            <v>True</v>
+          </d>
+        </o>
+        <v>{8F99A816-E488-41E4-9FA3-846536012284}</v>
+        <o>
+          <v n="Name">"{8F99A816-E488-41E4-9FA3-846536012284}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" />
+        </o>
+        <v>{eeeeeeee-3909-4298-8022-501ac3238667}</v>
+        <o>
+          <v n="Name">"{eeeeeeee-3909-4298-8022-501ac3238667}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" />
+        </o>
+        <v>{F66C7017-BDD8-4114-926C-81D6D687E35F}</v>
+        <o>
+          <v n="Name">"{F66C7017-BDD8-4114-926C-81D6D687E35F}"</v>
+          <d n="SubKeys" t="Hashtable" />
+          <d n="Values" t="Hashtable" />
+        </o>
+      </d>
+      <d n="Values" t="Hashtable" />
+    </o>
+        </Data>
+        <TypeList>
+          <Type n="Boolean">System.Boolean</Type>
+          <Type n="Hashtable">System.Collections.Hashtable</Type>
+          <Type n="NewestVersionConstraintToSave">{af9bafe2-ba31-4b15-a2b9-48a0f2cd09fb}</Type>
+          <Type n="OptionKey">{54dd0eac-a6d8-46f2-8c27-2f43c7e49861}</Type>
+          <Type n="String">System.String</Type>
+        </TypeList>
+      </XmlArchive>
+    </PlcProjectOptions>
+  </ProjectExtensions>
+</Project>

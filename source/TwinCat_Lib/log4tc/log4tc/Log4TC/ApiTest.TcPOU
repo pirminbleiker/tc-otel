@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+  <POU Name="ApiTest" Id="{d28d37df-7237-480f-92a3-f93252c88566}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM INTERNAL ApiTest
+VAR
+	nInt			: INT;
+	sStr			: STRING;
+	fFloat			: REAL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Einfaches Logging
+F_Log(E_LogLevel.eInfo, 'Log message')
+	.WithLogger('ApiTest')
+	.CreateLog();
+
+F_Log(E_LogLevel.eInfo, 'Log Message Arg={structuredArg} Arg={1} Arg=%s')
+	.WithTArg(F_StringEx('Arg 1'))
+	.WithTArg(F_StringEx('Arg 2'))
+	.WithTArg(F_StringEx('Arg 3'))
+	.CreateLog();
+
+F_Log(E_LogLevel.eError, 'Log Message Arg={structuredArg} Arg={1} Arg=%s')
+	.WithAnyArg(nInt)
+	.WithAnyArg(sStr)
+	.WithAnyArg(fFloat)
+	.CreateLog();
+
+// Einfaches Logging mit expliziten Logger
+F_Log(E_LogLevel.eInfo, 'Log Message Arg={structuredArg} Arg={1} Arg=%s')
+	.WithLogger('tc-otel.Test')
+	.WithTArg(F_StringEx('Arg 1'))
+	.WithTArg(F_StringEx('Arg 2'))
+	.WithTArg(F_StringEx('Arg 3'))
+	.CreateLog();
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

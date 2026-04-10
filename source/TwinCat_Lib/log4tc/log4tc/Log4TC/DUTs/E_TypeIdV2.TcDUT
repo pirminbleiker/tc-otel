@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <DUT Name="E_TypeIdV2" Id="{a5f1c2d1-7b8e-4f3a-9c2e-1a3b5c7d9e0f}">
+    <Declaration><![CDATA[{attribute 'pack_mode' := '1'}
+{attribute 'qualified_only'}
+{attribute 'strict'}
+TYPE INTERNAL E_TypeIdV2 :
+(
+	eType_TIME_V2			:= 100,
+	eType_LTIME_V2			:= 101,
+	eType_DATE_V2			:= 102,
+	eType_DATE_AND_TIME_V2	:= 103,
+	eType_TIME_OF_DAY_V2	:= 104,
+	eType_ENUM_V2			:= 105,
+	eType_WSTRING_V2		:= 106
+) BYTE;
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

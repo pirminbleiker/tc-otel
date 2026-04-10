@@ -1,0 +1,947 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+  <POU Name="FB_ContextBuilder" Id="{7f1d5e34-ea3b-4ad5-887e-933d0a5923d7}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
+{attribute 'conditionalshow'}
+FUNCTION_BLOCK INTERNAL FB_ContextBuilder IMPLEMENTS I_ContextBuilder, I_LogEntryAdder
+VAR CONSTANT
+	nBufferSize			: UINT := 1024;
+END_VAR
+VAR
+	aBuffer				: ARRAY[0..nBufferSize - 1] OF BYTE;	(* buffer for context variables *)
+	nBufferCount		: UINT := 0;
+	
+	aContext			: ARRAY[0..19] OF UINT;
+	nContextCount		: UINT(0..20) := 0;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Context Read Access" Id="{9b27f8b3-02c3-41b6-a0e7-9ea6993338ba}" />
+    <Folder Name="I_ContextBuilder" Id="{571f106f-33ec-4f14-a130-297b7350eccf}" />
+    <Folder Name="Test" Id="{b85c111b-cd83-41bf-9631-2786fa84ebfc}" />
+    <Method Name="_AddContext" Id="{6aa8d9e5-f779-4ed2-aaf7-4b557b9e4966}">
+      <Declaration><![CDATA[METHOD PRIVATE _AddContext : BOOL
+VAR_INPUT
+	refName			: REFERENCE TO T_MaxString;
+	nValueType		: INT;
+	pValue			: PVOID;
+	nValueLen		: UINT;
+END_VAR
+VAR
+	nContextSize	: UINT;
+	nNameLen		: INT;
+	bOk				: BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_AddContext := FALSE;
+
+IF nContextCount < 20 THEN
+	nNameLen := Tc2_Standard.LEN(refName);
+	IF nNameLen >= 0 AND nNameLen <= 255 THEN
+		nContextSize :=
+			INT_TO_UINT(nNameLen + 1) 		// String + Length-Byte
+			+ INT_TO_UINT(SIZEOF(INT))		// Value type
+			+ nValueLen;		// Value length
+
+		IF (nBufferSize - nBufferCount) >= nContextSize  THEN
+			aContext[nContextCount] := nBufferCount;
+			nContextCount := nContextCount + 1;
+		
+			bOk :=
+				_WriteByte(INT_TO_BYTE(nNameLen)) AND_THEN 
+				_Copy(ADR(refName), INT_TO_UINT(nNameLen)) AND_THEN
+				_WriteInt(nValueType) AND_THEN
+				_Copy(pValue, nValueLen);
+			
+			IF bOk THEN
+				_AddContext := TRUE;
+			ELSE
+				// Rollback
+				nContextCount := nContextCount - 1;
+				nBufferCount := aContext[nContextCount];
+				
+				F_InternalLog(
+					E_LogLevel.eFatal,
+					'FB_ContextBuilder._AddContext',
+					'Error copy data to buffer - should not happen because of precheck',
+					Tc2_Utilities.EMPTY_ARG_VALUE,
+					Tc2_Utilities.EMPTY_ARG_VALUE,
+					Tc2_Utilities.EMPTY_ARG_VALUE,
+					Tc2_Utilities.EMPTY_ARG_VALUE
+				);				
+			END_IF
+		ELSE
+			F_InternalLog(
+				E_LogLevel.eWarn,
+				'FB_ContextBuilder._AddContext',
+				'Too less space for adding context value %s.',
+				Tc2_Utilities.F_StringEx(refName),
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE
+			);					
+		END_IF
+	ELSE
+		// should not happen because T_MaxString is <= 255 bytes long
+		F_InternalLog(
+			E_LogLevel.eError,
+			'FB_ContextBuilder._AddContext',
+			'String longer than 255 bytes (actual=%d) - missin 0-byte?',
+			Tc2_Utilities.F_INT(nNameLen),
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);		
+	END_IF
+ELSE
+	F_InternalLog(
+		E_LogLevel.eWarn,
+		'FB_ContextBuilder._AddContext',
+		'Number of context variable exceed (max. 20).',
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);		
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="_BufferCount" Id="{9e288c2b-efcd-493b-8fe9-8c6ee4c74cc5}" FolderPath="Test\">
+      <Declaration><![CDATA[PROPERTY INTERNAL _BufferCount : UINT]]></Declaration>
+      <Get Name="Get" Id="{518273d5-f5f1-4a73-a8bc-95c1ef18c36b}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[_BufferCount := nBufferCount;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="_ContextCount" Id="{a6e241ba-b322-4300-8096-ca586a1faf9d}" FolderPath="Test\">
+      <Declaration><![CDATA[PROPERTY INTERNAL _ContextCount : UINT]]></Declaration>
+      <Get Name="Get" Id="{89d3d77f-dc2b-4041-9278-6db75be57e08}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[_ContextCount := nContextCount;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="_Copy" Id="{5437ce7d-fe97-4a41-96e0-5f302b0be4c0}">
+      <Declaration><![CDATA[METHOD PRIVATE _Copy : BOOL
+VAR_INPUT
+	pSrc		: PVOID;
+	nCount		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF (nBufferSize - nBufferCount) >= nCount THEN
+	MEMCPY(ADR(aBuffer) + nBufferCount, pSrc, nCount);
+	nBufferCount := nBufferCount + nCount;
+	
+	_Copy := TRUE;
+ELSE
+	_Copy := FALSE;
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_FindContext" Id="{051b30f1-5d66-4f30-817f-2c98edf99423}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD PRIVATE _FindContext : UINT
+VAR_INPUT
+	refName		: REFERENCE TO Tc2_System.T_MaxString;
+END_VAR
+VAR
+	nIdx		: UINT;
+	nLen		: BYTE;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF nContextCount > 0 THEN
+	FOR nIdx := 0 TO nContextCount - 1 DO
+		IF _ReadName(nIdx) = refName THEN
+			_FindContext := nIdx;
+			RETURN;
+		END_IF
+	END_FOR
+END_IF
+
+_FindContext := 16#FFFF;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetContextOffset" Id="{990bdec5-6073-42fd-81e3-f1e6f8ec6c1d}" FolderPath="Test\">
+      <Declaration><![CDATA[METHOD INTERNAL _GetContextOffset : UINT
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_GetContextOffset := aContext[nIdx];
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetDataLen" Id="{2cdb1267-7cef-466f-b636-4f6ee5bb5d20}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD INTERNAL _GetDataLen : UINT
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+VAR
+	nSize		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_GetDataLen := _GetSize(nIdx) - _GetOffsetToData(nIdx);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetOffsetToData" Id="{6415a621-297f-46c5-83ca-55d169318d07}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD PRIVATE _GetOffsetToData : UINT
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+VAR
+	pBuf		: PVOID;
+	nOffset		: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[pBuf := ADR(aBuffer) + aContext[nIdx];
+
+// Offset to value (Skip name and type)
+_GetOffsetToData := PBYTE_TO_BYTE(pBuf) + SIZEOF(BYTE) + SIZEOF(INT); // VARSTRING + INT
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetSize" Id="{00ff7a78-bad0-4852-9cac-5a70d194cc79}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD PRIVATE _GetSize : UINT
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF nIdx < nContextCount THEN
+	IF (nIdx + 1) < nContextCount THEN
+		_GetSize := aContext[nIdx + 1] - aContext[nIdx];
+	ELSE
+		_GetSize := nBufferCount - aContext[nIdx];
+	END_IF
+ELSE
+	_GetSize := 0; 
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_ReadName" Id="{6b6cf226-1216-4afc-9d98-968aaba86e58}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD INTERNAL _ReadName : T_MaxString
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+VAR
+	pBuf		: PVOID;
+	nLen		: BYTE;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF nIdx < nContextCount THEN
+	pBuf := ADR(aBuffer) + aContext[nIdx];
+	nLen := PBYTE_TO_BYTE(pBuf);
+	MEMCPY(ADR(_ReadName), pBuf + 1, nLen);
+	_ReadName[nLen] := 0;
+ELSE
+	_ReadName := '';	
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_ReadType" Id="{d663ddb8-494b-4ef5-bff3-7aee2c611d48}" FolderPath="Context Read Access\">
+      <Declaration><![CDATA[METHOD INTERNAL _ReadType : INT
+VAR_INPUT
+	nIdx		: UINT;
+END_VAR
+VAR
+	pBuf		: PVOID;
+	nLen		: BYTE;
+	nOffset		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[pBuf := ADR(aBuffer) + aContext[nIdx];
+
+// Offset to value (Skip name and type)
+nOffset := PBYTE_TO_BYTE(pBuf) + SIZEOF(BYTE); // VARSTRING + INT
+
+MEMCPY(ADR(_ReadType), pBuf + nOffset, SIZEOF(INT));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_RemoveContext" Id="{40ba97da-22cb-4f7f-a723-f506078b82dc}">
+      <Declaration><![CDATA[METHOD PRIVATE _RemoveContext : BOOL
+VAR_INPUT
+	refName		: REFERENCE TO Tc2_System.T_MaxString;
+END_VAR
+VAR
+	nIdx		: UINT;
+	nBufferOff	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF nContextCount > 0 THEN
+	nIdx := _FindContext(refName);
+	IF nIdx <> UINT#16#FFFF THEN
+		(* Found - remove entry and compact buffer *)
+		IF (nIdx + 1) < nContextCount THEN
+			// Move buffer data
+			MEMMOVE(
+				ADR(aBuffer) + aContext[nIdx], 
+				ADR(aBuffer) + aContext[nIdx + 1], 
+				nBufferCount - aContext[nIdx + 1]
+			);
+			
+			nBufferOff := aContext[nIdx + 1] - aContext[nIdx];
+			nBufferCount := nBufferCount - nBufferOff;
+			
+			// Move and change index
+			WHILE (nIdx + 1) < nContextCount DO
+				aContext[nIdx] := aContext[nIdx + 1] - nBufferOff;
+				nIdx := nIdx + 1;
+			END_WHILE
+		END_IF
+
+		nContextCount := nContextCount - 1;
+		_RemoveContext := TRUE;
+		RETURN;
+	END_IF
+END_IF
+
+_RemoveContext := FALSE;
+		]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_ReplaceContext" Id="{093d2e1c-6b1e-4aa2-9bfc-0c093c99bbcf}">
+      <Declaration><![CDATA[METHOD PRIVATE _ReplaceContext : BOOL
+VAR_INPUT
+	nIdx			: UINT;
+	nValueType		: INT;
+	pValue			: PVOID;
+	nValueLen		: UINT;
+END_VAR
+VAR
+	pBuf			: PVOID;
+	nNameLen		: BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[pBuf := ADR(aBuffer) + aContext[nIdx];
+
+// Skip Name
+nNameLen := PBYTE_TO_BYTE(pBuf);
+pBuf := pBuf + nNameLen + 1;
+
+pBuf := pBuf + MEMCPY(pBuf, ADR(nValueType), SIZEOF(nValueType));
+pBuf := pBuf + MEMCPY(pBuf, pValue, nValueLen);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_Reset" Id="{761de020-35ac-4bdf-a8df-dafe5712596b}">
+      <Declaration><![CDATA[METHOD PRIVATE _Reset
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nBufferCount := 0;
+nContextCount := 0;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteByte" Id="{7d91aff1-f35b-439a-b713-0bc671d559ec}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteByte : BOOL
+VAR_INPUT
+	nValue		: BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_WriteByte := _Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteInt" Id="{1e3ba4d6-8552-4cd1-bb10-63e78e1fd099}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteInt : BOOL
+VAR_INPUT
+	nValue		: INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_WriteInt := _Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddBool" Id="{69b8c51c-b82a-4634-a746-58dcc43d15c8}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddBool : I_ContextBuilder
+VAR_INPUT
+	sName		: T_MaxString;
+	bValue		: BOOL;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddBool := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(bValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_BOOL, ADR(bValue), SIZEOF(bValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_BOOL,
+	pValue		:= ADR(bValue),
+	nValueLen	:= SIZEOF(bValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddByte" Id="{df34f64a-bd17-44a1-8989-4bfb199f73c4}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddByte : I_ContextBuilder
+VAR_INPUT
+	sName		: T_MaxString;
+	nValue		: BYTE;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddByte := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_BYTE, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_BYTE,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddDInt" Id="{14338167-95b7-4b48-af57-60faf0cb4418}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddDInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: DINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddDInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_DINT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_DINT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddDWord" Id="{3a61d1e9-6bbf-4e04-a9be-dcdd56370b0c}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddDWord : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: DWORD;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddDWord := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_DWORD, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_DWORD,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddInt" Id="{fb2119ae-4050-4e81-8815-a8079d098669}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: INT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_INT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_INT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLInt" Id="{ec5bb388-452b-4afb-8ddf-fa6bc6431abc}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddLInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: LINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddLInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_LARGE, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_LARGE,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLReal" Id="{a75e25ee-03e4-4380-951a-909b7280bb14}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddLReal : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	fValue	: LREAL;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddLReal := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(fValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_LREAL, ADR(fValue), SIZEOF(fValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_LREAL,
+	pValue		:= ADR(fValue),
+	nValueLen	:= SIZEOF(fValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLWord" Id="{5cf2db2a-24c8-4a05-83f1-34f03fee5c34}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddLWord : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: LWORD;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddLWord := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_LWORD, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_LWORD,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddReal" Id="{7c5c7e6e-ff0c-4b08-8169-15c7c093cc5c}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddReal : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	fValue	: REAL;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddReal := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(fValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_REAL, ADR(fValue), SIZEOF(fValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_REAL,
+	pValue		:= ADR(fValue),
+	nValueLen	:= SIZEOF(fValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddSInt" Id="{521f9d39-b78b-4c63-ac7d-5b8fb737ac33}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddSInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: SINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddSInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_SINT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_SINT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddString" Id="{0065f8e4-eb4e-430e-80a0-8d6911fe784a}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddString : I_ContextBuilder
+VAR_INPUT
+	sName		: T_MaxString;
+	sValue		: T_MaxString;
+END_VAR
+VAR
+	nIdx		: UINT;
+	aDataBuffer	: ARRAY[0..255] OF BYTE;
+	nLen		: INT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddString := THIS^;
+
+nLen := LEN(sValue);
+IF nLen >= 0 AND nLen <= 255 THEN
+	// copy string with length-byte into temporary buffer
+	aDataBuffer[0] := INT_TO_BYTE(nLen);
+	MEMCPY(ADR(aDataBuffer) + 1, ADR(sValue), INT_TO_UDINT(nLen));
+	
+	nIdx := _FindContext(sName);
+	IF nIdx <> UINT#16#FFFF THEN
+		IF _GetDataLen(nIdx) = INT_TO_UINT(nLen + 1) THEN
+			_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_STRING, ADR(aDataBuffer), INT_TO_UINT(nLen) + 1);
+			RETURN;
+		END_IF
+		
+		_RemoveContext(sName);
+	END_IF
+	
+	_AddContext(
+		refName		:= sName,
+		nValueType	:= E_ArgType.ARGTYPE_STRING,
+		pValue		:= ADR(aDataBuffer),
+		nValueLen	:= INT_TO_UINT(nLen) + 1
+	);
+ELSE
+	F_InternalLog(
+		E_LogLEvel.eFatal,
+		'FB_ContextBuilder.AddString',
+		'Pre check failed - string is longer than 255 (%d)',
+		Tc2_Utilities.F_INT(nLen),
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddToLogEntry" Id="{c595d1aa-4916-409a-98e2-7f96efa63808}">
+      <Declaration><![CDATA[METHOD AddToLogEntry : BOOL
+VAR_INPUT
+	eScope			: E_Scope;
+	iLogEntry		: I_LogEntry;
+END_VAR
+VAR
+	nIdx			: UINT;
+	bOk				: BOOL;
+	nContextLen		: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nIdx := 0;
+bOk := TRUE;
+IF iLogEntry = 0 THEN
+	bOk := FALSE;
+END_IF
+WHILE nIdx < nContextCount AND bOk DO
+	iLogEntry.AddContext(eScope, ADR(aBuffer) + aContext[nIdx], _GetSize(nIdx));
+	nIdx := nIdx + 1;
+END_WHILE
+
+IF nIdx < nContextCount AND NOT bOk THEN
+	F_InternalLog(
+		E_LogLevel.eWarn,
+		'FB_ContextBuilder.AddLogEntry',
+		'Could not add all context properties to log entry. (act=%d, all=%d)',
+		Tc2_Utilities.F_UINT(nIdx),
+		Tc2_Utilities.F_UINT(nContextCount),
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);
+END_IF 
+
+AddToLogEntry := bOk;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddUDInt" Id="{3ded8ddb-e75b-4840-b4e6-192353878227}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddUDInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: UDINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddUDInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_UDINT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_UDINT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddUInt" Id="{d7fdfb1c-a0fd-4570-ac15-12901c10d36f}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddUInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: UINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddUInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_UINT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_UINT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddULInt" Id="{6c2b26da-e080-41fb-ad9c-880acc8ee7dc}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddULInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: ULINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddULInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_ULARGE, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_ULARGE,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddUSInt" Id="{d8d3fe19-0b7b-4572-8e73-e8ed79fedae9}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddUSInt : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: USINT;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddUSInt := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> UINT#16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_USINT, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_USINT,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddWord" Id="{1fb5969b-5803-47bd-8f48-9c9081f79e15}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD AddWord : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+	nValue	: WORD;
+END_VAR
+VAR
+	nIdx	: UINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[AddWord := THIS^;
+
+nIdx := _FindContext(sName);
+IF nIdx <> 16#FFFF THEN
+	IF _GetDataLen(nIdx) = SIZEOF(nValue) THEN
+		_ReplaceContext(nIdx, Tc2_Utilities.E_ArgType.ARGTYPE_WORD, ADR(nValue), SIZEOF(nValue));
+		RETURN;
+	END_IF
+	
+	_RemoveContext(sName);
+END_IF
+
+_AddContext(
+	refName		:= sName,
+	nValueType	:= Tc2_Utilities.E_ArgType.ARGTYPE_WORD,
+	pValue		:= ADR(nValue),
+	nValueLen	:= SIZEOF(nValue)
+);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Clear" Id="{5cde927c-0f51-4040-b17c-fddd9ecadd40}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD Clear : I_ContextBuilder
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Reset();
+Clear := THIS^;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Remove" Id="{adbd11a7-1b0a-4185-8a92-e47d1e48684f}" FolderPath="I_ContextBuilder\">
+      <Declaration><![CDATA[METHOD Remove : I_ContextBuilder
+VAR_INPUT
+	sName	: Tc2_System.T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[Remove := THIS^;
+_RemoveContext(sName);]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

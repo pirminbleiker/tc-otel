@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+  <POU Name="F_FUN" Id="{66f1fd3f-30bd-4766-a4ba-288de1fa6c2c}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_FUN : BOOL
+VAR_INPUT
+END_VAR
+VAR
+	var1			: __SYSTEM.VAR_INFO;
+	var2			: __SYSTEM.VAR_INFO;
+	fbLog			: FB_Logger('F_FUN (Inst)');
+END_VAR
+VAR_STAT
+	fbLog2			: FB_Logger('F_FUN (Stat)');
+END_VAR
+
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbLog();
+fbLog2();
+var1 := __VARINFO(fbLog);
+var2 := __VARINFO(fbLog2);
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

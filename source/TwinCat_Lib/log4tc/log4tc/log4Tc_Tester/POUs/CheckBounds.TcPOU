@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="CheckBounds" Id="{4aa71e58-8a22-49e2-8b69-c56cbe34a862}" SpecialFunc="CheckBounds">
+    <Declaration><![CDATA[// Implicitly generated code : DO NOT EDIT
+FUNCTION CheckBounds : DINT
+VAR_INPUT
+	index, lower, upper: DINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[{noflow}
+IF (index < lower) THEN
+	CheckBounds := lower;
+	F_Log(E_LogLevel.eFatal, 'Check bounds exception: {index} {lower} {upper}').WithLogger('CheckBounds').WithAnyArg(index).WithAnyArg(lower).WithAnyArg(upper).CreateLog();
+ELSIF(index > upper) THEN
+	CheckBounds := upper;
+	F_Log(E_LogLevel.eFatal, 'Check bounds exception: {index} {lower} {upper}').WithLogger('CheckBounds').WithAnyArg(index).WithAnyArg(lower).WithAnyArg(upper).CreateLog();
+ELSE
+	CheckBounds := index;
+END_IF
+{flow}
+]]></ST>
+    </Implementation>
+    <LineIds Name="CheckBounds">
+      <LineId Id="23" Count="2" />
+      <LineId Id="32" Count="0" />
+      <LineId Id="26" Count="1" />
+      <LineId Id="33" Count="0" />
+      <LineId Id="28" Count="2" />
+      <LineId Id="2" Count="0" />
+      <LineId Id="31" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

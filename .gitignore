@@ -1,0 +1,49 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sln.iml
+
+# TwinCAT
+_Boot/
+_Config/
+_Libraries/
+*.compiled-library
+*.tsproj.bak
+*.xti.bak
+*.tclrs
+
+# OS
+.DS_Store
+Thumbs.db
+NUL
+
+# Logs
+*.log
+
+# Binary artifacts
+tc-otel-*-arm64
+*.exe
+!source/**/*.exe
+
+# Python
+__pycache__/
+*.pyc
+
+# Build
+[Dd]ebug/
+[Rr]elease/
+[Bb]in/
+[Oo]bj/
+
+# VS upgrade logs
+UpgradeLog*.htm
+UpgradeLog*.XML

@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <Itf Name="I_WithLogger" Id="{37a6dead-b272-0175-2d5c-85a4173fe999}">
+    <Declaration><![CDATA[// Fluent builder interface for composing log entries.
+// Obtain an instance via F_Log() or FB_Log.Log(), chain methods, and call CreateLog() to emit.
+INTERFACE I_WithLogger EXTENDS I_Logger
+]]></Declaration>
+    <Method Name="WithLogger" Id="{3aba0bb2-12cb-0edb-2d3d-6cff8af1a20d}">
+      <Declaration><![CDATA[// Overrides the default logger name for this log entry.
+// If not called, the global logger or FB_Log instance logger is used.
+METHOD WithLogger : I_WithContext
+VAR_INPUT
+	sLogger	: T_MaxString;
+END_VAR
+]]></Declaration>
+    </Method>
+  </Itf>
+</TcPlcObject>

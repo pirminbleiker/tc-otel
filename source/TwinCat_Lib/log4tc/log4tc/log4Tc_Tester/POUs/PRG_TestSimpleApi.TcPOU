@@ -1,0 +1,63 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="PRG_TestSimpleApi" Id="{bcc7908d-3a35-4ae4-afd2-9b6ede60025b}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM PRG_TestSimpleApi
+VAR
+	bExecute		: BOOL;
+	bExecuteSingle	: BOOL;
+	
+	nArg			: INT := 42;
+	sArg			: T_MaxString := 'foo';
+	fArg			: REAL := 4.2;
+	
+	tTime			: TIME :=  T#12H34M15S;
+	tLTime			: LTIME := LTIME#1000D15H23M12S34MS2US44NS;
+	dDate			: DATE := DATE#1996-05-06;
+	dDT				: DT := DATE_AND_TIME#1996-05-06-15:36:30;
+	tTOD			: TOD := TIME_OF_DAY#15:36:30.123;
+	eEnum			: E_LogLevel := E_LogLevel.eFatal;
+	wStr			: WSTRING := "fooöäaΘ𝄞";
+	tTime2			: TIME :=  T#1s;
+
+	logger			: FB_Log;	
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[tTime2 := tTime2 + T#1MS;
+IF ttime2 > T#1S OR bExecute OR bExecuteSingle THEN
+	bExecuteSingle := FALSE;
+	tTime2 := T#0s;
+
+FOR nArg := 0 TO 1 DO
+	tTOD := Tc2_Utilities.FILETIME64_TO_TOD(Tc2_System.F_GetSystemTime());
+
+	F_Log(E_LogLevel.eInfo,
+		'Neue Datentypen TIME={time} LTIME={ltime} DATE={date} DT={date_and_time} TOD={time_of_day} ENUM={enum} WSTRING={wstring}')
+		.WithAnyArg(tTime)
+		.WithAnyArg(tLTime)
+		.WithAnyArg(dDate)
+		.WithAnyArg(dDT)
+		.WithAnyArg(tTOD)
+		.WithAnyArg(eEnum)
+		.WithAnyArg(wStr)
+		.CreateLog();
+
+	F_Log(E_LogLevel.eDebug, 'Try F_Log with args {0} and {tod} and some Context. try to reuse {0} and {tod}')
+		.WithLogger('PRG_TestSimpleApi')
+// 		.WithContext(Log4TC.F_Context().AddString('TestValue', 'This is a test string').AddInt('TestInt', 14))
+		.WithAnyArg(eEnum)
+		.WithAnyArg(tTOD)
+		.CreateLog();
+
+// 	logger.LoggerContext.AddString('TestValue', 'This is a test string').AddInt('TestInt', 14);
+
+	logger.Fatal('Try FB_Log with args {0} and {tod} and some Context. try to reuse {0} and {tod}')
+		.WithAnyArg(eEnum)
+		.WithAnyArg(tTOD)
+		.CreateLog();
+END_FOR
+
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Refactors>
+  <Renames>
+    <RenamedType>
+      <Type guid="d3f48c9f-ff2e-465b-bbd7-5053ade8f282">WITHSTRINGARG</Type>
+      <From>WithStringArg</From>
+      <To>WithTArg</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="8e3c58b9-db8c-4af2-b60b-bf29d4e372e6">WITHSTRINGARG</Type>
+      <From>WithStringArg</From>
+      <To>WithTArg</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="afc2f3dd-7c7d-4dac-b12b-9815415ba0cf">WITHCONTEXTINT</Type>
+      <From>WithContextInt</From>
+      <To>WithContext</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="8b10c811-cffb-4efb-98e9-827ac612e8d3">WITHARG</Type>
+      <From>WithInt</From>
+      <To>WithAnyArg</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="f92f2c8f-a7cf-4fc5-88d4-0a0f0c6c46ad">WITHARG</Type>
+      <From>WithIntArg</From>
+      <To>WithAnyArg</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="15bc0808-4d58-45ab-93cf-1a8d645eec0b">F_LOGCONTEXT</Type>
+      <From>F_LogContext</From>
+      <To>F_Context</To>
+    </RenamedType>
+    <RenamedType>
+      <Type guid="c970aefe-3199-4c53-b630-5acb322a775a">F_LOGBUILDER</Type>
+      <From>F_LogBuilder</From>
+      <To>F_Log</To>
+    </RenamedType>
+  </Renames>
+</Refactors>
