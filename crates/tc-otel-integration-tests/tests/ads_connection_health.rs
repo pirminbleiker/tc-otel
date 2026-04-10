@@ -238,7 +238,11 @@ fn test_health_collector_service_name() {
     let metrics = collector.collect();
 
     for m in &metrics {
-        assert_eq!(m.project_name, "my-tc-otel", "metric {} missing service name", m.name);
+        assert_eq!(
+            m.project_name, "my-tc-otel",
+            "metric {} missing service name",
+            m.name
+        );
     }
 }
 
@@ -266,13 +270,19 @@ fn test_health_metrics_to_otel_records() {
 
     assert_eq!(records.len(), 7);
 
-    let active = records.iter().find(|r| r.name == "ads.connections.active").unwrap();
+    let active = records
+        .iter()
+        .find(|r| r.name == "ads.connections.active")
+        .unwrap();
     assert_eq!(active.kind, MetricKind::Gauge);
     assert_eq!(active.value, 1.0);
 
     // Check resource attributes
     assert_eq!(
-        active.resource_attributes.get("service.name").and_then(|v| v.as_str()),
+        active
+            .resource_attributes
+            .get("service.name")
+            .and_then(|v| v.as_str()),
         Some("test-svc")
     );
 }
@@ -312,12 +322,24 @@ fn test_health_metrics_otel_payload() {
     assert_eq!(all_metrics.len(), 7);
 
     // Verify gauge metric has correct structure
-    let active_metric = all_metrics.iter().find(|m| m["name"] == "ads.connections.active").unwrap();
-    assert!(active_metric.get("gauge").is_some(), "active connections should be a gauge");
+    let active_metric = all_metrics
+        .iter()
+        .find(|m| m["name"] == "ads.connections.active")
+        .unwrap();
+    assert!(
+        active_metric.get("gauge").is_some(),
+        "active connections should be a gauge"
+    );
 
     // Verify sum metric has correct structure
-    let accepted_metric = all_metrics.iter().find(|m| m["name"] == "ads.connections.accepted").unwrap();
-    assert!(accepted_metric.get("sum").is_some(), "accepted should be a sum");
+    let accepted_metric = all_metrics
+        .iter()
+        .find(|m| m["name"] == "ads.connections.accepted")
+        .unwrap();
+    assert!(
+        accepted_metric.get("sum").is_some(),
+        "accepted should be a sum"
+    );
 }
 
 // ─── Counters update after permit drop ──────────────────────────────
@@ -343,15 +365,24 @@ fn test_health_collector_counters_after_disconnect() {
     let metrics = collector.collect();
 
     // Active should be 1 (p2 still held)
-    let active = metrics.iter().find(|m| m.name == "ads.connections.active").unwrap();
+    let active = metrics
+        .iter()
+        .find(|m| m.name == "ads.connections.active")
+        .unwrap();
     assert_eq!(active.value, 1.0);
 
     // Accepted should still be 2 (total ever accepted)
-    let accepted = metrics.iter().find(|m| m.name == "ads.connections.accepted").unwrap();
+    let accepted = metrics
+        .iter()
+        .find(|m| m.name == "ads.connections.accepted")
+        .unwrap();
     assert_eq!(accepted.value, 2.0);
 
     // Rejected should still be 1
-    let rejected = metrics.iter().find(|m| m.name == "ads.connections.rejected").unwrap();
+    let rejected = metrics
+        .iter()
+        .find(|m| m.name == "ads.connections.rejected")
+        .unwrap();
     assert_eq!(rejected.value, 1.0);
 
     drop(p2);
@@ -387,9 +418,15 @@ fn test_health_collector_mixed_rejections() {
     let collector = AdsHealthCollector::new(mgr, "test-service".to_string());
     let metrics = collector.collect();
 
-    let accepted = metrics.iter().find(|m| m.name == "ads.connections.accepted").unwrap();
+    let accepted = metrics
+        .iter()
+        .find(|m| m.name == "ads.connections.accepted")
+        .unwrap();
     assert_eq!(accepted.value, 5.0);
 
-    let rejected = metrics.iter().find(|m| m.name == "ads.connections.rejected").unwrap();
+    let rejected = metrics
+        .iter()
+        .find(|m| m.name == "ads.connections.rejected")
+        .unwrap();
     assert_eq!(rejected.value, 2.0);
 }

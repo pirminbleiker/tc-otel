@@ -136,7 +136,10 @@ mod tests {
         let mgr = Arc::new(ConnectionManager::new(ConnectionConfig::default()));
         let collector = AdsHealthCollector::new(mgr, "svc".to_string());
         let metrics = collector.collect();
-        let active = metrics.iter().find(|m| m.name == "ads.connections.active").unwrap();
+        let active = metrics
+            .iter()
+            .find(|m| m.name == "ads.connections.active")
+            .unwrap();
         assert_eq!(active.kind, MetricKind::Gauge);
     }
 
@@ -145,7 +148,10 @@ mod tests {
         let mgr = Arc::new(ConnectionManager::new(ConnectionConfig::default()));
         let collector = AdsHealthCollector::new(mgr, "svc".to_string());
         let metrics = collector.collect();
-        let accepted = metrics.iter().find(|m| m.name == "ads.connections.accepted").unwrap();
+        let accepted = metrics
+            .iter()
+            .find(|m| m.name == "ads.connections.accepted")
+            .unwrap();
         assert_eq!(accepted.kind, MetricKind::Sum);
         assert!(accepted.is_monotonic);
     }
@@ -155,7 +161,10 @@ mod tests {
         let mgr = Arc::new(ConnectionManager::new(ConnectionConfig::default()));
         let collector = AdsHealthCollector::new(mgr, "svc".to_string());
         let metrics = collector.collect();
-        let util = metrics.iter().find(|m| m.name == "ads.connections.utilization").unwrap();
+        let util = metrics
+            .iter()
+            .find(|m| m.name == "ads.connections.utilization")
+            .unwrap();
         assert_eq!(util.value, 0.0);
     }
 
@@ -172,7 +181,10 @@ mod tests {
 
         let collector = AdsHealthCollector::new(mgr, "svc".to_string());
         let metrics = collector.collect();
-        let active = metrics.iter().find(|m| m.name == "ads.connections.active").unwrap();
+        let active = metrics
+            .iter()
+            .find(|m| m.name == "ads.connections.active")
+            .unwrap();
         assert_eq!(active.value, 1.0);
     }
 }
