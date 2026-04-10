@@ -25,7 +25,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.1"
 
 # OpenTelemetry
 opentelemetry = { version = "0.20", features = ["trace"] }
@@ -41,8 +41,8 @@ hyper = "1.0"
 hyper-util = "0.1"
 http = "1.0"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors", "timeout"] }
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Logging/Tracing
 tracing = "0.1"
@@ -60,14 +60,14 @@ tc-otel-service = { path = "crates/tc-otel-service" }
 
 # Utilities
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 bytes = "1.5"
 parking_lot = "0.12"
 
 # Testing
-mockall = "0.12"
+mockall = "0.14"
 proptest = "1.4"
 
 [profile.release]
