@@ -1,0 +1,22 @@
+[default]
+extend-ignore-re = [
+    # German words in PLC source code and comments
+    "(?i)(Adresse|Konfiguration|Attribut|Attributs|Ordner|Temperatur|Programm|Suche)",
+    "(?i)(alle|als|ein|ist|legt|lokal|oder|unter|startet)",
+]
+
+[default.extend-words]
+# TwinCAT file extension .TcTTO
+TTO = "TTO"
+# German words used intentionally
+programm = "programm"
+missin = "missin"
+
+[files]
+extend-exclude = [
+    # TwinCAT PLC source files contain German comments and identifiers
+    "source/TwinCat_Examples/**",
+    "source/TwinCat_Lib/**",
+    # Compiled library binary
+    "library/**",
+]
