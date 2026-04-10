@@ -1,10 +1,10 @@
-name: Build and Test
+name: CI
 
 on:
   push:
-    branches: [ master, main, 'feature/*' ]
+    branches: [main, 'feature/*']
   pull_request:
-    branches: [ master, main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,48 +12,32 @@ env:
 
 jobs:
   check:
-    name: Check
+    name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
-        rust: [stable]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: Run cargo check
-        run: cargo check --verbose --all
+      - run: cargo check --all --verbose
 
   test:
-    name: Test Suite
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
-        rust: [stable]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: cargo test --verbose --all
-
-      - name: Run doc tests
-        run: cargo test --doc --verbose
+      - run: cargo test --all --verbose
+      - run: cargo test --doc --verbose
 
   fmt:
-    name: Rustfmt
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,9 +55,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all --all-targets --all-features -- -D warnings
+      - run: cargo clippy --all --all-targets -- -D warnings
 
-  security_audit:
+  audit:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
@@ -83,21 +67,18 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   coverage:
-    name: Code Coverage
+    name: Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
-
       - name: Generate coverage
-        run: cargo tarpaulin --out Xml --all --timeout 300
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        run: cargo tarpaulin --out xml --all --timeout 300
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
