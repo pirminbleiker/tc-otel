@@ -80,20 +80,32 @@ jobs:
       - name: Build
         run: cargo build --release -p tc-otel-service --target ${{ matrix.target }}
 
-      - name: Rename binary
+      - name: Package binary
         shell: bash
-        run: cp target/${{ matrix.target }}/release/${{ matrix.artifact }} ${{ matrix.asset_name }}
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} tc-otel${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a ${{ matrix.asset_name }}.zip tc-otel.exe
+          else
+            tar czf ${{ matrix.asset_name }}.tar.gz tc-otel
+          fi
 
       - name: Upload to release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }} --clobber
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }}.zip --clobber
+          else
+            gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }}.tar.gz --clobber
+          fi
 
       - name: Upload artifact for deb job
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.name }}
-          path: ${{ matrix.asset_name }}
+          path: tc-otel${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
   build-deb:
     name: Build .deb (${{ matrix.arch }})
