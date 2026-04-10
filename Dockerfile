@@ -8,7 +8,7 @@
 #   docker build -t tc-otel .
 
 # Stage 1: Cache dependencies (only rebuilds when Cargo.toml/Cargo.lock change)
-FROM --platform=$BUILDPLATFORM rust:1.86 AS deps
+FROM --platform=$BUILDPLATFORM rust:latest AS deps
 ARG TARGETARCH
 
 # Install cross-compilation tools for arm64

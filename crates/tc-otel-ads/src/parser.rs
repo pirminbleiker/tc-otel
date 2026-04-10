@@ -1167,7 +1167,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 1);
-        assert_eq!(entry.arguments[&0], serde_json::json!(123));
+        assert_eq!(entry.arguments[&1], serde_json::json!(123));
     }
 
     #[test]
@@ -1225,7 +1225,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 3);
-        assert_eq!(entry.arguments[&0], serde_json::json!(42));
+        assert_eq!(entry.arguments[&1], serde_json::json!(42));
         assert_eq!(entry.arguments[&1], serde_json::json!("test"));
         assert_eq!(entry.arguments[&2], serde_json::json!(true));
     }
@@ -1243,7 +1243,7 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        assert_eq!(entry.arguments[&0], serde_json::Value::Null);
+        assert_eq!(entry.arguments[&1], serde_json::Value::Null);
     }
 
     #[test]
@@ -1259,7 +1259,7 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        let value = &entry.arguments[&0];
+        let value = &entry.arguments[&1];
         assert!(value.is_number());
     }
 
@@ -1293,7 +1293,7 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        assert_eq!(entry.arguments[&0], serde_json::json!(-42));
+        assert_eq!(entry.arguments[&1], serde_json::json!(-42));
     }
 
     #[test]
@@ -1411,7 +1411,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 5);
-        assert!(entry.arguments[&0].is_number());
+        assert!(entry.arguments[&1].is_number());
         assert!(entry.arguments[&1].is_number());
         assert!(entry.arguments[&2].is_string());
         assert!(entry.arguments[&3].is_boolean());
@@ -1499,7 +1499,7 @@ mod tests {
 
         let entry = &result.entries[0];
         assert_eq!(entry.arguments.len(), 1);
-        assert_eq!(entry.arguments[&0], serde_json::json!(42));
+        assert_eq!(entry.arguments[&1], serde_json::json!(42));
     }
 
     #[test]
