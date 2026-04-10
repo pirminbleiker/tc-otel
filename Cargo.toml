@@ -67,7 +67,7 @@ bytes = "1.5"
 parking_lot = "0.12"
 
 # Testing
-mockall = "0.12"
+mockall = "0.14"
 proptest = "1.4"
 
 [profile.release]
