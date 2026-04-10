@@ -127,9 +127,7 @@ impl AdsParser {
                     match Self::parse_span_from_reader(&mut reader) {
                         Ok(span) => spans.push(span),
                         Err(e) => {
-                            if !entries.is_empty()
-                                || !registrations.is_empty()
-                                || !spans.is_empty()
+                            if !entries.is_empty() || !registrations.is_empty() || !spans.is_empty()
                             {
                                 tracing::debug!(
                                     "Partial span at buffer end ({} bytes remaining): {}",
@@ -451,11 +449,9 @@ impl AdsParser {
         )))?;
 
         let status_byte = reader.read_u8()?;
-        let status_code =
-            SpanStatusCode::from_u8(status_byte).ok_or(AdsError::ParseError(format!(
-                "Invalid span status code: {}",
-                status_byte
-            )))?;
+        let status_code = SpanStatusCode::from_u8(status_byte).ok_or(AdsError::ParseError(
+            format!("Invalid span status code: {}", status_byte),
+        ))?;
 
         // Timestamps
         let start_time = reader.read_filetime()?;
@@ -2142,7 +2138,7 @@ mod tests {
         payload.extend_from_slice(&[0u8; 8]); // span_id
         payload.extend_from_slice(&[0u8; 8]); // parent_span_id
         payload.push(99); // invalid kind
-        // Don't need more — should fail here
+                          // Don't need more — should fail here
 
         let entry_len = (payload.len() - len_pos - 2) as u16;
         payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
@@ -2256,10 +2252,7 @@ mod tests {
         assert_eq!(span.name, "child_span");
         assert_eq!(span.parent_span_id_hex(), "cccccccccccccccc");
         assert_eq!(span.span_id_hex(), "bbbbbbbbbbbbbbbb");
-        assert_eq!(
-            span.trace_id_hex(),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
+        assert_eq!(span.trace_id_hex(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     }
 
     #[test]

@@ -384,12 +384,7 @@ pub struct SpanEntry {
 }
 
 impl SpanEntry {
-    pub fn new(
-        name: String,
-        kind: SpanKind,
-        trace_id: String,
-        span_id: String,
-    ) -> Self {
+    pub fn new(name: String, kind: SpanKind, trace_id: String, span_id: String) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
@@ -419,8 +414,12 @@ impl SpanEntry {
     /// Check if this span represents a state machine transition
     pub fn is_state_machine_transition(&self) -> bool {
         self.attributes.contains_key("state_machine.name")
-            && self.attributes.contains_key("state_machine.transition.old_state")
-            && self.attributes.contains_key("state_machine.transition.new_state")
+            && self
+                .attributes
+                .contains_key("state_machine.transition.old_state")
+            && self
+                .attributes
+                .contains_key("state_machine.transition.new_state")
     }
 }
 
