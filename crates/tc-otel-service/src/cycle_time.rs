@@ -101,7 +101,12 @@ impl TaskCycleState {
             .fold(f64::NEG_INFINITY, f64::max);
 
         // Jitter = standard deviation
-        let variance = self.cycle_times_us.iter().map(|t| (t - avg).powi(2)).sum::<f64>() / n;
+        let variance = self
+            .cycle_times_us
+            .iter()
+            .map(|t| (t - avg).powi(2))
+            .sum::<f64>()
+            / n;
         let jitter = variance.sqrt();
 
         Some(CycleTimeStats {
