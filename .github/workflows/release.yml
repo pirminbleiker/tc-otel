@@ -117,10 +117,10 @@ jobs:
         include:
           - arch: amd64
             binary_artifact: binary-linux-amd64
-            binary_name: tc-otel-linux-amd64
+            binary_name: tc-otel
           - arch: arm64
             binary_artifact: binary-linux-arm64
-            binary_name: tc-otel-linux-arm64
+            binary_name: tc-otel
     steps:
       - uses: actions/checkout@v6
 
