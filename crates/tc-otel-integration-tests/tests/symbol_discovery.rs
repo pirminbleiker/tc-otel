@@ -9,8 +9,8 @@
 use tc_otel_ads::{
     build_read_request_frame, build_read_response_frame, parse_symbol_table, AdsReadRequest,
     AdsReadResponse, AdsSymbolEntry, AdsSymbolUploadInfo, AmsHeader, AmsNetId, AmsTcpFrame,
-    AmsTcpHeader, ADS_CMD_READ, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, ADSIGRP_SYM_UPLOAD,
-    ADSIGRP_SYM_UPLOADINFO,
+    AmsTcpHeader, ADSIGRP_SYM_UPLOAD, ADSIGRP_SYM_UPLOADINFO, ADS_CMD_READ, ADS_STATE_REQUEST,
+    ADS_STATE_RESPONSE,
 };
 
 // --- Binary parsing integration tests ---
@@ -22,7 +22,8 @@ fn test_symbol_upload_info_full_roundtrip() {
     let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
     // Build request frame
-    let request = build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 1);
+    let request =
+        build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 1);
 
     // Verify request frame structure
     assert_eq!(request.ams_header.command_id, ADS_CMD_READ);
@@ -165,7 +166,8 @@ fn test_frame_serialization_through_wire() {
     let source = AmsNetId::from_str_ref("192.168.1.50.1.1").unwrap();
     let target = AmsNetId::from_str_ref("192.168.1.100.1.1").unwrap();
 
-    let request = build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 42);
+    let request =
+        build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 42);
 
     // Serialize to wire format
     let wire_bytes = request.serialize();
@@ -189,7 +191,8 @@ fn test_response_frame_serialization_through_wire() {
     let source = AmsNetId::from_str_ref("10.0.0.1.1.1").unwrap();
     let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
-    let request = build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOAD, 0, 1024, 7);
+    let request =
+        build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOAD, 0, 1024, 7);
 
     let symbol = AdsSymbolEntry {
         index_group: 0x4020,
@@ -225,7 +228,8 @@ fn test_ads_read_error_response() {
     let source = AmsNetId::from_str_ref("10.0.0.1.1.1").unwrap();
     let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
-    let request = build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 1);
+    let request =
+        build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 1);
 
     // Build response with ADS error code (device not found)
     let response = build_read_response_frame(&request, 0x0706, &[]);

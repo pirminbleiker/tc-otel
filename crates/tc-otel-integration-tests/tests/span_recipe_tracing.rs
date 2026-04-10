@@ -216,10 +216,7 @@ fn test_span_entry_recipe_with_events() {
                 "recipe.recipe_name".to_string(),
                 serde_json::json!("FillAndSeal_500ml"),
             );
-            m.insert(
-                "recipe.parameter_count".to_string(),
-                serde_json::json!(12),
-            );
+            m.insert("recipe.parameter_count".to_string(), serde_json::json!(12));
             m
         },
     });
@@ -230,10 +227,7 @@ fn test_span_entry_recipe_with_events() {
         attributes: {
             let mut m = HashMap::new();
             m.insert("recipe.step_index".to_string(), serde_json::json!(0));
-            m.insert(
-                "recipe.step_name".to_string(),
-                serde_json::json!("Preheat"),
-            );
+            m.insert("recipe.step_name".to_string(), serde_json::json!("Preheat"));
             m
         },
     });
@@ -258,10 +252,7 @@ fn test_span_entry_recipe_with_events() {
         attributes: {
             let mut m = HashMap::new();
             m.insert("recipe.steps_executed".to_string(), serde_json::json!(5));
-            m.insert(
-                "recipe.quality_passed".to_string(),
-                serde_json::json!(true),
-            );
+            m.insert("recipe.quality_passed".to_string(), serde_json::json!(true));
             m
         },
     });
@@ -362,10 +353,10 @@ fn test_parse_recipe_span_with_attributes() {
         "recipe.execute",
         "",
         &[
-            ("recipe.recipe_id", 11, &recipe_id_bytes),           // UDINT
-            ("recipe.recipe_name", 12, &recipe_name),             // STRING
-            ("recipe.version", 11, &version_bytes),               // UDINT
-            ("recipe.step_count", 11, &step_count_bytes),         // UDINT
+            ("recipe.recipe_id", 11, &recipe_id_bytes),   // UDINT
+            ("recipe.recipe_name", 12, &recipe_name),     // STRING
+            ("recipe.version", 11, &version_bytes),       // UDINT
+            ("recipe.step_count", 11, &step_count_bytes), // UDINT
         ],
         &[],
     );
@@ -400,10 +391,10 @@ fn test_parse_recipe_step_span_with_attributes() {
         "recipe.step",
         "",
         &[
-            ("recipe.step_index", 11, &step_index_bytes),         // UDINT
-            ("recipe.step_name", 12, &step_name),                 // STRING
-            ("recipe.target_volume", 5, &target_volume_bytes),    // LREAL
-            ("recipe.fill_rate", 5, &fill_rate_bytes),            // LREAL
+            ("recipe.step_index", 11, &step_index_bytes), // UDINT
+            ("recipe.step_name", 12, &step_name),         // STRING
+            ("recipe.target_volume", 5, &target_volume_bytes), // LREAL
+            ("recipe.fill_rate", 5, &fill_rate_bytes),    // LREAL
         ],
         &[],
     );
@@ -552,8 +543,7 @@ fn test_ads_recipe_span_to_span_entry_conversion() {
     let ads_span = &result.spans[0];
 
     // Convert AdsSpanEntry → SpanEntry (manual, mirroring how the listener would do it)
-    let mut span_entry =
-        SpanEntry::new(ads_span.trace_id, ads_span.span_id, ads_span.name.clone());
+    let mut span_entry = SpanEntry::new(ads_span.trace_id, ads_span.span_id, ads_span.name.clone());
     span_entry.parent_span_id = ads_span.parent_span_id;
     span_entry.kind = ads_span.kind;
     span_entry.status_code = ads_span.status_code;

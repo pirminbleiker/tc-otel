@@ -358,8 +358,8 @@ pub struct LogRecord {
     pub body: serde_json::Value,
     pub severity_number: i32,
     pub severity_text: String,
-    pub trace_id: String,  // Hex-encoded trace ID (empty = no trace context)
-    pub span_id: String,   // Hex-encoded span ID (empty = no span context)
+    pub trace_id: String, // Hex-encoded trace ID (empty = no trace context)
+    pub span_id: String,  // Hex-encoded span ID (empty = no span context)
     pub resource_attributes: HashMap<String, serde_json::Value>,
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub log_attributes: HashMap<String, serde_json::Value>,

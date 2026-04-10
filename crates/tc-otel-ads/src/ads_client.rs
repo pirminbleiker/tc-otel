@@ -392,7 +392,7 @@ mod tests {
         let mut data = vec![0u8; 12];
         data[0..4].copy_from_slice(&0u32.to_le_bytes()); // result = 0
         data[4..8].copy_from_slice(&100u32.to_le_bytes()); // read_length = 100
-        // only 4 bytes of actual data follow
+                                                           // only 4 bytes of actual data follow
         assert!(AdsReadResponse::parse(&data).is_err());
     }
 
@@ -401,16 +401,8 @@ mod tests {
         let source = AmsNetId::from_str_ref("10.0.0.1.1.1").unwrap();
         let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
-        let frame = build_read_request_frame(
-            source,
-            32768,
-            target,
-            851,
-            ADSIGRP_SYM_UPLOADINFO,
-            0,
-            8,
-            1,
-        );
+        let frame =
+            build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 1);
 
         assert_eq!(frame.ams_header.command_id, ADS_CMD_READ);
         assert_eq!(frame.ams_header.state_flags, ADS_STATE_REQUEST);
@@ -429,16 +421,8 @@ mod tests {
         let source = AmsNetId::from_str_ref("10.0.0.1.1.1").unwrap();
         let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
-        let request_frame = build_read_request_frame(
-            source,
-            32768,
-            target,
-            851,
-            ADSIGRP_SYM_UPLOADINFO,
-            0,
-            8,
-            42,
-        );
+        let request_frame =
+            build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOADINFO, 0, 8, 42);
 
         let info = AdsSymbolUploadInfo {
             symbol_count: 10,
@@ -471,16 +455,8 @@ mod tests {
         let source = AmsNetId::from_str_ref("10.0.0.1.1.1").unwrap();
         let target = AmsNetId::from_str_ref("5.80.201.232.1.1").unwrap();
 
-        let frame = build_read_request_frame(
-            source,
-            32768,
-            target,
-            851,
-            ADSIGRP_SYM_UPLOAD,
-            0,
-            65536,
-            99,
-        );
+        let frame =
+            build_read_request_frame(source, 32768, target, 851, ADSIGRP_SYM_UPLOAD, 0, 65536, 99);
 
         let bytes = frame.serialize();
         let parsed = AmsTcpFrame::parse(&bytes).unwrap();

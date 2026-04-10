@@ -367,7 +367,10 @@ mod tests {
 
         // Wait for batch flush (batch_size=2, should trigger)
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(counter.load(Ordering::SeqCst) > 0, "should have flushed at least once");
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "should have flushed at least once"
+        );
     }
 
     #[tokio::test]
@@ -383,8 +386,15 @@ mod tests {
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(counter1.load(Ordering::SeqCst) > 0, "initial endpoint should receive");
-        assert_eq!(counter2.load(Ordering::SeqCst), 0, "new endpoint should not receive yet");
+        assert!(
+            counter1.load(Ordering::SeqCst) > 0,
+            "initial endpoint should receive"
+        );
+        assert_eq!(
+            counter2.load(Ordering::SeqCst),
+            0,
+            "new endpoint should not receive yet"
+        );
 
         // Hot-reload: change endpoint to server 2
         let mut new_settings = settings.clone();
@@ -417,7 +427,10 @@ mod tests {
 
         // Wait for timer flush
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(counter.load(Ordering::SeqCst) > 0, "timer should have flushed the single record");
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "timer should have flushed the single record"
+        );
 
         // Hot-reload: change batch_size to 1
         let mut new_settings = settings.clone();
@@ -450,6 +463,9 @@ mod tests {
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(counter.load(Ordering::SeqCst) > 0, "should still flush after watch channel closes");
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "should still flush after watch channel closes"
+        );
     }
 }
