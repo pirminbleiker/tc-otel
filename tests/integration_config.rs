@@ -1,6 +1,6 @@
 //! Integration tests for configuration parsing and handling
 
-use tc_otel_core::{AppSettings, ExportConfig, LoggingConfig, LogFormat, ReceiverConfig, ServiceConfig, OutputConfig, WebConfig};
+use tc_otel_core::{AppSettings, ExportConfig, LoggingConfig, LogFormat, MetricsConfig, ReceiverConfig, ServiceConfig, OutputConfig, WebConfig};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -30,6 +30,7 @@ fn test_config_complete_structure() {
             shutdown_timeout_secs: 30,
         },
         web: WebConfig::default(),
+        metrics: MetricsConfig::default(),
     };
 
     assert_eq!(config.logging.log_level, "info");
@@ -65,9 +66,11 @@ fn test_config_with_multiple_outputs() {
     let config = AppSettings {
         logging: LoggingConfig::default(),
         receiver: ReceiverConfig::default(),
+        export: ExportConfig::default(),
         outputs,
         service: ServiceConfig::default(),
         web: WebConfig::default(),
+        metrics: MetricsConfig::default(),
     };
 
     assert_eq!(config.outputs.len(), 3);

@@ -11,6 +11,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 
 use crate::config_watcher::ConfigWatcher;
+use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::LogDispatcher;
 use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebState};
 
@@ -105,6 +106,12 @@ impl Log4TcService {
         let task_registry = ams_server.task_registry().clone();
         let diagnostic_stats = Arc::new(DiagnosticStats::new());
 
+        // Create cycle time tracker (shared between dispatcher and web UI)
+        let cycle_tracker = Arc::new(CycleTimeTracker::new(
+            self.settings.metrics.cycle_time_window,
+        ));
+        let cycle_time_enabled = self.settings.metrics.cycle_time_enabled;
+
         let mut shutdown_rx_ams = shutdown_tx.subscribe();
         let ams_handle = tokio::spawn(async move {
             tokio::select! {
@@ -122,12 +129,25 @@ impl Log4TcService {
         // Start dispatcher with diagnostic stats tracking
         let dispatcher = log_dispatcher.clone();
         let stats_for_dispatcher = diagnostic_stats.clone();
+        let tracker_for_dispatcher = cycle_tracker.clone();
         let dispatcher_handle = tokio::spawn(async move {
             let mut processed = 0u64;
             loop {
                 tokio::select! {
                     Some(entry) = log_rx.recv() => {
                         stats_for_dispatcher.logs_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        // Feed cycle time tracker before dispatch
+                        if cycle_time_enabled && entry.task_cycle_counter > 0 {
+                            tracker_for_dispatcher.record(
+                                &entry.ams_net_id,
+                                entry.task_index,
+                                &entry.task_name,
+                                entry.task_cycle_counter,
+                                entry.plc_timestamp,
+                            );
+                        }
+
                         if let Err(e) = dispatcher.dispatch(entry).await {
                             tracing::error!("Dispatch error: {}", e);
                             stats_for_dispatcher.logs_failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -154,6 +174,7 @@ impl Log4TcService {
                     self.settings.web.max_subscriptions,
                 )),
                 symbols: Arc::new(SymbolStore::new()),
+                cycle_tracker,
                 service_name: self.settings.service.name.clone(),
             };
             let web_config = self.settings.web.clone();

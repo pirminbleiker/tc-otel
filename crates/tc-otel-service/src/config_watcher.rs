@@ -120,6 +120,7 @@ mod tests {
             outputs: vec![],
             service: ServiceConfig::default(),
             web: WebConfig::default(),
+            metrics: MetricsConfig::default(),
         }
     }
 

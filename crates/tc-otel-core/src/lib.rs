@@ -10,8 +10,8 @@ pub mod formatter;
 pub mod models;
 
 pub use config::{
-    AppSettings, ExportConfig, LogFormat, LoggingConfig, OutputConfig, ReceiverConfig,
-    ServiceConfig, TlsConfig, WebConfig,
+    AppSettings, ExportConfig, LogFormat, LoggingConfig, MetricsConfig, OutputConfig,
+    ReceiverConfig, ServiceConfig, TlsConfig, WebConfig,
 };
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};
