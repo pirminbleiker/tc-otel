@@ -37,3 +37,4 @@ reqwest.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true
+tempfile = "3.27"

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Application-wide configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub logging: LoggingConfig,
     pub receiver: ReceiverConfig,
@@ -15,7 +15,7 @@ pub struct AppSettings {
 }
 
 /// Logging configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoggingConfig {
     pub log_level: String,
     pub format: LogFormat,
@@ -30,7 +30,7 @@ pub enum LogFormat {
 }
 
 /// TLS/SSL configuration for the receiver
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Enable TLS for the receiver
     #[serde(default)]
@@ -227,7 +227,7 @@ impl TlsConfig {
 }
 
 /// Receiver configuration (OTEL listener)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiverConfig {
     /// HTTP/gRPC listening address
     pub host: String,
@@ -386,7 +386,7 @@ impl ReceiverConfig {
 }
 
 /// Output plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
     #[serde(rename = "Type")]
     pub output_type: String,
@@ -395,7 +395,7 @@ pub struct OutputConfig {
 }
 
 /// Export configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportConfig {
     /// Export endpoint URL (e.g. "http://victoria-logs:9428/insert/jsonline")
     #[serde(default = "default_export_endpoint")]
@@ -443,7 +443,7 @@ impl Default for ExportConfig {
 }
 
 /// Service configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceConfig {
     /// Service name
     pub name: String,

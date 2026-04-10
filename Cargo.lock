@@ -2184,6 +2184,7 @@ dependencies = [
  "tc-otel-ads",
  "tc-otel-core",
  "tc-otel-export",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
