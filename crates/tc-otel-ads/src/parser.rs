@@ -3,8 +3,8 @@
 use crate::error::*;
 use crate::protocol::*;
 use chrono::{DateTime, Utc};
-use tc_otel_core::LogLevel;
 use std::collections::HashMap;
+use tc_otel_core::LogLevel;
 
 // Security limits for protocol parsing
 /// Maximum length for individual strings (65 KB)
@@ -31,9 +31,11 @@ impl AdsParser {
     /// Parse ALL log entries from a buffer (PLC sends multiple entries per ADS Write)
     pub fn parse_all(data: &[u8]) -> Result<ParseResult> {
         if data.len() > MAX_MESSAGE_SIZE {
-            return Err(AdsError::ParseError(
-                format!("Message size {} exceeds maximum {}", data.len(), MAX_MESSAGE_SIZE)
-            ));
+            return Err(AdsError::ParseError(format!(
+                "Message size {} exceeds maximum {}",
+                data.len(),
+                MAX_MESSAGE_SIZE
+            )));
         }
 
         let mut entries = Vec::new();
@@ -59,7 +61,11 @@ impl AdsParser {
                                 return Err(e);
                             }
                             // Partial entry at end - ok, we got what we could
-                            tracing::debug!("Partial entry at buffer end ({} bytes remaining): {}", reader.remaining(), e);
+                            tracing::debug!(
+                                "Partial entry at buffer end ({} bytes remaining): {}",
+                                reader.remaining(),
+                                e
+                            );
                             break;
                         }
                     }
@@ -75,7 +81,11 @@ impl AdsParser {
                         Err(e) => {
                             if !entries.is_empty() || !registrations.is_empty() {
                                 // Already parsed some entries — remaining buffer is likely padding/garbage
-                                tracing::debug!("Partial v2 entry at buffer end ({} bytes remaining): {}", reader.remaining(), e);
+                                tracing::debug!(
+                                    "Partial v2 entry at buffer end ({} bytes remaining): {}",
+                                    reader.remaining(),
+                                    e
+                                );
                                 break;
                             }
                             tracing::debug!("Error parsing v2 entry: {}", e);
@@ -114,15 +124,20 @@ impl AdsParser {
             }
         }
 
-        Ok(ParseResult { entries, registrations })
+        Ok(ParseResult {
+            entries,
+            registrations,
+        })
     }
 
     /// Parse a single ADS log entry from bytes (v1 only for backward compatibility)
     pub fn parse(data: &[u8]) -> Result<AdsLogEntry> {
         if data.len() > MAX_MESSAGE_SIZE {
-            return Err(AdsError::ParseError(
-                format!("Message size {} exceeds maximum {}", data.len(), MAX_MESSAGE_SIZE)
-            ));
+            return Err(AdsError::ParseError(format!(
+                "Message size {} exceeds maximum {}",
+                data.len(),
+                MAX_MESSAGE_SIZE
+            )));
         }
 
         let mut reader = BytesReader::new(data);
@@ -132,8 +147,8 @@ impl AdsParser {
     fn parse_v1_from_reader(reader: &mut BytesReader) -> Result<AdsLogEntry> {
         // Version (1 byte)
         let version_byte = reader.read_u8()?;
-        let version =
-            AdsProtocolVersion::from_u8(version_byte).ok_or(AdsError::InvalidVersion(version_byte))?;
+        let version = AdsProtocolVersion::from_u8(version_byte)
+            .ok_or(AdsError::InvalidVersion(version_byte))?;
 
         // Message (string)
         let message = reader.read_string()?;
@@ -144,8 +159,10 @@ impl AdsParser {
         // Level (2 bytes - UINT, PLC uses _WriteUInt for eLogLevel)
         let level_bytes = reader.read_bytes(2)?;
         let level_u16 = u16::from_le_bytes([level_bytes[0], level_bytes[1]]);
-        let level = LogLevel::from_u8(level_u16 as u8)
-            .ok_or(AdsError::ParseError(format!("Invalid log level: {}", level_u16)))?;
+        let level = LogLevel::from_u8(level_u16 as u8).ok_or(AdsError::ParseError(format!(
+            "Invalid log level: {}",
+            level_u16
+        )))?;
 
         // Timestamps (8 bytes each, FILETIME format)
         let plc_timestamp = reader.read_filetime()?;
@@ -179,10 +196,11 @@ impl AdsParser {
             if type_id == 1 {
                 // Argument - with security limit
                 if arguments.len() >= MAX_ARGUMENTS {
-                    return Err(AdsError::ParseError(
-                        format!("Too many arguments: {} exceeds maximum {}",
-                                arguments.len() + 1, MAX_ARGUMENTS)
-                    ));
+                    return Err(AdsError::ParseError(format!(
+                        "Too many arguments: {} exceeds maximum {}",
+                        arguments.len() + 1,
+                        MAX_ARGUMENTS
+                    )));
                 }
                 let index = reader.read_u8()?;
                 let value = reader.read_value()?;
@@ -190,15 +208,16 @@ impl AdsParser {
             } else if type_id == 2 {
                 // Context - with security limit
                 if context.len() >= MAX_CONTEXT_VARS {
-                    return Err(AdsError::ParseError(
-                        format!("Too many context variables: {} exceeds maximum {}",
-                                context.len() + 1, MAX_CONTEXT_VARS)
-                    ));
+                    return Err(AdsError::ParseError(format!(
+                        "Too many context variables: {} exceeds maximum {}",
+                        context.len() + 1,
+                        MAX_CONTEXT_VARS
+                    )));
                 }
                 let scope = reader.read_u8()?;
                 let name = reader.read_string()?;
                 let value = reader.read_value()?;
-                context.insert(format!("scope_{}_{}",scope, name), value);
+                context.insert(format!("scope_{}_{}", scope, name), value);
             }
         }
 
@@ -233,8 +252,10 @@ impl AdsParser {
 
         // Fixed header (27 - 3 = 24 bytes after entry_length)
         let level_byte = reader.read_u8()?;
-        let level = LogLevel::from_u8(level_byte)
-            .ok_or(AdsError::ParseError(format!("Invalid log level: {}", level_byte)))?;
+        let level = LogLevel::from_u8(level_byte).ok_or(AdsError::ParseError(format!(
+            "Invalid log level: {}",
+            level_byte
+        )))?;
 
         let plc_timestamp = reader.read_filetime()?;
         let clock_timestamp = reader.read_filetime()?;
@@ -277,7 +298,7 @@ impl AdsParser {
                 let type_id = reader.read_u8()?;
                 let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
                 let value = reader.read_value_with_type(type_id_i32)?;
-                context.insert(format!("scope_{}_{}",scope, name), value);
+                context.insert(format!("scope_{}_{}", scope, name), value);
                 context_idx += 1;
             }
         }
@@ -296,9 +317,9 @@ impl AdsParser {
             task_index,
             task_name: String::new(), // Will be filled by registry lookup
             task_cycle_counter: cycle_counter,
-            app_name: String::new(),  // Will be filled by registry lookup
+            app_name: String::new(),     // Will be filled by registry lookup
             project_name: String::new(), // Will be filled by registry lookup
-            online_change_count: 0,    // Will be filled by registry lookup
+            online_change_count: 0,      // Will be filled by registry lookup
             arguments,
             context,
         })
@@ -308,7 +329,10 @@ impl AdsParser {
         // Type byte (should be 3)
         let type_byte = reader.read_u8()?;
         if type_byte != 3 {
-            return Err(AdsError::ParseError(format!("Invalid registration type: {}", type_byte)));
+            return Err(AdsError::ParseError(format!(
+                "Invalid registration type: {}",
+                type_byte
+            )));
         }
 
         let task_index = reader.read_u8()?;
@@ -329,13 +353,13 @@ impl AdsParser {
     /// Remap v2 type ID (1 byte) to internal format (for lookup in read_value_with_type)
     fn remap_v2_type_id(v2_type: i32) -> i32 {
         match v2_type {
-            100 => 20000, // TIME
-            101 => 20001, // LTIME
-            102 => 20002, // DATE
-            103 => 20003, // DATE_AND_TIME
-            104 => 20004, // TIME_OF_DAY
-            105 => 20005, // ENUM
-            106 => 20006, // WSTRING
+            100 => 20000,   // TIME
+            101 => 20001,   // LTIME
+            102 => 20002,   // DATE
+            103 => 20003,   // DATE_AND_TIME
+            104 => 20004,   // TIME_OF_DAY
+            105 => 20005,   // ENUM
+            106 => 20006,   // WSTRING
             other => other, // Standard types 1-17 pass through unchanged
         }
     }
@@ -396,9 +420,10 @@ impl<'a> BytesReader<'a> {
 
         // Security: Enforce maximum string length
         if len > MAX_STRING_LENGTH {
-            return Err(AdsError::ParseError(
-                format!("String length {} exceeds maximum {}", len, MAX_STRING_LENGTH)
-            ));
+            return Err(AdsError::ParseError(format!(
+                "String length {} exceeds maximum {}",
+                len, MAX_STRING_LENGTH
+            )));
         }
 
         let str_bytes = self.read_bytes(len)?;
@@ -406,7 +431,7 @@ impl<'a> BytesReader<'a> {
         // Validate UTF-8 first before allocating
         match std::str::from_utf8(str_bytes) {
             Ok(valid_str) => Ok(valid_str.to_string()),
-            Err(e) => Err(AdsError::InvalidStringEncoding(e.to_string()))
+            Err(e) => Err(AdsError::InvalidStringEncoding(e.to_string())),
         }
     }
 
@@ -449,31 +474,68 @@ impl<'a> BytesReader<'a> {
 
         match val_type {
             0 => Ok(serde_json::Value::Null),
-            1 | 9 => { let v = self.read_u8()?; Ok(serde_json::json!(v)) }         // BYTE/USINT
-            2 | 10 => { let v = self.read_u16()?; Ok(serde_json::json!(v)) }       // WORD/UINT
-            3 | 11 => { let v = self.read_u32()?; Ok(serde_json::json!(v)) }       // DWORD/UDINT
-            4 => {                                                                   // REAL (f32)
+            1 | 9 => {
+                let v = self.read_u8()?;
+                Ok(serde_json::json!(v))
+            } // BYTE/USINT
+            2 | 10 => {
+                let v = self.read_u16()?;
+                Ok(serde_json::json!(v))
+            } // WORD/UINT
+            3 | 11 => {
+                let v = self.read_u32()?;
+                Ok(serde_json::json!(v))
+            } // DWORD/UDINT
+            4 => {
+                // REAL (f32)
                 let b = self.read_bytes(4)?;
-                Ok(serde_json::json!(f32::from_le_bytes([b[0],b[1],b[2],b[3]])))
+                Ok(serde_json::json!(f32::from_le_bytes([
+                    b[0], b[1], b[2], b[3]
+                ])))
             }
-            5 => {                                                                   // LREAL (f64)
+            5 => {
+                // LREAL (f64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(f64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(f64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            6 => { let v = self.read_u8()? as i8; Ok(serde_json::json!(v)) }       // SINT
-            7 => { let v = self.read_i16()?; Ok(serde_json::json!(v)) }             // INT
-            8 => { let v = self.read_i32()?; Ok(serde_json::json!(v)) }             // DINT
-            12 => { let s = self.read_string()?; Ok(serde_json::Value::String(s)) } // STRING
-            13 => { let b = self.read_u8()? != 0; Ok(serde_json::Value::Bool(b)) }  // BOOL
-            15 => {                                                                  // ULARGE (u64)
+            6 => {
+                let v = self.read_u8()? as i8;
+                Ok(serde_json::json!(v))
+            } // SINT
+            7 => {
+                let v = self.read_i16()?;
+                Ok(serde_json::json!(v))
+            } // INT
+            8 => {
+                let v = self.read_i32()?;
+                Ok(serde_json::json!(v))
+            } // DINT
+            12 => {
+                let s = self.read_string()?;
+                Ok(serde_json::Value::String(s))
+            } // STRING
+            13 => {
+                let b = self.read_u8()? != 0;
+                Ok(serde_json::Value::Bool(b))
+            } // BOOL
+            15 => {
+                // ULARGE (u64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(u64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            17 => {                                                                  // LARGE (i64)
+            17 => {
+                // LARGE (i64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(i64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            20000 => {                                                               // TIME (ms as u32)
+            20000 => {
+                // TIME (ms as u32)
                 let total_ms = self.read_u32()?;
                 let d = total_ms / 86_400_000;
                 let h = (total_ms % 86_400_000) / 3_600_000;
@@ -481,16 +543,27 @@ impl<'a> BytesReader<'a> {
                 let s = (total_ms % 60_000) / 1000;
                 let ms = total_ms % 1000;
                 let mut parts = String::from("T#");
-                if d > 0 { parts.push_str(&format!("{}d", d)); }
-                if h > 0 { parts.push_str(&format!("{}h", h)); }
-                if m > 0 { parts.push_str(&format!("{}m", m)); }
-                if s > 0 || (d == 0 && h == 0 && m == 0 && ms == 0) { parts.push_str(&format!("{}s", s)); }
-                if ms > 0 { parts.push_str(&format!("{}ms", ms)); }
+                if d > 0 {
+                    parts.push_str(&format!("{}d", d));
+                }
+                if h > 0 {
+                    parts.push_str(&format!("{}h", h));
+                }
+                if m > 0 {
+                    parts.push_str(&format!("{}m", m));
+                }
+                if s > 0 || (d == 0 && h == 0 && m == 0 && ms == 0) {
+                    parts.push_str(&format!("{}s", s));
+                }
+                if ms > 0 {
+                    parts.push_str(&format!("{}ms", ms));
+                }
                 Ok(serde_json::Value::String(parts))
             }
-            20001 => {                                                               // LTIME (100ns as u64)
+            20001 => {
+                // LTIME (100ns as u64)
                 let b = self.read_bytes(8)?;
-                let ns100 = u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]);
+                let ns100 = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
                 let total_ns = ns100 * 100;
                 let d = total_ns / 86_400_000_000_000;
                 let h = (total_ns % 86_400_000_000_000) / 3_600_000_000_000;
@@ -500,48 +573,91 @@ impl<'a> BytesReader<'a> {
                 let us = (total_ns % 1_000_000) / 1_000;
                 let ns = total_ns % 1_000;
                 let mut parts = String::from("LTIME#");
-                if d > 0 { parts.push_str(&format!("{}d", d)); }
-                if h > 0 { parts.push_str(&format!("{}h", h)); }
-                if m > 0 { parts.push_str(&format!("{}m", m)); }
-                if s > 0 { parts.push_str(&format!("{}s", s)); }
-                if ms > 0 { parts.push_str(&format!("{}ms", ms)); }
-                if us > 0 { parts.push_str(&format!("{}us", us)); }
-                if ns > 0 { parts.push_str(&format!("{}ns", ns)); }
-                if parts == "LTIME#" { parts.push_str("0s"); }
+                if d > 0 {
+                    parts.push_str(&format!("{}d", d));
+                }
+                if h > 0 {
+                    parts.push_str(&format!("{}h", h));
+                }
+                if m > 0 {
+                    parts.push_str(&format!("{}m", m));
+                }
+                if s > 0 {
+                    parts.push_str(&format!("{}s", s));
+                }
+                if ms > 0 {
+                    parts.push_str(&format!("{}ms", ms));
+                }
+                if us > 0 {
+                    parts.push_str(&format!("{}us", us));
+                }
+                if ns > 0 {
+                    parts.push_str(&format!("{}ns", ns));
+                }
+                if parts == "LTIME#" {
+                    parts.push_str("0s");
+                }
                 Ok(serde_json::Value::String(parts))
             }
-            20004 => {                                                               // TIME_OF_DAY (ms as u32)
+            20004 => {
+                // TIME_OF_DAY (ms as u32)
                 let total_ms = self.read_u32()?;
                 let h = total_ms / 3_600_000;
                 let m = (total_ms % 3_600_000) / 60_000;
                 let s = (total_ms % 60_000) / 1000;
                 let ms = total_ms % 1000;
                 if ms > 0 {
-                    Ok(serde_json::Value::String(format!("TOD#{:02}:{:02}:{:02}.{:03}", h, m, s, ms)))
+                    Ok(serde_json::Value::String(format!(
+                        "TOD#{:02}:{:02}:{:02}.{:03}",
+                        h, m, s, ms
+                    )))
                 } else {
-                    Ok(serde_json::Value::String(format!("TOD#{:02}:{:02}:{:02}", h, m, s)))
+                    Ok(serde_json::Value::String(format!(
+                        "TOD#{:02}:{:02}:{:02}",
+                        h, m, s
+                    )))
                 }
             }
-            20002 => {                                                               // DATE
+            20002 => {
+                // DATE
                 let unix_secs = self.read_u32()? as i64;
                 let dt = chrono::DateTime::from_timestamp(unix_secs, 0).unwrap_or_default();
-                Ok(serde_json::Value::String(format!("D#{}", dt.format("%Y-%-m-%-d"))))
+                Ok(serde_json::Value::String(format!(
+                    "D#{}",
+                    dt.format("%Y-%-m-%-d")
+                )))
             }
-            20003 => {                                                               // DATE_AND_TIME
+            20003 => {
+                // DATE_AND_TIME
                 let unix_secs = self.read_u32()? as i64;
                 let dt = chrono::DateTime::from_timestamp(unix_secs, 0).unwrap_or_default();
-                Ok(serde_json::Value::String(format!("DT#{}", dt.format("%Y-%-m-%-d-%H:%M:%S"))))
+                Ok(serde_json::Value::String(format!(
+                    "DT#{}",
+                    dt.format("%Y-%-m-%-d-%H:%M:%S")
+                )))
             }
-            20005 => {                                                               // ENUM (recursive)
+            20005 => {
+                // ENUM (recursive)
                 // Read underlying type, then value
                 let underlying = self.read_i16()? as i32;
                 match underlying {
-                    1 | 9 => { let v = self.read_u8()?; Ok(serde_json::json!(v)) }
-                    2 | 10 => { let v = self.read_u16()?; Ok(serde_json::json!(v)) }
-                    3 | 11 => { let v = self.read_u32()?; Ok(serde_json::json!(v)) }
+                    1 | 9 => {
+                        let v = self.read_u8()?;
+                        Ok(serde_json::json!(v))
+                    }
+                    2 | 10 => {
+                        let v = self.read_u16()?;
+                        Ok(serde_json::json!(v))
+                    }
+                    3 | 11 => {
+                        let v = self.read_u32()?;
+                        Ok(serde_json::json!(v))
+                    }
                     15 => {
                         let b = self.read_bytes(8)?;
-                        Ok(serde_json::json!(u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                        Ok(serde_json::json!(u64::from_le_bytes([
+                            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                        ])))
                     }
                     _ => {
                         tracing::warn!("Unknown enum underlying type: {}", underlying);
@@ -549,13 +665,15 @@ impl<'a> BytesReader<'a> {
                     }
                 }
             }
-            20006 => {                                                               // WSTRING (UTF-16LE)
+            20006 => {
+                // WSTRING (UTF-16LE)
                 // Length in characters (1 byte), data is len*2 bytes UTF-16LE
                 let char_count = self.read_u8()? as usize;
                 let byte_count = char_count * 2;
                 let raw = self.read_bytes(byte_count)?;
                 // Decode UTF-16LE
-                let u16_vals: Vec<u16> = raw.chunks(2)
+                let u16_vals: Vec<u16> = raw
+                    .chunks(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let s = String::from_utf16_lossy(&u16_vals);
@@ -572,31 +690,68 @@ impl<'a> BytesReader<'a> {
     fn read_value_with_type(&mut self, val_type: i32) -> Result<serde_json::Value> {
         match val_type {
             0 => Ok(serde_json::Value::Null),
-            1 | 9 => { let v = self.read_u8()?; Ok(serde_json::json!(v)) }         // BYTE/USINT
-            2 | 10 => { let v = self.read_u16()?; Ok(serde_json::json!(v)) }       // WORD/UINT
-            3 | 11 => { let v = self.read_u32()?; Ok(serde_json::json!(v)) }       // DWORD/UDINT
-            4 => {                                                                   // REAL (f32)
+            1 | 9 => {
+                let v = self.read_u8()?;
+                Ok(serde_json::json!(v))
+            } // BYTE/USINT
+            2 | 10 => {
+                let v = self.read_u16()?;
+                Ok(serde_json::json!(v))
+            } // WORD/UINT
+            3 | 11 => {
+                let v = self.read_u32()?;
+                Ok(serde_json::json!(v))
+            } // DWORD/UDINT
+            4 => {
+                // REAL (f32)
                 let b = self.read_bytes(4)?;
-                Ok(serde_json::json!(f32::from_le_bytes([b[0],b[1],b[2],b[3]])))
+                Ok(serde_json::json!(f32::from_le_bytes([
+                    b[0], b[1], b[2], b[3]
+                ])))
             }
-            5 => {                                                                   // LREAL (f64)
+            5 => {
+                // LREAL (f64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(f64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(f64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            6 => { let v = self.read_u8()? as i8; Ok(serde_json::json!(v)) }       // SINT
-            7 => { let v = self.read_i16()?; Ok(serde_json::json!(v)) }             // INT
-            8 => { let v = self.read_i32()?; Ok(serde_json::json!(v)) }             // DINT
-            12 => { let s = self.read_string()?; Ok(serde_json::Value::String(s)) } // STRING
-            13 => { let b = self.read_u8()? != 0; Ok(serde_json::Value::Bool(b)) }  // BOOL
-            15 => {                                                                  // ULARGE (u64)
+            6 => {
+                let v = self.read_u8()? as i8;
+                Ok(serde_json::json!(v))
+            } // SINT
+            7 => {
+                let v = self.read_i16()?;
+                Ok(serde_json::json!(v))
+            } // INT
+            8 => {
+                let v = self.read_i32()?;
+                Ok(serde_json::json!(v))
+            } // DINT
+            12 => {
+                let s = self.read_string()?;
+                Ok(serde_json::Value::String(s))
+            } // STRING
+            13 => {
+                let b = self.read_u8()? != 0;
+                Ok(serde_json::Value::Bool(b))
+            } // BOOL
+            15 => {
+                // ULARGE (u64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(u64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            17 => {                                                                  // LARGE (i64)
+            17 => {
+                // LARGE (i64)
                 let b = self.read_bytes(8)?;
-                Ok(serde_json::json!(i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                Ok(serde_json::json!(i64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                ])))
             }
-            20000 => {                                                               // TIME (ms as u32)
+            20000 => {
+                // TIME (ms as u32)
                 let total_ms = self.read_u32()?;
                 let d = total_ms / 86_400_000;
                 let h = (total_ms % 86_400_000) / 3_600_000;
@@ -604,16 +759,27 @@ impl<'a> BytesReader<'a> {
                 let s = (total_ms % 60_000) / 1000;
                 let ms = total_ms % 1000;
                 let mut parts = String::from("T#");
-                if d > 0 { parts.push_str(&format!("{}d", d)); }
-                if h > 0 { parts.push_str(&format!("{}h", h)); }
-                if m > 0 { parts.push_str(&format!("{}m", m)); }
-                if s > 0 || (d == 0 && h == 0 && m == 0 && ms == 0) { parts.push_str(&format!("{}s", s)); }
-                if ms > 0 { parts.push_str(&format!("{}ms", ms)); }
+                if d > 0 {
+                    parts.push_str(&format!("{}d", d));
+                }
+                if h > 0 {
+                    parts.push_str(&format!("{}h", h));
+                }
+                if m > 0 {
+                    parts.push_str(&format!("{}m", m));
+                }
+                if s > 0 || (d == 0 && h == 0 && m == 0 && ms == 0) {
+                    parts.push_str(&format!("{}s", s));
+                }
+                if ms > 0 {
+                    parts.push_str(&format!("{}ms", ms));
+                }
                 Ok(serde_json::Value::String(parts))
             }
-            20001 => {                                                               // LTIME (100ns as u64)
+            20001 => {
+                // LTIME (100ns as u64)
                 let b = self.read_bytes(8)?;
-                let ns100 = u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]);
+                let ns100 = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
                 let total_ns = ns100 * 100;
                 let d = total_ns / 86_400_000_000_000;
                 let h = (total_ns % 86_400_000_000_000) / 3_600_000_000_000;
@@ -623,48 +789,91 @@ impl<'a> BytesReader<'a> {
                 let us = (total_ns % 1_000_000) / 1_000;
                 let ns = total_ns % 1_000;
                 let mut parts = String::from("LTIME#");
-                if d > 0 { parts.push_str(&format!("{}d", d)); }
-                if h > 0 { parts.push_str(&format!("{}h", h)); }
-                if m > 0 { parts.push_str(&format!("{}m", m)); }
-                if s > 0 { parts.push_str(&format!("{}s", s)); }
-                if ms > 0 { parts.push_str(&format!("{}ms", ms)); }
-                if us > 0 { parts.push_str(&format!("{}us", us)); }
-                if ns > 0 { parts.push_str(&format!("{}ns", ns)); }
-                if parts == "LTIME#" { parts.push_str("0s"); }
+                if d > 0 {
+                    parts.push_str(&format!("{}d", d));
+                }
+                if h > 0 {
+                    parts.push_str(&format!("{}h", h));
+                }
+                if m > 0 {
+                    parts.push_str(&format!("{}m", m));
+                }
+                if s > 0 {
+                    parts.push_str(&format!("{}s", s));
+                }
+                if ms > 0 {
+                    parts.push_str(&format!("{}ms", ms));
+                }
+                if us > 0 {
+                    parts.push_str(&format!("{}us", us));
+                }
+                if ns > 0 {
+                    parts.push_str(&format!("{}ns", ns));
+                }
+                if parts == "LTIME#" {
+                    parts.push_str("0s");
+                }
                 Ok(serde_json::Value::String(parts))
             }
-            20004 => {                                                               // TIME_OF_DAY (ms as u32)
+            20004 => {
+                // TIME_OF_DAY (ms as u32)
                 let total_ms = self.read_u32()?;
                 let h = total_ms / 3_600_000;
                 let m = (total_ms % 3_600_000) / 60_000;
                 let s = (total_ms % 60_000) / 1000;
                 let ms = total_ms % 1000;
                 if ms > 0 {
-                    Ok(serde_json::Value::String(format!("TOD#{:02}:{:02}:{:02}.{:03}", h, m, s, ms)))
+                    Ok(serde_json::Value::String(format!(
+                        "TOD#{:02}:{:02}:{:02}.{:03}",
+                        h, m, s, ms
+                    )))
                 } else {
-                    Ok(serde_json::Value::String(format!("TOD#{:02}:{:02}:{:02}", h, m, s)))
+                    Ok(serde_json::Value::String(format!(
+                        "TOD#{:02}:{:02}:{:02}",
+                        h, m, s
+                    )))
                 }
             }
-            20002 => {                                                               // DATE
+            20002 => {
+                // DATE
                 let unix_secs = self.read_u32()? as i64;
                 let dt = chrono::DateTime::from_timestamp(unix_secs, 0).unwrap_or_default();
-                Ok(serde_json::Value::String(format!("D#{}", dt.format("%Y-%-m-%-d"))))
+                Ok(serde_json::Value::String(format!(
+                    "D#{}",
+                    dt.format("%Y-%-m-%-d")
+                )))
             }
-            20003 => {                                                               // DATE_AND_TIME
+            20003 => {
+                // DATE_AND_TIME
                 let unix_secs = self.read_u32()? as i64;
                 let dt = chrono::DateTime::from_timestamp(unix_secs, 0).unwrap_or_default();
-                Ok(serde_json::Value::String(format!("DT#{}", dt.format("%Y-%-m-%-d-%H:%M:%S"))))
+                Ok(serde_json::Value::String(format!(
+                    "DT#{}",
+                    dt.format("%Y-%-m-%-d-%H:%M:%S")
+                )))
             }
-            20005 => {                                                               // ENUM (recursive)
+            20005 => {
+                // ENUM (recursive)
                 // Read underlying type, then value
                 let underlying = self.read_u8()? as i32;
                 match underlying {
-                    1 | 9 => { let v = self.read_u8()?; Ok(serde_json::json!(v)) }
-                    2 | 10 => { let v = self.read_u16()?; Ok(serde_json::json!(v)) }
-                    3 | 11 => { let v = self.read_u32()?; Ok(serde_json::json!(v)) }
+                    1 | 9 => {
+                        let v = self.read_u8()?;
+                        Ok(serde_json::json!(v))
+                    }
+                    2 | 10 => {
+                        let v = self.read_u16()?;
+                        Ok(serde_json::json!(v))
+                    }
+                    3 | 11 => {
+                        let v = self.read_u32()?;
+                        Ok(serde_json::json!(v))
+                    }
                     15 => {
                         let b = self.read_bytes(8)?;
-                        Ok(serde_json::json!(u64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]])))
+                        Ok(serde_json::json!(u64::from_le_bytes([
+                            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]
+                        ])))
                     }
                     _ => {
                         tracing::warn!("Unknown enum underlying type: {}", underlying);
@@ -672,13 +881,15 @@ impl<'a> BytesReader<'a> {
                     }
                 }
             }
-            20006 => {                                                               // WSTRING (UTF-16LE)
+            20006 => {
+                // WSTRING (UTF-16LE)
                 // Length in characters (1 byte), data is len*2 bytes UTF-16LE
                 let char_count = self.read_u8()? as usize;
                 let byte_count = char_count * 2;
                 let raw = self.read_bytes(byte_count)?;
                 // Decode UTF-16LE
-                let u16_vals: Vec<u16> = raw.chunks(2)
+                let u16_vals: Vec<u16> = raw
+                    .chunks(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let s = String::from_utf16_lossy(&u16_vals);
@@ -784,7 +995,11 @@ mod tests {
         for (level_byte, expected_level) in levels {
             let payload = build_test_payload("Test", "logger", level_byte);
             let entry = AdsParser::parse(&payload).unwrap();
-            assert_eq!(entry.level, expected_level, "Level mismatch for byte {}", level_byte);
+            assert_eq!(
+                entry.level, expected_level,
+                "Level mismatch for byte {}",
+                level_byte
+            );
         }
     }
 
@@ -870,7 +1085,11 @@ mod tests {
         // Verify the timestamps are reasonable (within a few seconds of now)
         let now = Utc::now();
         let diff = (now - entry.plc_timestamp).num_seconds().abs();
-        assert!(diff < 10, "Parsed timestamp should be close to now, diff: {} seconds", diff);
+        assert!(
+            diff < 10,
+            "Parsed timestamp should be close to now, diff: {} seconds",
+            diff
+        );
     }
 
     #[test]
@@ -968,7 +1187,10 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.context.len(), 1);
-        assert_eq!(entry.context["scope_1_request_id"], serde_json::json!("req-12345"));
+        assert_eq!(
+            entry.context["scope_1_request_id"],
+            serde_json::json!("req-12345")
+        );
     }
 
     #[test]
@@ -1227,7 +1449,7 @@ mod tests {
 
         // Update entry_length
         let entry_len = (payload.len() - len_pos - 2) as u16;
-        payload[len_pos..len_pos+2].copy_from_slice(&entry_len.to_le_bytes());
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
 
         let result = AdsParser::parse_all(&payload).unwrap();
         assert_eq!(result.entries.len(), 1);
@@ -1268,7 +1490,7 @@ mod tests {
         payload.extend_from_slice(&42i32.to_le_bytes());
 
         let entry_len = (payload.len() - len_pos - 2) as u16;
-        payload[len_pos..len_pos+2].copy_from_slice(&entry_len.to_le_bytes());
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
 
         let result = AdsParser::parse_all(&payload).unwrap();
         assert_eq!(result.entries.len(), 1);
@@ -1346,7 +1568,7 @@ mod tests {
         payload.push(0); // logger empty
 
         let entry_len = (payload.len() - len_pos - 2) as u16;
-        payload[len_pos..len_pos+2].copy_from_slice(&entry_len.to_le_bytes());
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
 
         let result = AdsParser::parse_all(&payload).unwrap();
         assert_eq!(result.entries.len(), 2);
@@ -1401,7 +1623,7 @@ mod tests {
         payload.extend_from_slice(prop_val.as_bytes());
 
         let entry_len = (payload.len() - len_pos - 2) as u16;
-        payload[len_pos..len_pos+2].copy_from_slice(&entry_len.to_le_bytes());
+        payload[len_pos..len_pos + 2].copy_from_slice(&entry_len.to_le_bytes());
 
         let result = AdsParser::parse_all(&payload).unwrap();
         assert_eq!(result.entries.len(), 1);
@@ -1409,7 +1631,10 @@ mod tests {
         let entry = &result.entries[0];
         assert_eq!(entry.context.len(), 1);
         assert!(entry.context.contains_key("scope_1_request_id"));
-        assert_eq!(entry.context["scope_1_request_id"], serde_json::json!("req-123"));
+        assert_eq!(
+            entry.context["scope_1_request_id"],
+            serde_json::json!("req-123")
+        );
     }
 
     #[test]

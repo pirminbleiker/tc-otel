@@ -5,8 +5,8 @@
 //! HTTP overhead and CPU usage.
 
 use anyhow::Result;
-use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter};
 use std::time::Duration;
+use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter};
 use tokio::sync::mpsc;
 
 /// Log dispatcher - converts LogEntries and sends them to a batched export worker
@@ -28,9 +28,18 @@ impl LogDispatcher {
         let (export_tx, export_rx) = mpsc::channel::<LogRecord>(settings.service.channel_capacity);
 
         // Spawn background batch worker
-        tokio::spawn(Self::batch_worker(export_rx, endpoint, batch_size, flush_interval));
+        tokio::spawn(Self::batch_worker(
+            export_rx,
+            endpoint,
+            batch_size,
+            flush_interval,
+        ));
 
-        tracing::info!("Dispatcher ready (batch={}, flush={}ms)", batch_size, flush_interval.as_millis());
+        tracing::info!(
+            "Dispatcher ready (batch={}, flush={}ms)",
+            batch_size,
+            flush_interval.as_millis()
+        );
 
         Ok(Self { export_tx })
     }

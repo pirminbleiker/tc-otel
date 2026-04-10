@@ -3,10 +3,10 @@
 //! Tests the complete flow: ADS protocol parsing → LogEntry → OTEL mapping → Export
 
 use chrono::Utc;
-use tc_otel_ads::{AdsLogEntry, AdsParser, AdsProtocolVersion};
-use tc_otel_core::{LogEntry, LogLevel, LogRecord};
 use serde_json::json;
 use std::collections::HashMap;
+use tc_otel_ads::{AdsLogEntry, AdsParser, AdsProtocolVersion};
+use tc_otel_core::{LogEntry, LogLevel, LogRecord};
 
 /// Test: Parse minimal ADS message
 /// NOTE: Ignored until binary format in test matches actual parser expectations
@@ -124,7 +124,9 @@ fn test_e2e_log_entry_to_otel_record() {
     entry.online_change_count = 2;
 
     // Add context
-    entry.context.insert("environment".to_string(), json!("production"));
+    entry
+        .context
+        .insert("environment".to_string(), json!("production"));
     entry.context.insert("region".to_string(), json!("eu-west"));
 
     // Add arguments
@@ -136,7 +138,10 @@ fn test_e2e_log_entry_to_otel_record() {
     // Verify OTEL mapping
     assert_eq!(record.severity_number, 9); // Info maps to 9
     assert_eq!(record.severity_text, "INFO");
-    assert_eq!(record.body, serde_json::Value::String("System state changed to {state}".to_string()));
+    assert_eq!(
+        record.body,
+        serde_json::Value::String("System state changed to {state}".to_string())
+    );
 
     // Check resource attributes
     assert_eq!(
@@ -167,14 +172,8 @@ fn test_e2e_log_entry_to_otel_record() {
         record.log_attributes.get("environment"),
         Some(&json!("production"))
     );
-    assert_eq!(
-        record.log_attributes.get("region"),
-        Some(&json!("eu-west"))
-    );
-    assert_eq!(
-        record.log_attributes.get("arg.0"),
-        Some(&json!("RUNNING"))
-    );
+    assert_eq!(record.log_attributes.get("region"), Some(&json!("eu-west")));
+    assert_eq!(record.log_attributes.get("arg.0"), Some(&json!("RUNNING")));
     assert!(record.log_attributes.contains_key("plc.timestamp"));
     assert_eq!(
         record.log_attributes.get("task.cycle"),
@@ -230,7 +229,9 @@ fn test_e2e_complex_message() {
 
     // Multiple context items
     for i in 0..5 {
-        entry.context.insert(format!("ctx_{}", i), json!(format!("value_{}", i)));
+        entry
+            .context
+            .insert(format!("ctx_{}", i), json!(format!("value_{}", i)));
     }
 
     // Multiple arguments
@@ -244,7 +245,7 @@ fn test_e2e_complex_message() {
 
     // Verify record integrity
     assert_eq!(record.severity_number, 17); // Error
-    // 5 context + 4 args + task/app/project metadata
+                                            // 5 context + 4 args + task/app/project metadata
     assert!(record.log_attributes.len() >= 9);
     assert!(record.log_attributes.contains_key("arg.0"));
     assert!(record.log_attributes.contains_key("arg.1"));

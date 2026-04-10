@@ -35,12 +35,20 @@ impl LogEntryFixtures {
         // Arguments
         entry.arguments.insert(0, serde_json::json!("MOT-001"));
         entry.arguments.insert(1, serde_json::json!(85.5));
-        entry.arguments.insert(2, serde_json::json!("2024-03-31T12:00:00Z"));
+        entry
+            .arguments
+            .insert(2, serde_json::json!("2024-03-31T12:00:00Z"));
 
         // Context
-        entry.context.insert("request_id".to_string(), serde_json::json!("req-12345"));
-        entry.context.insert("trace_id".to_string(), serde_json::json!("trace-98765"));
-        entry.context.insert("user".to_string(), serde_json::json!("admin"));
+        entry
+            .context
+            .insert("request_id".to_string(), serde_json::json!("req-12345"));
+        entry
+            .context
+            .insert("trace_id".to_string(), serde_json::json!("trace-98765"));
+        entry
+            .context
+            .insert("user".to_string(), serde_json::json!("admin"));
 
         entry
     }
@@ -76,15 +84,26 @@ impl LogEntryFixtures {
 
         // Many context properties
         let context_keys = vec![
-            "request_id", "trace_id", "span_id", "user_id", "session_id",
-            "client_ip", "server_id", "region", "environment", "version",
-            "request_time", "processing_stage", "retry_count", "circuit_breaker_state",
+            "request_id",
+            "trace_id",
+            "span_id",
+            "user_id",
+            "session_id",
+            "client_ip",
+            "server_id",
+            "region",
+            "environment",
+            "version",
+            "request_time",
+            "processing_stage",
+            "retry_count",
+            "circuit_breaker_state",
         ];
 
         for (i, key) in context_keys.iter().enumerate() {
             entry.context.insert(
                 key.to_string(),
-                serde_json::json!(format!("{}-value-{}", key, i))
+                serde_json::json!(format!("{}-value-{}", key, i)),
             );
         }
 
@@ -96,7 +115,10 @@ impl LogEntryFixtures {
         let mut entry = LogEntry::new(
             "192.168.1.1:2702".to_string(),
             "plc-01".to_string(),
-            format!("Message with {} args and {} context items", args, context_items),
+            format!(
+                "Message with {} args and {} context items",
+                args, context_items
+            ),
             "custom.logger".to_string(),
             LogLevel::Debug,
         );
@@ -106,13 +128,15 @@ impl LogEntryFixtures {
         entry.project_name = "Project".to_string();
 
         for i in 0..args {
-            entry.arguments.insert(i, serde_json::json!(format!("arg_{}", i)));
+            entry
+                .arguments
+                .insert(i, serde_json::json!(format!("arg_{}", i)));
         }
 
         for i in 0..context_items {
             entry.context.insert(
                 format!("ctx_{}", i),
-                serde_json::json!(format!("value_{}", i))
+                serde_json::json!(format!("value_{}", i)),
             );
         }
 

@@ -80,34 +80,34 @@ pub struct LogEntry {
     pub id: String,
 
     // Source identification
-    pub source: String,      // AMS address or source identifier
-    pub hostname: String,    // PLC hostname
-    pub ams_net_id: String,  // AMS Net ID from AMS header
+    pub source: String,       // AMS address or source identifier
+    pub hostname: String,     // PLC hostname
+    pub ams_net_id: String,   // AMS Net ID from AMS header
     pub ams_source_port: u16, // AMS Source Port from AMS header
 
     // Message content
-    pub message: String,     // Template string or formatted message
-    pub logger: String,      // Logger name
+    pub message: String, // Template string or formatted message
+    pub logger: String,  // Logger name
 
-    pub level: LogLevel,     // Severity level
+    pub level: LogLevel, // Severity level
 
     // Timestamps
-    pub plc_timestamp: DateTime<Utc>,     // PLC-side time
-    pub clock_timestamp: DateTime<Utc>,   // System clock time
+    pub plc_timestamp: DateTime<Utc>,   // PLC-side time
+    pub clock_timestamp: DateTime<Utc>, // System clock time
 
     // Task metadata
-    pub task_index: i32,             // Task ID
-    pub task_name: String,           // Task name
-    pub task_cycle_counter: u32,     // Cycle count
+    pub task_index: i32,         // Task ID
+    pub task_name: String,       // Task name
+    pub task_cycle_counter: u32, // Cycle count
 
     // Application metadata
-    pub app_name: String,            // Application name
-    pub project_name: String,        // Project name
-    pub online_change_count: u32,    // Online changes
+    pub app_name: String,         // Application name
+    pub project_name: String,     // Project name
+    pub online_change_count: u32, // Online changes
 
     // Variable data
-    pub arguments: HashMap<usize, serde_json::Value>,  // Positional arguments
-    pub context: HashMap<String, serde_json::Value>,   // Context properties
+    pub arguments: HashMap<usize, serde_json::Value>, // Positional arguments
+    pub context: HashMap<String, serde_json::Value>,  // Context properties
 }
 
 impl LogEntry {
@@ -395,9 +395,15 @@ mod tests {
             LogLevel::Debug,
         );
 
-        entry.context.insert("user_id".to_string(), serde_json::json!("user_123"));
-        entry.context.insert("session_id".to_string(), serde_json::json!("sess_456"));
-        entry.context.insert("request_count".to_string(), serde_json::json!(42));
+        entry
+            .context
+            .insert("user_id".to_string(), serde_json::json!("user_123"));
+        entry
+            .context
+            .insert("session_id".to_string(), serde_json::json!("sess_456"));
+        entry
+            .context
+            .insert("request_count".to_string(), serde_json::json!(42));
 
         assert_eq!(entry.context.len(), 3);
         assert_eq!(entry.context["user_id"], serde_json::json!("user_123"));
@@ -459,7 +465,9 @@ mod tests {
         entry.app_name = "App1".to_string();
         entry.project_name = "Project1".to_string();
         entry.online_change_count = 3;
-        entry.context.insert("key1".to_string(), serde_json::json!("value1"));
+        entry
+            .context
+            .insert("key1".to_string(), serde_json::json!("value1"));
         entry.arguments.insert(0, serde_json::json!(123));
 
         let record = LogRecord::from_log_entry(entry);

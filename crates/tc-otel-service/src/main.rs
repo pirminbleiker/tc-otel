@@ -5,8 +5,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tc_otel_core::AppSettings;
 use std::path::PathBuf;
+use tc_otel_core::AppSettings;
 
 mod dispatcher;
 mod service;
@@ -35,8 +35,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let settings = AppSettings::from_json_file(&args.config)
-        .context(format!("Failed to load config from {}", args.config.display()))?;
+    let settings = AppSettings::from_json_file(&args.config).context(format!(
+        "Failed to load config from {}",
+        args.config.display()
+    ))?;
 
     tracing::info!(
         "tc-otel starting: AMS/TCP :{} (Net ID {}), export → {}",

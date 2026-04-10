@@ -82,7 +82,10 @@ mod tests {
         let record = OtelMapping::log_entry_to_record(entry);
 
         // Check body
-        assert_eq!(record.body, serde_json::Value::String("System started".to_string()));
+        assert_eq!(
+            record.body,
+            serde_json::Value::String("System started".to_string())
+        );
 
         // Check severity
         assert_eq!(record.severity_number, 9);
@@ -93,7 +96,10 @@ mod tests {
             &serde_json::Value::String("MyProject".to_string())
         );
         assert_eq!(
-            record.resource_attributes.get("service.instance.id").unwrap(),
+            record
+                .resource_attributes
+                .get("service.instance.id")
+                .unwrap(),
             &serde_json::Value::String("MyApp".to_string())
         );
         assert_eq!(
@@ -105,7 +111,10 @@ mod tests {
             &serde_json::Value::Number(42.into())
         );
         assert_eq!(
-            record.resource_attributes.get("process.command_line").unwrap(),
+            record
+                .resource_attributes
+                .get("process.command_line")
+                .unwrap(),
             &serde_json::Value::String("MainTask".to_string())
         );
 
@@ -126,9 +135,15 @@ mod tests {
             LogLevel::Info,
         );
 
-        entry.context.insert("user_id".to_string(), serde_json::json!("user123"));
-        entry.context.insert("request_id".to_string(), serde_json::json!("req-456"));
-        entry.context.insert("error_code".to_string(), serde_json::json!(500));
+        entry
+            .context
+            .insert("user_id".to_string(), serde_json::json!("user123"));
+        entry
+            .context
+            .insert("request_id".to_string(), serde_json::json!("req-456"));
+        entry
+            .context
+            .insert("error_code".to_string(), serde_json::json!(500));
 
         let record = OtelMapping::log_entry_to_record(entry);
 
@@ -188,7 +203,9 @@ mod tests {
         );
 
         entry.arguments.insert(0, serde_json::json!("alice"));
-        entry.arguments.insert(1, serde_json::json!("192.168.1.100"));
+        entry
+            .arguments
+            .insert(1, serde_json::json!("192.168.1.100"));
 
         let record = OtelMapping::log_entry_to_record(entry);
 
@@ -299,7 +316,9 @@ mod tests {
             LogLevel::Info,
         );
 
-        entry.context.insert("nullable_field".to_string(), serde_json::Value::Null);
+        entry
+            .context
+            .insert("nullable_field".to_string(), serde_json::Value::Null);
 
         let record = OtelMapping::log_entry_to_record(entry);
 
@@ -327,7 +346,9 @@ mod tests {
             "tags": ["important", "security"]
         });
 
-        entry.context.insert("request_context".to_string(), nested_obj);
+        entry
+            .context
+            .insert("request_context".to_string(), nested_obj);
 
         let record = OtelMapping::log_entry_to_record(entry);
 

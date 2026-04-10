@@ -1,11 +1,11 @@
 //! Main service orchestration with graceful shutdown and backpressure handling
 
 use anyhow::Result;
-use tc_otel_ads::{AmsTcpServer, AmsNetId};
-use tc_otel_core::AppSettings;
 use std::str::FromStr;
 use std::time::Duration;
-use tokio::sync::{mpsc, broadcast};
+use tc_otel_ads::{AmsNetId, AmsTcpServer};
+use tc_otel_core::AppSettings;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 
 use crate::dispatcher::LogDispatcher;
@@ -19,7 +19,10 @@ pub struct Log4TcService {
 impl Log4TcService {
     pub async fn new(settings: AppSettings) -> Result<Self> {
         let dispatcher = LogDispatcher::new(&settings).await?;
-        Ok(Self { settings, log_dispatcher: dispatcher })
+        Ok(Self {
+            settings,
+            log_dispatcher: dispatcher,
+        })
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -83,7 +86,8 @@ impl Log4TcService {
         let shutdown_timeout = Duration::from_secs(self.settings.service.shutdown_timeout_secs);
         let _ = timeout(shutdown_timeout, async {
             let _ = tokio::join!(ams_handle, dispatcher_handle);
-        }).await;
+        })
+        .await;
 
         tracing::info!("Log4TC Service stopped");
         Ok(())

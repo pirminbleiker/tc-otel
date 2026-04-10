@@ -3,9 +3,9 @@
 use crate::error::*;
 use crate::parser::AdsParser;
 use crate::protocol::AdsLogEntry;
-use tc_otel_core::LogEntry;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tc_otel_core::LogEntry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Semaphore};
@@ -57,7 +57,8 @@ impl AdsListener {
 
         tracing::info!(
             "ADS listener started on {} (max {} concurrent connections)",
-            addr, self.max_connections
+            addr,
+            self.max_connections
         );
 
         loop {

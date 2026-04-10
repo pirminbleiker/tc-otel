@@ -3,12 +3,15 @@
 //! This crate defines the fundamental types and structures used throughout Log4TC,
 //! including LogEntry, LogLevel, LogRecord, and configuration structures.
 
-pub mod models;
-pub mod error;
 pub mod config;
+pub mod error;
 pub mod formatter;
+pub mod models;
 
-pub use models::{LogEntry, LogLevel, LogRecord};
-pub use error::{Result, Error};
-pub use config::{AppSettings, LoggingConfig, ReceiverConfig, ExportConfig, OutputConfig, ServiceConfig, LogFormat};
+pub use config::{
+    AppSettings, ExportConfig, LogFormat, LoggingConfig, OutputConfig, ReceiverConfig,
+    ServiceConfig,
+};
+pub use error::{Error, Result};
 pub use formatter::MessageFormatter;
+pub use models::{LogEntry, LogLevel, LogRecord};

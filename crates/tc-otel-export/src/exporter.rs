@@ -1,10 +1,10 @@
 //! OTEL exporter for sending logs to collectors
 
 use crate::error::*;
-use tc_otel_core::LogRecord;
+use regex::Regex;
 use serde_json::json;
 use std::time::Duration;
-use regex::Regex;
+use tc_otel_core::LogRecord;
 
 /// Helper function to expand environment variables in strings
 /// Supports ${VAR_NAME} syntax, e.g., "Bearer ${API_KEY}"
@@ -14,11 +14,10 @@ fn expand_env_vars(template: &str) -> String {
 
     re.replace_all(template, |caps: &regex::Captures| {
         let var_name = &caps[1];
-        std::env::var(var_name)
-            .unwrap_or_else(|_| {
-                tracing::warn!("Environment variable not found: {}", var_name);
-                format!("${{{}}}", var_name)
-            })
+        std::env::var(var_name).unwrap_or_else(|_| {
+            tracing::warn!("Environment variable not found: {}", var_name);
+            format!("${{{}}}", var_name)
+        })
     })
     .to_string()
 }
@@ -83,8 +82,8 @@ impl OtelExporter {
             || config.endpoint.contains("otel-collector")
             || config.endpoint.starts_with("http://");
 
-        let mut builder = reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(config.timeout_secs));
+        let mut builder =
+            reqwest::ClientBuilder::new().timeout(Duration::from_secs(config.timeout_secs));
 
         if !is_local {
             builder = builder.https_only(true);
@@ -178,7 +177,7 @@ impl OtelExporter {
             OtelError::HttpError(_) => true, // Network errors are retryable
             OtelError::SerializationError(_) => false, // Serialization errors are permanent
             OtelError::ReceiverError(_) => false, // Receiver setup errors are permanent
-            _ => false, // All other errors are permanent
+            _ => false,                      // All other errors are permanent
         }
     }
 
@@ -231,10 +230,13 @@ impl OtelExporter {
     }
 
     /// Convert HashMap to OTLP attributes array format
-    fn to_otlp_attributes(attrs: &std::collections::HashMap<String, serde_json::Value>) -> Vec<serde_json::Value> {
-        attrs.iter().map(|(k, v)| {
-            json!({"key": k, "value": Self::to_otlp_value(v)})
-        }).collect()
+    fn to_otlp_attributes(
+        attrs: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        attrs
+            .iter()
+            .map(|(k, v)| json!({"key": k, "value": Self::to_otlp_value(v)}))
+            .collect()
     }
 
     fn build_otel_payload(&self, records: &[LogRecord]) -> Result<String> {
@@ -352,7 +354,10 @@ mod tests {
         };
 
         let exporter = OtelExporter::with_config(config.clone());
-        assert_eq!(exporter.config.endpoint, "https://secure.collector.local:4317");
+        assert_eq!(
+            exporter.config.endpoint,
+            "https://secure.collector.local:4317"
+        );
         assert_eq!(exporter.config.batch_size, 256);
     }
 
@@ -400,10 +405,7 @@ mod tests {
         let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
 
         let mut resource_attrs = std::collections::HashMap::new();
-        resource_attrs.insert(
-            "service.name".to_string(),
-            serde_json::json!("my-service"),
-        );
+        resource_attrs.insert("service.name".to_string(), serde_json::json!("my-service"));
         resource_attrs.insert("host.name".to_string(), serde_json::json!("plc-01"));
 
         let mut log_attrs = std::collections::HashMap::new();
