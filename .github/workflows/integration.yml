@@ -34,7 +34,7 @@ jobs:
               "max_body_size": 4194304,
               "request_timeout_secs": 5,
               "ams_net_id": "127.0.0.1.1.1",
-              "ams_tcp_port": 14898,
+              "ams_tcp_port": 48898,
               "ads_port": 16150
             },
             "export": {
@@ -103,8 +103,8 @@ jobs:
             cat /tmp/tc-otel-stderr.log || true
             exit 1
           fi
-          timeout 10 bash -c 'until nc -z 127.0.0.1 14898; do sleep 0.5; done'
-          echo "AMS/TCP port 14898 is listening"
+          timeout 10 bash -c 'until nc -z 127.0.0.1 48898; do sleep 0.5; done'
+          echo "AMS/TCP port 48898 is listening"
 
       - name: Send mock ADS log entries
         run: |
@@ -205,8 +205,8 @@ jobs:
           try:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
               sock.settimeout(5)
-              sock.connect(('127.0.0.1', 14898))
-              print("Connected to AMS/TCP on :14898")
+              sock.connect(('127.0.0.1', 48898))
+              print("Connected to AMS/TCP on :48898")
 
               target_net_id = [127, 0, 0, 1, 1, 1]
               source_net_id = [10, 0, 0, 1, 1, 1]
