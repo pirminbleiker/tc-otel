@@ -6,6 +6,7 @@
 //! The ADS protocol is a proprietary Beckhoff protocol for device communication.
 //! Log4TC uses ADS for receiving log entries from TwinCAT PLCs.
 
+pub mod ads_client;
 pub mod ams;
 pub mod ams_server;
 pub mod connection_manager;
@@ -14,10 +15,12 @@ pub mod listener;
 pub mod parser;
 pub mod protocol;
 pub mod registry;
+pub mod symbol;
 
+pub use ads_client::{AdsClient, AdsClientConfig};
 pub use ams::{
-    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_WRITE, ADS_LOG_PORT,
-    ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
+    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_READ, ADS_CMD_WRITE,
+    ADS_LOG_PORT, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
 pub use ams_server::AmsTcpServer;
 pub use connection_manager::{
@@ -30,3 +33,7 @@ pub use protocol::{
     AdsLogEntry, AdsProtocolVersion, RegistrationKey, RegistrationMessage, TaskMetadata,
 };
 pub use registry::TaskRegistry;
+pub use symbol::{
+    AdsSymbolEntry, SymbolTable, SymbolUploadInfo, ADSIGRP_SYM_UPLOAD, ADSIGRP_SYM_UPLOADINFO,
+    MAX_SUBSCRIPTIONS_PER_PLC,
+};

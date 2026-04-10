@@ -8,6 +8,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use tc_otel_core::AppSettings;
 
+mod api;
 mod dispatcher;
 mod service;
 
