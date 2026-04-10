@@ -16,4 +16,7 @@ pub use config::{
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};
 pub use formatter::MessageFormatter;
-pub use models::{LogEntry, LogLevel, LogRecord, SpanEntry, SpanEvent, SpanKind, SpanStatusCode};
+pub use models::{
+    LogEntry, LogLevel, LogRecord, MetricEntry, MetricKind, SpanEntry, SpanEvent, SpanKind,
+    SpanStatusCode,
+};

@@ -5,6 +5,150 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// ─── Metric types ─────────────────────────────────────────────────
+
+/// OpenTelemetry metric kind
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum MetricKind {
+    Gauge = 0,
+    Sum = 1,
+    Histogram = 2,
+}
+
+impl MetricKind {
+    pub fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(MetricKind::Gauge),
+            1 => Some(MetricKind::Sum),
+            2 => Some(MetricKind::Histogram),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+}
+
+impl std::fmt::Display for MetricKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MetricKind::Gauge => write!(f, "Gauge"),
+            MetricKind::Sum => write!(f, "Sum"),
+            MetricKind::Histogram => write!(f, "Histogram"),
+        }
+    }
+}
+
+/// A metric data point from a PLC variable
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricEntry {
+    /// Metric name (e.g., "plc.motor.temperature")
+    pub name: String,
+    /// Metric description
+    pub description: String,
+    /// Metric unit (e.g., "Cel", "mm/s", "rpm")
+    pub unit: String,
+    /// Metric kind
+    pub kind: MetricKind,
+
+    /// Metric value (f64 covers all PLC numeric types)
+    pub value: f64,
+
+    /// Timestamp when the value was sampled
+    pub timestamp: DateTime<Utc>,
+
+    // Source identification (mirrored from LogEntry/SpanEntry pattern)
+    pub source: String,
+    pub hostname: String,
+    pub ams_net_id: String,
+    pub ams_source_port: u16,
+
+    // Task metadata
+    pub task_index: i32,
+    pub task_name: String,
+    pub task_cycle_counter: u32,
+
+    // Application metadata
+    pub app_name: String,
+    pub project_name: String,
+
+    /// Additional attributes (e.g., PLC symbol name, data type)
+    pub attributes: HashMap<String, serde_json::Value>,
+
+    // Histogram-specific fields (only populated for Histogram kind)
+    /// Histogram bucket boundaries
+    pub histogram_bounds: Vec<f64>,
+    /// Histogram bucket counts (len = bounds.len() + 1)
+    pub histogram_counts: Vec<u64>,
+    /// Total count for histogram
+    pub histogram_count: u64,
+    /// Sum of all values for histogram
+    pub histogram_sum: f64,
+
+    // Sum-specific fields
+    /// Whether the sum is monotonic (counter) or non-monotonic (up-down counter)
+    pub is_monotonic: bool,
+}
+
+impl MetricEntry {
+    /// Create a new gauge metric
+    pub fn gauge(name: String, value: f64) -> Self {
+        Self {
+            name,
+            description: String::new(),
+            unit: String::new(),
+            kind: MetricKind::Gauge,
+            value,
+            timestamp: Utc::now(),
+            source: String::new(),
+            hostname: String::new(),
+            ams_net_id: String::new(),
+            ams_source_port: 0,
+            task_index: 0,
+            task_name: String::new(),
+            task_cycle_counter: 0,
+            app_name: String::new(),
+            project_name: String::new(),
+            attributes: HashMap::new(),
+            histogram_bounds: Vec::new(),
+            histogram_counts: Vec::new(),
+            histogram_count: 0,
+            histogram_sum: 0.0,
+            is_monotonic: false,
+        }
+    }
+
+    /// Create a new sum (counter) metric
+    pub fn sum(name: String, value: f64, is_monotonic: bool) -> Self {
+        Self {
+            kind: MetricKind::Sum,
+            is_monotonic,
+            ..Self::gauge(name, value)
+        }
+    }
+
+    /// Create a new histogram metric
+    pub fn histogram(
+        name: String,
+        bounds: Vec<f64>,
+        counts: Vec<u64>,
+        count: u64,
+        sum: f64,
+    ) -> Self {
+        Self {
+            kind: MetricKind::Histogram,
+            value: 0.0,
+            histogram_bounds: bounds,
+            histogram_counts: counts,
+            histogram_count: count,
+            histogram_sum: sum,
+            ..Self::gauge(name, 0.0)
+        }
+    }
+}
+
 // ─── Span / Trace types ────────────────────────────────────────────
 
 /// OpenTelemetry span kind
@@ -938,5 +1082,128 @@ mod tests {
         assert_eq!(cloned.name, entry.name);
         assert_eq!(cloned.attributes, entry.attributes);
         assert_eq!(cloned.events.len(), entry.events.len());
+    }
+
+    // ─── Metric type tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_metric_kind_from_u8() {
+        assert_eq!(MetricKind::from_u8(0), Some(MetricKind::Gauge));
+        assert_eq!(MetricKind::from_u8(1), Some(MetricKind::Sum));
+        assert_eq!(MetricKind::from_u8(2), Some(MetricKind::Histogram));
+        assert_eq!(MetricKind::from_u8(3), None);
+        assert_eq!(MetricKind::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_metric_kind_roundtrip() {
+        for val in 0..3u8 {
+            let kind = MetricKind::from_u8(val).unwrap();
+            assert_eq!(kind.as_u8(), val);
+        }
+    }
+
+    #[test]
+    fn test_metric_kind_display() {
+        assert_eq!(MetricKind::Gauge.to_string(), "Gauge");
+        assert_eq!(MetricKind::Sum.to_string(), "Sum");
+        assert_eq!(MetricKind::Histogram.to_string(), "Histogram");
+    }
+
+    #[test]
+    fn test_metric_entry_gauge() {
+        let entry = MetricEntry::gauge("plc.motor.temperature".to_string(), 72.5);
+
+        assert_eq!(entry.name, "plc.motor.temperature");
+        assert_eq!(entry.kind, MetricKind::Gauge);
+        assert_eq!(entry.value, 72.5);
+        assert!(!entry.is_monotonic);
+        assert!(entry.histogram_bounds.is_empty());
+        assert!(entry.histogram_counts.is_empty());
+    }
+
+    #[test]
+    fn test_metric_entry_sum_monotonic() {
+        let entry = MetricEntry::sum("plc.errors.total".to_string(), 42.0, true);
+
+        assert_eq!(entry.name, "plc.errors.total");
+        assert_eq!(entry.kind, MetricKind::Sum);
+        assert_eq!(entry.value, 42.0);
+        assert!(entry.is_monotonic);
+    }
+
+    #[test]
+    fn test_metric_entry_sum_non_monotonic() {
+        let entry = MetricEntry::sum("plc.queue.depth".to_string(), 5.0, false);
+
+        assert_eq!(entry.kind, MetricKind::Sum);
+        assert!(!entry.is_monotonic);
+    }
+
+    #[test]
+    fn test_metric_entry_histogram() {
+        let bounds = vec![10.0, 25.0, 50.0, 100.0];
+        let counts = vec![5, 12, 8, 3, 1]; // 5 buckets for 4 bounds
+        let entry = MetricEntry::histogram(
+            "plc.cycle_time_ms".to_string(),
+            bounds.clone(),
+            counts.clone(),
+            29,
+            850.5,
+        );
+
+        assert_eq!(entry.name, "plc.cycle_time_ms");
+        assert_eq!(entry.kind, MetricKind::Histogram);
+        assert_eq!(entry.histogram_bounds, bounds);
+        assert_eq!(entry.histogram_counts, counts);
+        assert_eq!(entry.histogram_count, 29);
+        assert_eq!(entry.histogram_sum, 850.5);
+    }
+
+    #[test]
+    fn test_metric_entry_with_metadata() {
+        let mut entry = MetricEntry::gauge("plc.axis.position".to_string(), 150.0);
+        entry.unit = "mm".to_string();
+        entry.description = "Axis 1 current position".to_string();
+        entry.hostname = "plc-01".to_string();
+        entry.ams_net_id = "172.17.0.2.1.1".to_string();
+        entry.ams_source_port = 851;
+        entry.task_index = 1;
+        entry.task_name = "MotionTask".to_string();
+        entry.task_cycle_counter = 50000;
+        entry.app_name = "HydraulicPress".to_string();
+        entry.project_name = "ProductionLine".to_string();
+        entry
+            .attributes
+            .insert("plc.symbol".to_string(), serde_json::json!("GVL.axis1.pos"));
+
+        assert_eq!(entry.unit, "mm");
+        assert_eq!(entry.hostname, "plc-01");
+        assert_eq!(entry.task_name, "MotionTask");
+        assert_eq!(entry.attributes["plc.symbol"], serde_json::json!("GVL.axis1.pos"));
+    }
+
+    #[test]
+    fn test_metric_entry_clone() {
+        let mut entry = MetricEntry::gauge("test.metric".to_string(), 1.0);
+        entry
+            .attributes
+            .insert("key".to_string(), serde_json::json!("value"));
+
+        let cloned = entry.clone();
+        assert_eq!(cloned.name, entry.name);
+        assert_eq!(cloned.value, entry.value);
+        assert_eq!(cloned.attributes, entry.attributes);
+    }
+
+    #[test]
+    fn test_metric_entry_serialize_deserialize() {
+        let entry = MetricEntry::gauge("test.gauge".to_string(), 99.9);
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: MetricEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.name, "test.gauge");
+        assert_eq!(deserialized.value, 99.9);
+        assert_eq!(deserialized.kind, MetricKind::Gauge);
     }
 }

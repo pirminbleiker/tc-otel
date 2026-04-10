@@ -33,7 +33,7 @@ pub use error::{AdsError, Result};
 pub use listener::AdsListener;
 pub use parser::AdsParser;
 pub use protocol::{
-    AdsLogEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
+    AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
     RegistrationMessage, TaskMetadata,
 };
 pub use registry::TaskRegistry;
