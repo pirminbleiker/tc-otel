@@ -18,5 +18,5 @@ pub use error::{Error, Result};
 pub use formatter::MessageFormatter;
 pub use models::{
     LogEntry, LogLevel, LogRecord, MetricEntry, MetricKind, MetricRecord, SpanEntry, SpanEvent,
-    SpanKind, SpanStatusCode,
+    SpanKind, SpanStatusCode, TraceEventRecord, TraceRecord,
 };

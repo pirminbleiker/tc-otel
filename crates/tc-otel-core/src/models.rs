@@ -430,6 +430,123 @@ impl SpanEntry {
     }
 }
 
+/// OTEL TraceRecord — the OTLP representation of a span for export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceRecord {
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_span_id: String,
+    pub name: String,
+    pub kind: i32,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub status_code: i32,
+    pub status_message: String,
+    pub resource_attributes: HashMap<String, serde_json::Value>,
+    pub scope_attributes: HashMap<String, serde_json::Value>,
+    pub span_attributes: HashMap<String, serde_json::Value>,
+    pub events: Vec<TraceEventRecord>,
+}
+
+/// OTEL TraceEventRecord — an event within a span for export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceEventRecord {
+    pub timestamp: DateTime<Utc>,
+    pub name: String,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+impl TraceRecord {
+    /// Convert a SpanEntry to OTEL TraceRecord
+    pub fn from_span_entry(entry: SpanEntry) -> Self {
+        let mut resource_attributes = HashMap::with_capacity(5);
+        resource_attributes.insert(
+            "service.name".to_string(),
+            serde_json::Value::String(entry.project_name),
+        );
+        resource_attributes.insert(
+            "service.instance.id".to_string(),
+            serde_json::Value::String(entry.app_name),
+        );
+        resource_attributes.insert(
+            "host.name".to_string(),
+            serde_json::Value::String(entry.hostname),
+        );
+        if !entry.ams_net_id.is_empty() {
+            resource_attributes.insert(
+                "plc.ams_net_id".to_string(),
+                serde_json::Value::String(entry.ams_net_id),
+            );
+        }
+        if entry.ams_source_port > 0 {
+            resource_attributes.insert(
+                "plc.ams_source_port".to_string(),
+                serde_json::Value::Number(entry.ams_source_port.into()),
+            );
+        }
+
+        let mut span_attributes = entry.attributes;
+        if !entry.source.is_empty() {
+            span_attributes.insert(
+                "source.address".to_string(),
+                serde_json::Value::String(entry.source),
+            );
+        }
+        if !entry.task_name.is_empty() {
+            span_attributes.insert(
+                "task.name".to_string(),
+                serde_json::Value::String(entry.task_name),
+            );
+        }
+        if entry.task_index > 0 {
+            span_attributes.insert(
+                "task.index".to_string(),
+                serde_json::Value::Number(entry.task_index.into()),
+            );
+        }
+        if entry.task_cycle_counter > 0 {
+            span_attributes.insert(
+                "task.cycle".to_string(),
+                serde_json::Value::Number(entry.task_cycle_counter.into()),
+            );
+        }
+
+        let events = entry
+            .events
+            .into_iter()
+            .map(|e| TraceEventRecord {
+                timestamp: e.timestamp,
+                name: e.name,
+                attributes: e.attributes,
+            })
+            .collect();
+
+        Self {
+            trace_id: entry
+                .trace_id
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+            span_id: entry.span_id.iter().map(|b| format!("{:02x}", b)).collect(),
+            parent_span_id: entry
+                .parent_span_id
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+            name: entry.name,
+            kind: entry.kind.to_otel_kind(),
+            start_time: entry.start_time,
+            end_time: entry.end_time,
+            status_code: entry.status_code.to_otel_status(),
+            status_message: entry.status_message,
+            resource_attributes,
+            scope_attributes: HashMap::new(),
+            span_attributes,
+            events,
+        }
+    }
+}
+
 /// Log severity level, mapped from ADS binary protocol
 /// Values match the .NET Log4Tc.Model.LogLevel enumeration
 #[repr(u8)]
@@ -1426,5 +1543,221 @@ mod tests {
         assert!(!record
             .resource_attributes
             .contains_key("plc.ams_source_port"));
+    }
+
+    // ─── TraceRecord tests ────────────────────────────────────────
+
+    #[test]
+    fn test_trace_record_from_span_entry() {
+        let trace_id: [u8; 16] = [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89,
+        ];
+        let span_id: [u8; 8] = [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10];
+        let parent_span_id: [u8; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+
+        let mut entry = SpanEntry::new(trace_id, span_id, "motion.axis_move".to_string());
+        entry.parent_span_id = parent_span_id;
+        entry.kind = SpanKind::Server;
+        entry.status_code = SpanStatusCode::Ok;
+        entry.status_message = "Success".to_string();
+        entry.hostname = "plc-01".to_string();
+        entry.project_name = "ProductionLine".to_string();
+        entry.app_name = "HydraulicPress".to_string();
+        entry.ams_net_id = "172.17.0.2.1.1".to_string();
+        entry.ams_source_port = 851;
+        entry.task_name = "MotionTask".to_string();
+        entry.task_index = 1;
+        entry.task_cycle_counter = 5000;
+        entry.source = "192.168.1.1:851".to_string();
+        entry
+            .attributes
+            .insert("motion.axis_id".to_string(), serde_json::json!(1));
+
+        let record = TraceRecord::from_span_entry(entry);
+
+        assert_eq!(record.trace_id, "abcdef0123456789abcdef0123456789");
+        assert_eq!(record.span_id, "fedcba9876543210");
+        assert_eq!(record.parent_span_id, "1122334455667788");
+        assert_eq!(record.name, "motion.axis_move");
+        assert_eq!(record.kind, 2); // SPAN_KIND_SERVER
+        assert_eq!(record.status_code, 1); // STATUS_CODE_OK
+        assert_eq!(record.status_message, "Success");
+
+        // Resource attributes
+        assert_eq!(
+            record.resource_attributes["service.name"],
+            serde_json::json!("ProductionLine")
+        );
+        assert_eq!(
+            record.resource_attributes["service.instance.id"],
+            serde_json::json!("HydraulicPress")
+        );
+        assert_eq!(
+            record.resource_attributes["host.name"],
+            serde_json::json!("plc-01")
+        );
+        assert_eq!(
+            record.resource_attributes["plc.ams_net_id"],
+            serde_json::json!("172.17.0.2.1.1")
+        );
+        assert_eq!(
+            record.resource_attributes["plc.ams_source_port"],
+            serde_json::json!(851)
+        );
+
+        // Span attributes
+        assert_eq!(
+            record.span_attributes["motion.axis_id"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            record.span_attributes["source.address"],
+            serde_json::json!("192.168.1.1:851")
+        );
+        assert_eq!(
+            record.span_attributes["task.name"],
+            serde_json::json!("MotionTask")
+        );
+        assert_eq!(record.span_attributes["task.index"], serde_json::json!(1));
+        assert_eq!(
+            record.span_attributes["task.cycle"],
+            serde_json::json!(5000)
+        );
+    }
+
+    #[test]
+    fn test_trace_record_no_parent() {
+        let entry = SpanEntry::new([1u8; 16], [2u8; 8], "root_span".to_string());
+        let record = TraceRecord::from_span_entry(entry);
+
+        assert_eq!(record.parent_span_id, "0000000000000000");
+    }
+
+    #[test]
+    fn test_trace_record_empty_optional_fields() {
+        let entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        let record = TraceRecord::from_span_entry(entry);
+
+        // Should still have service.name (empty string)
+        assert!(record.resource_attributes.contains_key("service.name"));
+        // Should not have ams fields when empty/zero
+        assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("plc.ams_source_port"));
+        // Should not have empty task/source attributes
+        assert!(!record.span_attributes.contains_key("source.address"));
+        assert!(!record.span_attributes.contains_key("task.name"));
+        assert!(!record.span_attributes.contains_key("task.index"));
+        assert!(!record.span_attributes.contains_key("task.cycle"));
+    }
+
+    #[test]
+    fn test_trace_record_with_events() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        entry.events.push(SpanEvent {
+            timestamp: Utc::now(),
+            name: "axis.target_reached".to_string(),
+            attributes: {
+                let mut attrs = HashMap::new();
+                attrs.insert("axis.position".to_string(), serde_json::json!(150.5));
+                attrs
+            },
+        });
+        entry.events.push(SpanEvent {
+            timestamp: Utc::now(),
+            name: "axis.stopped".to_string(),
+            attributes: HashMap::new(),
+        });
+
+        let record = TraceRecord::from_span_entry(entry);
+
+        assert_eq!(record.events.len(), 2);
+        assert_eq!(record.events[0].name, "axis.target_reached");
+        assert_eq!(
+            record.events[0].attributes["axis.position"],
+            serde_json::json!(150.5)
+        );
+        assert_eq!(record.events[1].name, "axis.stopped");
+    }
+
+    #[test]
+    fn test_trace_record_span_kind_mapping() {
+        let kinds = vec![
+            (SpanKind::Internal, 1),
+            (SpanKind::Server, 2),
+            (SpanKind::Client, 3),
+            (SpanKind::Producer, 4),
+            (SpanKind::Consumer, 5),
+        ];
+
+        for (kind, expected_otel) in kinds {
+            let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+            entry.kind = kind;
+            let record = TraceRecord::from_span_entry(entry);
+            assert_eq!(
+                record.kind, expected_otel,
+                "SpanKind::{:?} should map to {}",
+                kind, expected_otel
+            );
+        }
+    }
+
+    #[test]
+    fn test_trace_record_status_code_mapping() {
+        let statuses = vec![
+            (SpanStatusCode::Unset, 0),
+            (SpanStatusCode::Ok, 1),
+            (SpanStatusCode::Error, 2),
+        ];
+
+        for (status, expected_otel) in statuses {
+            let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+            entry.status_code = status;
+            let record = TraceRecord::from_span_entry(entry);
+            assert_eq!(
+                record.status_code, expected_otel,
+                "SpanStatusCode::{:?} should map to {}",
+                status, expected_otel
+            );
+        }
+    }
+
+    #[test]
+    fn test_trace_record_clone() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        entry
+            .attributes
+            .insert("key".to_string(), serde_json::json!("value"));
+        entry.events.push(SpanEvent {
+            timestamp: Utc::now(),
+            name: "event1".to_string(),
+            attributes: HashMap::new(),
+        });
+
+        let record = TraceRecord::from_span_entry(entry);
+        let cloned = record.clone();
+
+        assert_eq!(cloned.trace_id, record.trace_id);
+        assert_eq!(cloned.span_id, record.span_id);
+        assert_eq!(cloned.name, record.name);
+        assert_eq!(cloned.events.len(), record.events.len());
+    }
+
+    #[test]
+    fn test_trace_record_serialize_deserialize() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        entry.project_name = "TestProject".to_string();
+        let record = TraceRecord::from_span_entry(entry);
+
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: TraceRecord = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.name, "test");
+        assert_eq!(
+            deserialized.resource_attributes["service.name"],
+            serde_json::json!("TestProject")
+        );
     }
 }

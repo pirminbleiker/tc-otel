@@ -4,7 +4,7 @@ use crate::error::*;
 use regex::Regex;
 use serde_json::json;
 use std::time::Duration;
-use tc_otel_core::{LogRecord, MetricKind, MetricRecord};
+use tc_otel_core::{LogRecord, MetricKind, MetricRecord, TraceRecord};
 
 /// Helper function to expand environment variables in strings
 /// Supports ${VAR_NAME} syntax, e.g., "Bearer ${API_KEY}"
@@ -442,6 +442,139 @@ impl OtelExporter {
             "attributes": Self::to_otlp_attributes(&record.attributes)
         })
     }
+
+    /// Export a batch of trace records with retry logic
+    pub async fn export_traces_batch(&self, records: Vec<TraceRecord>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let payload = self.build_otel_traces_payload(&records)?;
+
+        // Traces use /v1/traces endpoint
+        let endpoint = self
+            .config
+            .endpoint
+            .replace("/v1/logs", "/v1/traces")
+            .replace("/v1/metrics", "/v1/traces")
+            .replace("/insert/jsonline", "/v1/traces");
+
+        self.send_traces_with_retry(&payload, &endpoint).await
+    }
+
+    /// Send traces payload with retry
+    async fn send_traces_with_retry(&self, payload: &str, endpoint: &str) -> Result<()> {
+        let mut retry_count = 0;
+        let mut delay_ms = self.config.retry_delay_ms;
+
+        loop {
+            let mut request = self
+                .http_client
+                .post(endpoint)
+                .header("Content-Type", "application/json");
+
+            if let Some(auth) = &self.config.auth_header {
+                let expanded_auth = expand_env_vars(auth);
+                request = request.header("Authorization", expanded_auth);
+            }
+
+            match request
+                .body(payload.to_string())
+                .timeout(Duration::from_secs(self.config.timeout_secs))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    tracing::debug!("Successfully exported traces to {}", endpoint);
+                    return Ok(());
+                }
+                Ok(response) => {
+                    let err = OtelError::ExportFailed(format!(
+                        "HTTP {} from {}",
+                        response.status(),
+                        endpoint
+                    ));
+                    if !Self::is_retryable_error(&err) {
+                        return Err(err);
+                    }
+                    retry_count += 1;
+                    if retry_count > self.config.max_retries {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(5000);
+                }
+                Err(e) => {
+                    let err = OtelError::HttpError(format!("Request failed: {}", e));
+                    retry_count += 1;
+                    if retry_count > self.config.max_retries {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(5000);
+                }
+            }
+        }
+    }
+
+    /// Build OTLP TracesData JSON payload
+    pub fn build_otel_traces_payload(&self, records: &[TraceRecord]) -> Result<String> {
+        let resource_spans = records
+            .iter()
+            .map(|record| {
+                let events: Vec<serde_json::Value> = record
+                    .events
+                    .iter()
+                    .map(|event| {
+                        json!({
+                            "timeUnixNano": format!("{}", event.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+                            "name": event.name,
+                            "attributes": Self::to_otlp_attributes(&event.attributes)
+                        })
+                    })
+                    .collect();
+
+                let span = json!({
+                    "traceId": record.trace_id,
+                    "spanId": record.span_id,
+                    "parentSpanId": record.parent_span_id,
+                    "name": record.name,
+                    "kind": record.kind,
+                    "startTimeUnixNano": format!("{}", record.start_time.timestamp_nanos_opt().unwrap_or(0) as u64),
+                    "endTimeUnixNano": format!("{}", record.end_time.timestamp_nanos_opt().unwrap_or(0) as u64),
+                    "attributes": Self::to_otlp_attributes(&record.span_attributes),
+                    "status": {
+                        "code": record.status_code,
+                        "message": record.status_message
+                    },
+                    "events": events
+                });
+
+                json!({
+                    "resource": {
+                        "attributes": Self::to_otlp_attributes(&record.resource_attributes)
+                    },
+                    "scopeSpans": [
+                        {
+                            "scope": {
+                                "name": "tc-otel",
+                                "attributes": Self::to_otlp_attributes(&record.scope_attributes)
+                            },
+                            "spans": [span]
+                        }
+                    ]
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let payload = json!({
+            "resourceSpans": resource_spans
+        });
+
+        serde_json::to_string(&payload).map_err(|e| {
+            OtelError::SerializationError(format!("Failed to serialize OTEL traces payload: {}", e))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -820,5 +953,207 @@ mod tests {
         for config in configs {
             assert!(config.timeout_secs > 0);
         }
+    }
+
+    // ─── Trace payload tests ──────────────────────────────────────
+
+    fn make_trace_record() -> tc_otel_core::TraceRecord {
+        let mut entry = tc_otel_core::SpanEntry::new(
+            [
+                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                0x67, 0x89,
+            ],
+            [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10],
+            "motion.axis_move".to_string(),
+        );
+        entry.kind = tc_otel_core::SpanKind::Server;
+        entry.status_code = tc_otel_core::SpanStatusCode::Ok;
+        entry.status_message = "Success".to_string();
+        entry.hostname = "plc-01".to_string();
+        entry.project_name = "ProductionLine".to_string();
+        entry.app_name = "HydraulicPress".to_string();
+        entry
+            .attributes
+            .insert("motion.axis_id".to_string(), serde_json::json!(1));
+        tc_otel_core::TraceRecord::from_span_entry(entry)
+    }
+
+    #[test]
+    fn test_build_traces_payload_structure() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let record = make_trace_record();
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        // Verify top-level OTLP traces structure
+        assert!(payload.get("resourceSpans").is_some());
+        assert!(payload["resourceSpans"].is_array());
+        assert_eq!(payload["resourceSpans"].as_array().unwrap().len(), 1);
+
+        let rs = &payload["resourceSpans"][0];
+        assert!(rs.get("resource").is_some());
+        assert!(rs.get("scopeSpans").is_some());
+    }
+
+    #[test]
+    fn test_build_traces_payload_span_fields() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let record = make_trace_record();
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+
+        assert_eq!(span["traceId"], "abcdef0123456789abcdef0123456789");
+        assert_eq!(span["spanId"], "fedcba9876543210");
+        assert_eq!(span["parentSpanId"], "0000000000000000");
+        assert_eq!(span["name"], "motion.axis_move");
+        assert_eq!(span["kind"], 2); // SPAN_KIND_SERVER
+        assert_eq!(span["status"]["code"], 1); // STATUS_CODE_OK
+        assert_eq!(span["status"]["message"], "Success");
+
+        // Check startTimeUnixNano and endTimeUnixNano are present
+        assert!(span["startTimeUnixNano"].is_string());
+        assert!(span["endTimeUnixNano"].is_string());
+    }
+
+    #[test]
+    fn test_build_traces_payload_resource_attributes() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let record = make_trace_record();
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let resource_attrs = &payload["resourceSpans"][0]["resource"]["attributes"];
+        let attrs_vec = resource_attrs.as_array().unwrap();
+
+        // Should contain service.name = ProductionLine
+        let service_name = attrs_vec
+            .iter()
+            .find(|a| a["key"] == "service.name")
+            .unwrap();
+        assert_eq!(service_name["value"]["stringValue"], "ProductionLine");
+
+        // Should contain host.name = plc-01
+        let host_name = attrs_vec.iter().find(|a| a["key"] == "host.name").unwrap();
+        assert_eq!(host_name["value"]["stringValue"], "plc-01");
+    }
+
+    #[test]
+    fn test_build_traces_payload_span_attributes() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let record = make_trace_record();
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let span_attrs = span["attributes"].as_array().unwrap();
+
+        // Should contain motion.axis_id = 1
+        let axis_id = span_attrs
+            .iter()
+            .find(|a| a["key"] == "motion.axis_id")
+            .unwrap();
+        assert_eq!(axis_id["value"]["intValue"], "1");
+    }
+
+    #[test]
+    fn test_build_traces_payload_with_events() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+
+        let mut entry = tc_otel_core::SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+        entry.events.push(tc_otel_core::SpanEvent {
+            timestamp: chrono::Utc::now(),
+            name: "axis.target_reached".to_string(),
+            attributes: {
+                let mut attrs = std::collections::HashMap::new();
+                attrs.insert("axis.position".to_string(), serde_json::json!(150.5));
+                attrs
+            },
+        });
+        let record = tc_otel_core::TraceRecord::from_span_entry(entry);
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let events = span["events"].as_array().unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["name"], "axis.target_reached");
+
+        let event_attrs = events[0]["attributes"].as_array().unwrap();
+        let pos_attr = event_attrs
+            .iter()
+            .find(|a| a["key"] == "axis.position")
+            .unwrap();
+        assert_eq!(pos_attr["value"]["doubleValue"], 150.5);
+    }
+
+    #[test]
+    fn test_build_traces_payload_empty() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let payload_str = exporter.build_otel_traces_payload(&[]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        assert!(payload["resourceSpans"].is_array());
+        assert_eq!(payload["resourceSpans"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_build_traces_payload_multiple_spans() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+
+        let entry1 = tc_otel_core::SpanEntry::new([1u8; 16], [1u8; 8], "span_1".to_string());
+        let entry2 = tc_otel_core::SpanEntry::new([1u8; 16], [2u8; 8], "span_2".to_string());
+
+        let records = vec![
+            tc_otel_core::TraceRecord::from_span_entry(entry1),
+            tc_otel_core::TraceRecord::from_span_entry(entry2),
+        ];
+
+        let payload_str = exporter.build_otel_traces_payload(&records).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        assert_eq!(payload["resourceSpans"].as_array().unwrap().len(), 2);
+
+        let span1 = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let span2 = &payload["resourceSpans"][1]["scopeSpans"][0]["spans"][0];
+
+        assert_eq!(span1["name"], "span_1");
+        assert_eq!(span2["name"], "span_2");
+    }
+
+    #[test]
+    fn test_build_traces_payload_scope_name() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let record = make_trace_record();
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let scope = &payload["resourceSpans"][0]["scopeSpans"][0]["scope"];
+        assert_eq!(scope["name"], "tc-otel");
+    }
+
+    #[test]
+    fn test_build_traces_payload_error_status() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+
+        let mut entry = tc_otel_core::SpanEntry::new([1u8; 16], [2u8; 8], "failing_op".to_string());
+        entry.status_code = tc_otel_core::SpanStatusCode::Error;
+        entry.status_message = "axis fault detected".to_string();
+        let record = tc_otel_core::TraceRecord::from_span_entry(entry);
+
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert_eq!(span["status"]["code"], 2); // STATUS_CODE_ERROR
+        assert_eq!(span["status"]["message"], "axis fault detected");
     }
 }
