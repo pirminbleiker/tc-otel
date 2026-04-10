@@ -27,12 +27,12 @@ fn bench_convert_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("convert_scaling");
     group.sample_size(100);
 
-    for (args, context) in [(1, 1), (3, 3), (5, 5), (10, 10), (20, 20)].iter() {
+    for (args, context) in [(1usize, 1usize), (3, 3), (5, 5), (10, 10), (20, 20)] {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("args_{}_context_{}", args, context)),
             &(args, context),
-            |b, (num_args, num_context)| {
-                let entry = black_box(LogEntryFixtures::with_counts(*num_args, *num_context));
+            |b, &(num_args, num_context)| {
+                let entry = black_box(LogEntryFixtures::with_counts(num_args, num_context));
                 b.iter(|| LogRecord::from_log_entry(entry.clone()))
             },
         );

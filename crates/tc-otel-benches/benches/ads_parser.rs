@@ -23,7 +23,7 @@ fn bench_parse_scaling(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("args_and_context_{}", message_complexity)),
             message_complexity,
-            |b, &count| {
+            |b, &_count| {
                 let data = black_box(AdsFixtures::typical_ads_message()); // Reuse for now
                 b.iter(|| AdsParser::parse(&data))
             },

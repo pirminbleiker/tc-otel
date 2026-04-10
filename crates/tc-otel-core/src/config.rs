@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_output_config_multiple_outputs() {
-        let configs = vec![
+        let configs = [
             OutputConfig {
                 output_type: "console".to_string(),
                 settings: serde_json::json!({}),

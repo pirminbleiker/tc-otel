@@ -42,6 +42,7 @@ impl OtelHttpReceiver {
 }
 
 /// OTEL gRPC Receiver (placeholder for future implementation)
+#[allow(dead_code)]
 pub struct OtelGrpcReceiver {
     host: String,
     port: u16,

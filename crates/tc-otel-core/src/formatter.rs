@@ -311,6 +311,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_format_arg_type_coercion() {
         let mut args = HashMap::new();
         args.insert(1, serde_json::json!(42));
@@ -423,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_value_to_string_number_precision() {
-        let large_number = serde_json::json!(1234567890.123456789);
+        let large_number = serde_json::json!(1_234_567_890.123_456_7);
         let result = MessageFormatter::value_to_string(&large_number);
         assert!(result.contains("1234567890"));
     }

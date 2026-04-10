@@ -262,10 +262,11 @@ mod tests {
             LogLevel::Info,
         );
 
-        let record = OtelMapping::log_entry_to_record(entry.clone());
+        let expected_ts = entry.plc_timestamp;
+        let record = OtelMapping::log_entry_to_record(entry);
 
-        // The LogRecord timestamp should match the entry's clock_timestamp
-        assert_eq!(record.timestamp, entry.clock_timestamp);
+        // The LogRecord timestamp should match the entry's plc_timestamp
+        assert_eq!(record.timestamp, expected_ts);
 
         // The plc_timestamp should be in attributes as string
         let plc_ts_attr = record.log_attributes.get("plc.timestamp").unwrap();

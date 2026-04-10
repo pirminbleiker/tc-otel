@@ -184,7 +184,7 @@ fn test_mixed_type_arguments() {
     );
 
     entry.arguments.insert(0, json!(42));
-    entry.arguments.insert(1, json!(3.14));
+    entry.arguments.insert(1, json!(3.15));
     entry.arguments.insert(2, json!(true));
     entry.arguments.insert(3, json!("string"));
     entry.arguments.insert(4, json!(null));
@@ -195,7 +195,7 @@ fn test_mixed_type_arguments() {
 
     // All types should be preserved
     assert_eq!(record.log_attributes.get("arg.0"), Some(&json!(42)));
-    assert_eq!(record.log_attributes.get("arg.1"), Some(&json!(3.14)));
+    assert_eq!(record.log_attributes.get("arg.1"), Some(&json!(3.15)));
     assert_eq!(record.log_attributes.get("arg.2"), Some(&json!(true)));
     assert_eq!(record.log_attributes.get("arg.3"), Some(&json!("string")));
     assert_eq!(record.log_attributes.get("arg.4"), Some(&json!(null)));

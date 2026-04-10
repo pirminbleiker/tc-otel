@@ -366,8 +366,8 @@ mod tests {
         let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
         let payload = exporter.build_otel_payload(&[]).unwrap();
 
-        // Should still be valid JSON with empty resource_logs
-        assert!(payload.contains("resource_logs"));
+        // Should still be valid JSON with empty resourceLogs
+        assert!(payload.contains("resourceLogs"));
     }
 
     #[test]
@@ -445,8 +445,8 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
 
         // Verify OTEL structure
-        assert!(payload.get("resource_logs").is_some());
-        assert!(payload["resource_logs"].is_array());
+        assert!(payload.get("resourceLogs").is_some());
+        assert!(payload["resourceLogs"].is_array());
     }
 
     #[test]

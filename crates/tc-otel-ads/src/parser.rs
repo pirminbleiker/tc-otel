@@ -1167,7 +1167,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 1);
-        assert_eq!(entry.arguments[&1], serde_json::json!(123));
+        assert_eq!(entry.arguments[&0], serde_json::json!(123));
     }
 
     #[test]
@@ -1225,7 +1225,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 3);
-        assert_eq!(entry.arguments[&1], serde_json::json!(42));
+        assert_eq!(entry.arguments[&0], serde_json::json!(42));
         assert_eq!(entry.arguments[&1], serde_json::json!("test"));
         assert_eq!(entry.arguments[&2], serde_json::json!(true));
     }
@@ -1243,10 +1243,11 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        assert_eq!(entry.arguments[&1], serde_json::Value::Null);
+        assert_eq!(entry.arguments[&0], serde_json::Value::Null);
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_float_argument() {
         let mut payload = build_test_payload("Test", "logger", 2);
         payload.pop(); // Remove end marker
@@ -1259,7 +1260,7 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        let value = &entry.arguments[&1];
+        let value = &entry.arguments[&0];
         assert!(value.is_number());
     }
 
@@ -1293,7 +1294,7 @@ mod tests {
         payload.push(0); // end marker
 
         let entry = AdsParser::parse(&payload).unwrap();
-        assert_eq!(entry.arguments[&1], serde_json::json!(-42));
+        assert_eq!(entry.arguments[&0], serde_json::json!(-42));
     }
 
     #[test]
@@ -1323,11 +1324,11 @@ mod tests {
         payload.pop(); // Remove end marker
 
         // Add 32 arguments (the maximum allowed)
-        for i in 0..32 {
+        for i in 0i32..32 {
             payload.push(1); // type_id = argument
             payload.push(i as u8); // index
             payload.extend_from_slice(&8i16.to_le_bytes()); // value type = DINT (2 bytes)
-            payload.extend_from_slice(&(i as i32).to_le_bytes());
+            payload.extend_from_slice(&i.to_le_bytes());
         }
 
         payload.push(0); // end marker
@@ -1372,6 +1373,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_mixed_argument_types() {
         let mut payload = build_test_payload("Test {0} {1} {2} {3} {4}", "logger", 2);
         payload.pop(); // Remove end marker
@@ -1411,7 +1413,7 @@ mod tests {
 
         let entry = AdsParser::parse(&payload).unwrap();
         assert_eq!(entry.arguments.len(), 5);
-        assert!(entry.arguments[&1].is_number());
+        assert!(entry.arguments[&0].is_number());
         assert!(entry.arguments[&1].is_number());
         assert!(entry.arguments[&2].is_string());
         assert!(entry.arguments[&3].is_boolean());
@@ -1499,7 +1501,7 @@ mod tests {
 
         let entry = &result.entries[0];
         assert_eq!(entry.arguments.len(), 1);
-        assert_eq!(entry.arguments[&1], serde_json::json!(42));
+        assert_eq!(entry.arguments[&1], serde_json::json!(42)); // V2: arg_idx+1
     }
 
     #[test]

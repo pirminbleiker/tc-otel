@@ -1,12 +1,11 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use tc_otel_ads::AdsParser;
 use tc_otel_benches::{AdsFixtures, LogEntryFixtures};
 use tc_otel_core::LogRecord;
 
 /// End-to-end benchmark: Parse ADS → Convert to OTEL
 fn bench_e2e_parse_and_convert_minimal(c: &mut Criterion) {
     c.bench_function("e2e_parse_and_convert_minimal", |b| {
-        let data = black_box(AdsFixtures::minimal_ads_message());
+        let _data = black_box(AdsFixtures::minimal_ads_message());
         b.iter(|| {
             // In real scenario, this would be from parsing
             let _entry = LogEntryFixtures::simple_message();
@@ -18,7 +17,7 @@ fn bench_e2e_parse_and_convert_minimal(c: &mut Criterion) {
 
 fn bench_e2e_parse_and_convert_typical(c: &mut Criterion) {
     c.bench_function("e2e_parse_and_convert_typical", |b| {
-        let data = black_box(AdsFixtures::typical_ads_message());
+        let _data = black_box(AdsFixtures::typical_ads_message());
         b.iter(|| {
             let _entry = LogEntryFixtures::typical_message();
             let record = LogRecord::from_log_entry(_entry);

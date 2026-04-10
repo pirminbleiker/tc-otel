@@ -193,7 +193,7 @@ fn test_type_conversions() {
     let record = tc_otel_core::LogRecord::from_log_entry(entry);
 
     // Verify types are correct
-    assert!(record.timestamp.to_rfc3339().len() > 0);
+    assert!(!record.timestamp.to_rfc3339().is_empty());
     assert!(record.severity_text.is_ascii());
     assert!(record.body.is_string());
     assert!(!record.resource_attributes.is_empty());
