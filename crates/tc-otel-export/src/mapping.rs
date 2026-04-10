@@ -1,6 +1,6 @@
 //! Mapping utilities between Log4TC and OTEL formats
 
-use tc_otel_core::{LogEntry, LogRecord, MetricEntry, MetricRecord};
+use tc_otel_core::{LogEntry, LogRecord, MetricEntry, MetricRecord, SpanEntry, TraceRecord};
 
 /// Helper for mapping Log4TC types to OTEL types
 pub struct OtelMapping;
@@ -20,12 +20,17 @@ impl OtelMapping {
     pub fn metric_entry_to_record(entry: MetricEntry) -> MetricRecord {
         MetricRecord::from_metric_entry(entry)
     }
+
+    /// Convert a SpanEntry to OTEL TraceRecord
+    pub fn span_entry_to_record(entry: SpanEntry) -> TraceRecord {
+        TraceRecord::from_span_entry(entry)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tc_otel_core::{LogLevel, MetricKind};
+    use tc_otel_core::{LogLevel, MetricKind, SpanKind, SpanStatusCode};
 
     #[test]
     fn test_mapping_log_entry_to_record() {
@@ -397,5 +402,25 @@ mod tests {
 
         // severity_text should contain the log level name
         assert!(record.severity_text.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_mapping_span_entry_to_record() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test.span".to_string());
+        entry.kind = SpanKind::Client;
+        entry.status_code = SpanStatusCode::Ok;
+        entry.hostname = "plc-01".to_string();
+        entry.project_name = "TestProject".to_string();
+        entry.app_name = "TestApp".to_string();
+
+        let record = OtelMapping::span_entry_to_record(entry);
+
+        assert_eq!(record.name, "test.span");
+        assert_eq!(record.kind, 3); // SPAN_KIND_CLIENT
+        assert_eq!(record.status_code, 1); // STATUS_CODE_OK
+        assert_eq!(
+            record.resource_attributes["service.name"],
+            serde_json::json!("TestProject")
+        );
     }
 }
