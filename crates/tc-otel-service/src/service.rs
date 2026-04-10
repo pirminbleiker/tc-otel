@@ -12,7 +12,7 @@ use tokio::time::timeout;
 
 use crate::config_watcher::ConfigWatcher;
 use crate::dispatcher::LogDispatcher;
-use crate::web::{self, DiagnosticStats, SubscriptionManager, WebState};
+use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebState};
 
 /// Main Log4TC Service
 pub struct Log4TcService {
@@ -143,6 +143,7 @@ impl Log4TcService {
                 subscriptions: Arc::new(SubscriptionManager::new(
                     self.settings.web.max_subscriptions,
                 )),
+                symbols: Arc::new(SymbolStore::new()),
                 service_name: self.settings.service.name.clone(),
             };
             let web_config = self.settings.web.clone();

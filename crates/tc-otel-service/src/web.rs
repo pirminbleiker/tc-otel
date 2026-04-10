@@ -5,7 +5,7 @@
 //! for real-time metric collection.
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{delete, get, post},
@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tc_otel_ads::{ConnectionManager, TaskRegistry};
+use tc_otel_ads::{AdsSymbolEntry, ConnectionManager, TaskRegistry};
 use tc_otel_core::WebConfig;
 
 /// Shared diagnostic counters for the service
@@ -117,6 +117,52 @@ impl std::fmt::Display for SubscriptionError {
     }
 }
 
+/// Thread-safe store for discovered PLC symbols
+#[derive(Debug)]
+pub struct SymbolStore {
+    symbols: RwLock<Vec<AdsSymbolEntry>>,
+}
+
+impl SymbolStore {
+    pub fn new() -> Self {
+        Self {
+            symbols: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Replace all symbols with a new set (from a fresh discovery)
+    pub fn update(&self, symbols: Vec<AdsSymbolEntry>) {
+        *self.symbols.write().unwrap() = symbols;
+    }
+
+    /// Get all symbols
+    pub fn list(&self) -> Vec<AdsSymbolEntry> {
+        self.symbols.read().unwrap().clone()
+    }
+
+    /// Look up a symbol by exact name (case-insensitive)
+    pub fn find_by_name(&self, name: &str) -> Option<AdsSymbolEntry> {
+        let lower = name.to_lowercase();
+        self.symbols
+            .read()
+            .unwrap()
+            .iter()
+            .find(|s| s.name.to_lowercase() == lower)
+            .cloned()
+    }
+
+    /// Get the number of stored symbols
+    pub fn count(&self) -> usize {
+        self.symbols.read().unwrap().len()
+    }
+}
+
+impl Default for SymbolStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Shared application state for axum handlers
 #[derive(Clone)]
 pub struct WebState {
@@ -124,6 +170,7 @@ pub struct WebState {
     pub conn_manager: Arc<ConnectionManager>,
     pub task_registry: Arc<TaskRegistry>,
     pub subscriptions: Arc<SubscriptionManager>,
+    pub symbols: Arc<SymbolStore>,
     pub service_name: String,
 }
 
@@ -199,6 +246,35 @@ struct SubscribeResponse {
 struct UnsubscribeResponse {
     unsubscribed: Vec<String>,
     count: usize,
+}
+
+#[derive(Serialize)]
+struct SymbolInfo {
+    name: String,
+    type_name: String,
+    size: u32,
+    index_group: u32,
+    index_offset: u32,
+    comment: String,
+}
+
+impl From<AdsSymbolEntry> for SymbolInfo {
+    fn from(s: AdsSymbolEntry) -> Self {
+        SymbolInfo {
+            name: s.name,
+            type_name: s.type_name,
+            size: s.size,
+            index_group: s.index_group,
+            index_offset: s.index_offset,
+            comment: s.comment,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SymbolsResponse {
+    count: usize,
+    symbols: Vec<SymbolInfo>,
 }
 
 // --- Handlers ---
@@ -319,6 +395,25 @@ async fn unsubscribe(
     })
 }
 
+async fn get_symbols(State(state): State<WebState>) -> Json<SymbolsResponse> {
+    let symbols: Vec<SymbolInfo> = state.symbols.list().into_iter().map(Into::into).collect();
+    Json(SymbolsResponse {
+        count: symbols.len(),
+        symbols,
+    })
+}
+
+async fn get_symbol_by_name(
+    State(state): State<WebState>,
+    Path(name): Path<String>,
+) -> Result<Json<SymbolInfo>, StatusCode> {
+    state
+        .symbols
+        .find_by_name(&name)
+        .map(|s| Json(s.into()))
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
 async fn dashboard() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -337,6 +432,8 @@ pub fn router(state: WebState) -> Router {
         .route("/api/subscriptions", get(get_subscriptions))
         .route("/api/subscriptions", post(subscribe))
         .route("/api/subscriptions", delete(unsubscribe))
+        .route("/api/symbols", get(get_symbols))
+        .route("/api/symbols/:name", get(get_symbol_by_name))
         .with_state(state)
 }
 
@@ -514,6 +611,7 @@ mod tests {
             )),
             task_registry: Arc::new(TaskRegistry::new()),
             subscriptions: Arc::new(SubscriptionManager::new(500)),
+            symbols: Arc::new(SymbolStore::new()),
             service_name: "test-service".to_string(),
         }
     }
@@ -785,5 +883,223 @@ mod tests {
         assert_eq!(stats.logs_received.load(Ordering::Relaxed), 100);
         assert_eq!(stats.logs_dispatched.load(Ordering::Relaxed), 95);
         assert_eq!(stats.logs_failed.load(Ordering::Relaxed), 5);
+    }
+
+    // --- Symbol store and endpoint tests ---
+
+    #[test]
+    fn test_symbol_store_empty() {
+        let store = SymbolStore::new();
+        assert_eq!(store.count(), 0);
+        assert!(store.list().is_empty());
+        assert!(store.find_by_name("MAIN.bFlag").is_none());
+    }
+
+    #[test]
+    fn test_symbol_store_update_and_list() {
+        let store = SymbolStore::new();
+        store.update(vec![
+            AdsSymbolEntry {
+                index_group: 0x4020,
+                index_offset: 0,
+                size: 1,
+                data_type: 33,
+                flags: 0,
+                name: "MAIN.bFlag".to_string(),
+                type_name: "BOOL".to_string(),
+                comment: String::new(),
+            },
+            AdsSymbolEntry {
+                index_group: 0x4020,
+                index_offset: 8,
+                size: 8,
+                data_type: 5,
+                flags: 0,
+                name: "MAIN.fSpeed".to_string(),
+                type_name: "LREAL".to_string(),
+                comment: "Motor speed".to_string(),
+            },
+        ]);
+        assert_eq!(store.count(), 2);
+        assert_eq!(store.list().len(), 2);
+    }
+
+    #[test]
+    fn test_symbol_store_find_by_name_case_insensitive() {
+        let store = SymbolStore::new();
+        store.update(vec![AdsSymbolEntry {
+            index_group: 0x4020,
+            index_offset: 0,
+            size: 1,
+            data_type: 33,
+            flags: 0,
+            name: "MAIN.bMotorRunning".to_string(),
+            type_name: "BOOL".to_string(),
+            comment: String::new(),
+        }]);
+
+        assert!(store.find_by_name("MAIN.bMotorRunning").is_some());
+        assert!(store.find_by_name("main.bmotorrunning").is_some());
+        assert!(store.find_by_name("MAIN.BMOTORRUNNING").is_some());
+        assert!(store.find_by_name("MAIN.nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_symbol_store_update_replaces() {
+        let store = SymbolStore::new();
+        store.update(vec![AdsSymbolEntry {
+            index_group: 1,
+            index_offset: 0,
+            size: 1,
+            data_type: 33,
+            flags: 0,
+            name: "old".to_string(),
+            type_name: "BOOL".to_string(),
+            comment: String::new(),
+        }]);
+        assert_eq!(store.count(), 1);
+
+        store.update(vec![
+            AdsSymbolEntry {
+                index_group: 2,
+                index_offset: 0,
+                size: 2,
+                data_type: 3,
+                flags: 0,
+                name: "new1".to_string(),
+                type_name: "INT".to_string(),
+                comment: String::new(),
+            },
+            AdsSymbolEntry {
+                index_group: 2,
+                index_offset: 2,
+                size: 4,
+                data_type: 4,
+                flags: 0,
+                name: "new2".to_string(),
+                type_name: "REAL".to_string(),
+                comment: String::new(),
+            },
+        ]);
+        assert_eq!(store.count(), 2);
+        assert!(store.find_by_name("old").is_none());
+        assert!(store.find_by_name("new1").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_symbols_endpoint_empty() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/symbols")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count"], 0);
+        assert!(json["symbols"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_symbols_endpoint_with_data() {
+        let state = test_state();
+        state.symbols.update(vec![
+            AdsSymbolEntry {
+                index_group: 0x4020,
+                index_offset: 0,
+                size: 1,
+                data_type: 33,
+                flags: 0x0008,
+                name: "MAIN.bMotorRunning".to_string(),
+                type_name: "BOOL".to_string(),
+                comment: "Motor status".to_string(),
+            },
+            AdsSymbolEntry {
+                index_group: 0x4020,
+                index_offset: 8,
+                size: 8,
+                data_type: 5,
+                flags: 0x0008,
+                name: "MAIN.fSpeed".to_string(),
+                type_name: "LREAL".to_string(),
+                comment: String::new(),
+            },
+        ]);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/api/symbols")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count"], 2);
+        let symbols = json["symbols"].as_array().unwrap();
+        assert_eq!(symbols[0]["name"], "MAIN.bMotorRunning");
+        assert_eq!(symbols[0]["type_name"], "BOOL");
+        assert_eq!(symbols[0]["comment"], "Motor status");
+        assert_eq!(symbols[1]["name"], "MAIN.fSpeed");
+        assert_eq!(symbols[1]["type_name"], "LREAL");
+    }
+
+    #[tokio::test]
+    async fn test_symbol_by_name_found() {
+        let state = test_state();
+        state.symbols.update(vec![AdsSymbolEntry {
+            index_group: 0x4020,
+            index_offset: 0,
+            size: 1,
+            data_type: 33,
+            flags: 0,
+            name: "GVL.bTestFlag".to_string(),
+            type_name: "BOOL".to_string(),
+            comment: "Test flag".to_string(),
+        }]);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::get("/api/symbols/GVL.bTestFlag")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "GVL.bTestFlag");
+        assert_eq!(json["type_name"], "BOOL");
+        assert_eq!(json["size"], 1);
+        assert_eq!(json["comment"], "Test flag");
+    }
+
+    #[tokio::test]
+    async fn test_symbol_by_name_not_found() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/symbols/NONEXISTENT.var")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
