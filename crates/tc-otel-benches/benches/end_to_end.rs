@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tc_otel_ads::AdsParser;
 use tc_otel_benches::{AdsFixtures, LogEntryFixtures};
 use tc_otel_core::LogRecord;
@@ -75,7 +75,7 @@ fn bench_e2e_batch_processing(c: &mut Criterion) {
                         let _record = LogRecord::from_log_entry(entry);
                     }
                 })
-            }
+            },
         );
     }
     group.finish();

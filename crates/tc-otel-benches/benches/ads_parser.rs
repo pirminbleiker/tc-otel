@@ -1,22 +1,18 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tc_otel_ads::AdsParser;
 use tc_otel_benches::AdsFixtures;
 
 fn bench_parse_minimal(c: &mut Criterion) {
     c.bench_function("parse_minimal_message", |b| {
         let data = black_box(AdsFixtures::minimal_ads_message());
-        b.iter(|| {
-            AdsParser::parse(&data)
-        })
+        b.iter(|| AdsParser::parse(&data))
     });
 }
 
 fn bench_parse_typical(c: &mut Criterion) {
     c.bench_function("parse_typical_message", |b| {
         let data = black_box(AdsFixtures::typical_ads_message());
-        b.iter(|| {
-            AdsParser::parse(&data)
-        })
+        b.iter(|| AdsParser::parse(&data))
     });
 }
 
@@ -29,10 +25,8 @@ fn bench_parse_scaling(c: &mut Criterion) {
             message_complexity,
             |b, &count| {
                 let data = black_box(AdsFixtures::typical_ads_message()); // Reuse for now
-                b.iter(|| {
-                    AdsParser::parse(&data)
-                })
-            }
+                b.iter(|| AdsParser::parse(&data))
+            },
         );
     }
     group.finish();

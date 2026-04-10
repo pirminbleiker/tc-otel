@@ -1,9 +1,9 @@
 //! ADS protocol data structures and constants
 
 use chrono::{DateTime, Utc};
-use tc_otel_core::LogLevel;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tc_otel_core::LogLevel;
 
 /// ADS protocol version currently supported
 pub const ADS_PROTOCOL_VERSION: u8 = 1;

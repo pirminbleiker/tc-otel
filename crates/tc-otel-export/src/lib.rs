@@ -9,12 +9,12 @@
 //! - Log record transformation to OTEL LogRecord format
 //! - Batching and retry logic for exports
 
-pub mod receiver;
-pub mod exporter;
 pub mod error;
+pub mod exporter;
 pub mod mapping;
+pub mod receiver;
 
-pub use receiver::{OtelHttpReceiver, OtelGrpcReceiver};
+pub use error::{OtelError, Result};
 pub use exporter::OtelExporter;
-pub use error::{Result, OtelError};
 pub use mapping::OtelMapping;
+pub use receiver::{OtelGrpcReceiver, OtelHttpReceiver};

@@ -28,17 +28,17 @@ impl AmsNetId {
     pub fn from_str_ref(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 6 {
-            return Err(AdsError::ParseError(
-                format!("Invalid AMS Net ID format: expected 6 parts, got {}", parts.len())
-            ));
+            return Err(AdsError::ParseError(format!(
+                "Invalid AMS Net ID format: expected 6 parts, got {}",
+                parts.len()
+            )));
         }
 
         let mut bytes = [0u8; 6];
         for (i, part) in parts.iter().enumerate() {
-            bytes[i] = part.parse::<u8>()
-                .map_err(|_| AdsError::ParseError(
-                    format!("Invalid AMS Net ID octet: {}", part)
-                ))?;
+            bytes[i] = part
+                .parse::<u8>()
+                .map_err(|_| AdsError::ParseError(format!("Invalid AMS Net ID octet: {}", part)))?;
         }
 
         Ok(AmsNetId(bytes))
@@ -46,8 +46,10 @@ impl AmsNetId {
 
     /// Convert AMS Net ID to string format
     pub fn to_string(&self) -> String {
-        format!("{}.{}.{}.{}.{}.{}",
-            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5])
+        format!(
+            "{}.{}.{}.{}.{}.{}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
     }
 
     /// Get the raw bytes
@@ -60,8 +62,7 @@ impl FromStr for AmsNetId {
     type Err = Box<dyn std::error::Error>;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        AmsNetId::from_str_ref(s)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        AmsNetId::from_str_ref(s).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 }
 
@@ -83,9 +84,10 @@ impl AmsHeader {
     /// Parse AMS header from buffer (32 bytes)
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 32 {
-            return Err(AdsError::ParseError(
-                format!("AMS header too short: {} bytes", data.len())
-            ));
+            return Err(AdsError::ParseError(format!(
+                "AMS header too short: {} bytes",
+                data.len()
+            )));
         }
 
         let target_net_id = AmsNetId([data[0], data[1], data[2], data[3], data[4], data[5]]);
@@ -154,9 +156,10 @@ impl AdsWriteRequest {
     /// Parse ADS Write request from buffer (after AMS header)
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 12 {
-            return Err(AdsError::ParseError(
-                format!("ADS Write request too short: {} bytes", data.len())
-            ));
+            return Err(AdsError::ParseError(format!(
+                "ADS Write request too short: {} bytes",
+                data.len()
+            )));
         }
 
         let index_group = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -164,9 +167,10 @@ impl AdsWriteRequest {
         let write_length = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
 
         if data.len() < 12 + write_length {
-            return Err(AdsError::ParseError(
-                format!("ADS Write data incomplete: expected {} bytes", write_length)
-            ));
+            return Err(AdsError::ParseError(format!(
+                "ADS Write data incomplete: expected {} bytes",
+                write_length
+            )));
         }
 
         Ok(AdsWriteRequest {
@@ -496,10 +500,19 @@ mod tests {
         let response_data = vec![0, 0, 0, 0];
         let response_frame = request_frame.make_response(0, response_data.clone());
 
-        assert_eq!(response_frame.ams_header.target_net_id, request_frame.ams_header.source_net_id);
-        assert_eq!(response_frame.ams_header.source_net_id, request_frame.ams_header.target_net_id);
+        assert_eq!(
+            response_frame.ams_header.target_net_id,
+            request_frame.ams_header.source_net_id
+        );
+        assert_eq!(
+            response_frame.ams_header.source_net_id,
+            request_frame.ams_header.target_net_id
+        );
         assert_eq!(response_frame.ams_header.state_flags, ADS_STATE_RESPONSE);
-        assert_eq!(response_frame.ams_header.invoke_id, request_frame.ams_header.invoke_id);
+        assert_eq!(
+            response_frame.ams_header.invoke_id,
+            request_frame.ams_header.invoke_id
+        );
         assert_eq!(response_frame.payload, response_data);
     }
 

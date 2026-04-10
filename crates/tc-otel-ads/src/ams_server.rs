@@ -10,9 +10,9 @@ use crate::ams::{
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
-use tc_otel_core::LogEntry;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tc_otel_core::LogEntry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -53,9 +53,9 @@ impl AmsTcpServer {
         let tcp_addr = format!("{}:{}", self.host, self.port);
         let _udp_addr = format!("{}:{}", self.host, self.port + 1); // 48899
 
-        let tcp_listener = TcpListener::bind(&tcp_addr)
-            .await
-            .map_err(|e| crate::AdsError::BufferError(format!("Failed to bind TCP {}: {}", tcp_addr, e)))?;
+        let tcp_listener = TcpListener::bind(&tcp_addr).await.map_err(|e| {
+            crate::AdsError::BufferError(format!("Failed to bind TCP {}: {}", tcp_addr, e))
+        })?;
 
         tracing::info!(
             "AMS/TCP server listening on {} with Net ID {}",
@@ -87,7 +87,8 @@ impl AmsTcpServer {
 
             tokio::spawn(async move {
                 if let Err(e) =
-                    Self::handle_connection(stream, peer_addr, net_id, ads_port, log_tx, registry).await
+                    Self::handle_connection(stream, peer_addr, net_id, ads_port, log_tx, registry)
+                        .await
                 {
                     tracing::warn!("AMS/TCP connection error from {}: {}", peer_addr, e);
                 }
@@ -166,7 +167,7 @@ impl AmsTcpServer {
 
         // Pre-allocated buffers to avoid per-frame allocations
         let mut read_buf = vec![0u8; 16384]; // 16KB reusable read buffer
-        let mut resp_buf = vec![0u8; 256];   // reusable response buffer
+        let mut resp_buf = vec![0u8; 256]; // reusable response buffer
 
         loop {
             // Read AMS/TCP header (6 bytes)
@@ -177,7 +178,8 @@ impl AmsTcpServer {
             }
 
             let reserved = u16::from_le_bytes([read_buf[0], read_buf[1]]);
-            let data_len = u32::from_le_bytes([read_buf[2], read_buf[3], read_buf[4], read_buf[5]]) as usize;
+            let data_len =
+                u32::from_le_bytes([read_buf[2], read_buf[3], read_buf[4], read_buf[5]]) as usize;
 
             if reserved != 0 || data_len == 0 || data_len > 1_048_576 {
                 break;
@@ -198,7 +200,9 @@ impl AmsTcpServer {
             let data = &read_buf[..data_len];
 
             // Fast path: check command ID without full parse (byte 16-17 in AMS header)
-            if data.len() < 32 { continue; }
+            if data.len() < 32 {
+                continue;
+            }
             let cmd = u16::from_le_bytes([data[16], data[17]]);
 
             if cmd == ADS_CMD_READ_STATE || cmd == ADS_CMD_READ || cmd == ADS_CMD_READ_DEVICE_INFO {
@@ -245,15 +249,15 @@ impl AmsTcpServer {
         let (payload_len, payload) = match cmd {
             ADS_CMD_READ_STATE => {
                 // Result(4) + AdsState(2) + DeviceState(2) = 8 bytes
-                (8u32, &[0,0,0,0, 5,0, 0,0][..])
+                (8u32, &[0, 0, 0, 0, 5, 0, 0, 0][..])
             }
             ADS_CMD_READ_DEVICE_INFO => {
                 // Result(4) + Major(1) + Minor(1) + Build(2) + Name(16) = 24 bytes
                 static DEVICE_INFO: [u8; 24] = [
-                    0,0,0,0,  // result: success
-                    0, 1,     // version 0.1
-                    1, 0,     // build 1
-                    b'l',b'o',b'g',b'4',b't',b'c',0,0,0,0,0,0,0,0,0,0, // name
+                    0, 0, 0, 0, // result: success
+                    0, 1, // version 0.1
+                    1, 0, // build 1
+                    b'l', b'o', b'g', b'4', b't', b'c', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // name
                 ];
                 (24u32, &DEVICE_INFO[..])
             }
@@ -274,16 +278,16 @@ impl AmsTcpServer {
                 buf.clear();
                 buf.extend_from_slice(&0u16.to_le_bytes()); // TCP reserved
                 buf.extend_from_slice(&(32 + total as u32).to_le_bytes()); // TCP data len
-                // Swap source/target in AMS header
-                buf.extend_from_slice(&request[8..14]);   // target = request.source netid
-                buf.extend_from_slice(&request[14..16]);  // target port = request.source port
-                buf.extend_from_slice(&request[0..6]);    // source = request.target netid
-                buf.extend_from_slice(&request[6..8]);    // source port = request.target port
-                buf.extend_from_slice(&request[16..18]);  // command id
+                                                                           // Swap source/target in AMS header
+                buf.extend_from_slice(&request[8..14]); // target = request.source netid
+                buf.extend_from_slice(&request[14..16]); // target port = request.source port
+                buf.extend_from_slice(&request[0..6]); // source = request.target netid
+                buf.extend_from_slice(&request[6..8]); // source port = request.target port
+                buf.extend_from_slice(&request[16..18]); // command id
                 buf.extend_from_slice(&5u16.to_le_bytes()); // state flags = response
                 buf.extend_from_slice(&(total as u32).to_le_bytes()); // data length
                 buf.extend_from_slice(&0u32.to_le_bytes()); // error code
-                buf.extend_from_slice(&request[28..32]);  // invoke id
+                buf.extend_from_slice(&request[28..32]); // invoke id
                 buf.extend_from_slice(&0u32.to_le_bytes()); // result: success
                 buf.extend_from_slice(&read_len.to_le_bytes()); // data length
                 buf.resize(buf.len() + read_len as usize, 0); // zero data
@@ -291,7 +295,7 @@ impl AmsTcpServer {
             }
             _ => {
                 // Generic success: Result(4) = 4 bytes
-                (4u32, &[0,0,0,0][..])
+                (4u32, &[0, 0, 0, 0][..])
             }
         };
 
@@ -302,16 +306,16 @@ impl AmsTcpServer {
         buf.extend_from_slice(&0u16.to_le_bytes());
         buf.extend_from_slice(&ams_data_len.to_le_bytes());
         // AMS header (32 bytes) - swap source/target
-        buf.extend_from_slice(&request[8..14]);   // target netid = source netid from request
-        buf.extend_from_slice(&request[14..16]);  // target port
-        buf.extend_from_slice(&request[0..6]);    // source netid = target netid from request
-        buf.extend_from_slice(&request[6..8]);    // source port
-        buf.extend_from_slice(&request[16..18]);  // command id (same)
+        buf.extend_from_slice(&request[8..14]); // target netid = source netid from request
+        buf.extend_from_slice(&request[14..16]); // target port
+        buf.extend_from_slice(&request[0..6]); // source netid = target netid from request
+        buf.extend_from_slice(&request[6..8]); // source port
+        buf.extend_from_slice(&request[16..18]); // command id (same)
         buf.extend_from_slice(&5u16.to_le_bytes()); // state flags = response (0x0005)
         buf.extend_from_slice(&payload_len.to_le_bytes()); // data length
         buf.extend_from_slice(&0u32.to_le_bytes()); // error code = 0
-        buf.extend_from_slice(&request[28..32]);  // invoke id (echo back)
-        // Payload
+        buf.extend_from_slice(&request[28..32]); // invoke id (echo back)
+                                                 // Payload
         buf.extend_from_slice(payload);
 
         buf.len()
@@ -369,11 +373,31 @@ impl AmsTcpServer {
                     return Err(crate::AdsError::ParseError("Read request too short".into()));
                 }
 
-                let index_group = u32::from_le_bytes([payload_data[0], payload_data[1], payload_data[2], payload_data[3]]);
-                let index_offset = u32::from_le_bytes([payload_data[4], payload_data[5], payload_data[6], payload_data[7]]);
-                let read_length = u32::from_le_bytes([payload_data[8], payload_data[9], payload_data[10], payload_data[11]]);
+                let index_group = u32::from_le_bytes([
+                    payload_data[0],
+                    payload_data[1],
+                    payload_data[2],
+                    payload_data[3],
+                ]);
+                let index_offset = u32::from_le_bytes([
+                    payload_data[4],
+                    payload_data[5],
+                    payload_data[6],
+                    payload_data[7],
+                ]);
+                let read_length = u32::from_le_bytes([
+                    payload_data[8],
+                    payload_data[9],
+                    payload_data[10],
+                    payload_data[11],
+                ]);
 
-                tracing::trace!("Read from {} ig={:#x} io={:#x}", peer_addr, index_group, index_offset);
+                tracing::trace!(
+                    "Read from {} ig={:#x} io={:#x}",
+                    peer_addr,
+                    index_group,
+                    index_offset
+                );
 
                 // Build response: Result(4) + DataLength(4) + Data(N)
                 // Return requested amount of zero-filled data with correct DataLength
@@ -409,7 +433,11 @@ impl AmsTcpServer {
                 let payload = &data[32..];
                 let write_req = AdsWriteRequest::parse(payload)?;
 
-                tracing::debug!("ADS Write: {} bytes from {}", write_req.data.len(), peer_addr);
+                tracing::debug!(
+                    "ADS Write: {} bytes from {}",
+                    write_req.data.len(),
+                    peer_addr
+                );
 
                 // Only parse as log entry if targeting our ADS port
                 // Buffer can contain MULTIPLE log entries + registrations
@@ -429,7 +457,11 @@ impl AmsTcpServer {
                                     project_name: registration.project_name,
                                     online_change_count: registration.online_change_count,
                                 };
-                                tracing::debug!("Registered task {}: {}", registration.task_index, metadata.task_name);
+                                tracing::debug!(
+                                    "Registered task {}: {}",
+                                    registration.task_index,
+                                    metadata.task_name
+                                );
                                 registry.register(reg_key, metadata);
                             }
 
@@ -446,7 +478,8 @@ impl AmsTcpServer {
                                         ads_entry.task_name = metadata.task_name;
                                         ads_entry.app_name = metadata.app_name;
                                         ads_entry.project_name = metadata.project_name;
-                                        ads_entry.online_change_count = metadata.online_change_count;
+                                        ads_entry.online_change_count =
+                                            metadata.online_change_count;
                                     }
                                 }
 
@@ -478,7 +511,11 @@ impl AmsTcpServer {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to parse log entries: {} (raw {} bytes)", e, write_req.data.len());
+                            tracing::warn!(
+                                "Failed to parse log entries: {} (raw {} bytes)",
+                                e,
+                                write_req.data.len()
+                            );
                         }
                     }
                 }
@@ -495,7 +532,12 @@ impl AmsTcpServer {
             }
 
             _ => {
-                tracing::debug!("Unknown AMS cmd={} from {} port={}", header.command_id, peer_addr, header.target_port);
+                tracing::debug!(
+                    "Unknown AMS cmd={} from {} port={}",
+                    header.command_id,
+                    peer_addr,
+                    header.target_port
+                );
                 // Respond with success to avoid blocking the PLC
                 let mut payload = Vec::new();
                 payload.extend_from_slice(&0u32.to_le_bytes()); // Result: success

@@ -109,11 +109,21 @@ pub struct ExportConfig {
     pub max_retries: usize,
 }
 
-fn default_export_endpoint() -> String { "http://victoria-logs:9428/insert/jsonline".to_string() }
-fn default_batch_size() -> usize { 2000 }
-fn default_flush_interval_ms() -> u64 { 1000 }
-fn default_export_timeout_secs() -> u64 { 10 }
-fn default_max_retries() -> usize { 3 }
+fn default_export_endpoint() -> String {
+    "http://victoria-logs:9428/insert/jsonline".to_string()
+}
+fn default_batch_size() -> usize {
+    2000
+}
+fn default_flush_interval_ms() -> u64 {
+    1000
+}
+fn default_export_timeout_secs() -> u64 {
+    10
+}
+fn default_max_retries() -> usize {
+    3
+}
 
 impl Default for ExportConfig {
     fn default() -> Self {
@@ -158,17 +168,15 @@ impl AppSettings {
     /// Load configuration from a JSON file
     pub fn from_json_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        serde_json::from_str(&content).map_err(|e| {
-            crate::error::Error::ConfigError(format!("Failed to parse config: {}", e))
-        })
+        serde_json::from_str(&content)
+            .map_err(|e| crate::error::Error::ConfigError(format!("Failed to parse config: {}", e)))
     }
 
     /// Load configuration from a TOML file
     pub fn from_toml_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        toml::from_str(&content).map_err(|e| {
-            crate::error::Error::ConfigError(format!("Failed to parse config: {}", e))
-        })
+        toml::from_str(&content)
+            .map_err(|e| crate::error::Error::ConfigError(format!("Failed to parse config: {}", e)))
     }
 }
 
@@ -214,7 +222,10 @@ mod tests {
         assert_eq!(config.log_level, "info");
         assert_eq!(config.format, LogFormat::Text);
         assert!(config.output_path.is_some());
-        assert_eq!(config.output_path.unwrap().to_string_lossy(), "/var/log/tc-otel.log");
+        assert_eq!(
+            config.output_path.unwrap().to_string_lossy(),
+            "/var/log/tc-otel.log"
+        );
     }
 
     #[test]
@@ -296,7 +307,10 @@ mod tests {
         assert_eq!(config.http_port, deserialized.http_port);
         assert_eq!(config.grpc_port, deserialized.grpc_port);
         assert_eq!(config.max_body_size, deserialized.max_body_size);
-        assert_eq!(config.request_timeout_secs, deserialized.request_timeout_secs);
+        assert_eq!(
+            config.request_timeout_secs,
+            deserialized.request_timeout_secs
+        );
     }
 
     #[test]

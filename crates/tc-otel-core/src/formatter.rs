@@ -54,14 +54,18 @@ impl MessageFormatter {
                             replaced = true;
                         }
                         // Only advance positional_index for first occurrence
-                        if !seen_names[..seen_count].iter().any(|(n, _)| *n == key) && seen_count < 16 {
+                        if !seen_names[..seen_count].iter().any(|(n, _)| *n == key)
+                            && seen_count < 16
+                        {
                             seen_names[seen_count] = (key, arg_index);
                             seen_count += 1;
                             positional_index += 1;
                         }
                     } else if !key.is_empty() {
                         // Named placeholder — check if we've seen it before
-                        let arg_index = if let Some((_, idx)) = seen_names[..seen_count].iter().find(|(n, _)| *n == key) {
+                        let arg_index = if let Some((_, idx)) =
+                            seen_names[..seen_count].iter().find(|(n, _)| *n == key)
+                        {
                             *idx
                         } else {
                             // First occurrence: assign next positional arg
@@ -170,7 +174,9 @@ fn write_value(buf: &mut String, value: &serde_json::Value) {
         serde_json::Value::Array(arr) => {
             buf.push('[');
             for (i, v) in arr.iter().enumerate() {
-                if i > 0 { buf.push_str(", "); }
+                if i > 0 {
+                    buf.push_str(", ");
+                }
                 write_value(buf, v);
             }
             buf.push(']');
@@ -178,7 +184,9 @@ fn write_value(buf: &mut String, value: &serde_json::Value) {
         serde_json::Value::Object(obj) => {
             buf.push('{');
             for (i, (k, v)) in obj.iter().enumerate() {
-                if i > 0 { buf.push_str(", "); }
+                if i > 0 {
+                    buf.push_str(", ");
+                }
                 buf.push_str(k);
                 buf.push('=');
                 write_value(buf, v);
@@ -210,11 +218,8 @@ mod tests {
         let mut context = HashMap::new();
         context.insert("action".to_string(), serde_json::json!("login"));
 
-        let result = MessageFormatter::format_with_context(
-            "User {0} performed {action}",
-            &args,
-            &context,
-        );
+        let result =
+            MessageFormatter::format_with_context("User {0} performed {action}", &args, &context);
         assert_eq!(result, "User user123 performed login");
     }
 
@@ -231,10 +236,22 @@ mod tests {
 
     #[test]
     fn test_value_formatting() {
-        assert_eq!(MessageFormatter::value_to_string(&serde_json::json!(null)), "null");
-        assert_eq!(MessageFormatter::value_to_string(&serde_json::json!(true)), "true");
-        assert_eq!(MessageFormatter::value_to_string(&serde_json::json!(123)), "123");
-        assert_eq!(MessageFormatter::value_to_string(&serde_json::json!("text")), "text");
+        assert_eq!(
+            MessageFormatter::value_to_string(&serde_json::json!(null)),
+            "null"
+        );
+        assert_eq!(
+            MessageFormatter::value_to_string(&serde_json::json!(true)),
+            "true"
+        );
+        assert_eq!(
+            MessageFormatter::value_to_string(&serde_json::json!(123)),
+            "123"
+        );
+        assert_eq!(
+            MessageFormatter::value_to_string(&serde_json::json!("text")),
+            "text"
+        );
     }
 
     #[test]
@@ -289,11 +306,7 @@ mod tests {
         context.insert("name".to_string(), serde_json::json!("Alice"));
         context.insert("action".to_string(), serde_json::json!("logged in"));
 
-        let result = MessageFormatter::format_with_context(
-            "{name} {action}",
-            &args,
-            &context,
-        );
+        let result = MessageFormatter::format_with_context("{name} {action}", &args, &context);
         assert_eq!(result, "Alice logged in");
     }
 
@@ -444,11 +457,7 @@ mod tests {
         let mut context = HashMap::new();
         context.insert("123".to_string(), serde_json::json!("numeric_key"));
 
-        let result = MessageFormatter::format_with_context(
-            "Value: {123}",
-            &args,
-            &context,
-        );
+        let result = MessageFormatter::format_with_context("Value: {123}", &args, &context);
         // Numeric placeholders like {123} are treated as positional arguments, not context keys
         assert_eq!(result, "Value: {123}");
     }
@@ -458,11 +467,7 @@ mod tests {
         let args = HashMap::new();
         let context = HashMap::new();
 
-        let result = MessageFormatter::format_with_context(
-            "No substitution here",
-            &args,
-            &context,
-        );
+        let result = MessageFormatter::format_with_context("No substitution here", &args, &context);
         assert_eq!(result, "No substitution here");
     }
 }

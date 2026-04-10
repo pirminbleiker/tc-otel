@@ -1,8 +1,8 @@
 //! Integration tests for error handling and edge cases
 
+use serde_json::json;
 use tc_otel_ads::AdsParser;
 use tc_otel_core::{LogEntry, LogLevel};
-use serde_json::json;
 
 /// Test: Parser handles truncated/invalid ADS message
 #[test]
@@ -73,7 +73,9 @@ fn test_log_record_null_context() {
     );
 
     // Add null value
-    entry.context.insert("null_field".to_string(), serde_json::Value::Null);
+    entry
+        .context
+        .insert("null_field".to_string(), serde_json::Value::Null);
 
     let record = tc_otel_core::LogRecord::from_log_entry(entry);
 
@@ -119,10 +121,9 @@ fn test_large_context() {
 
     // Add many context items
     for i in 0..1000 {
-        entry.context.insert(
-            format!("ctx_{:04}", i),
-            json!(format!("value_{}", i)),
-        );
+        entry
+            .context
+            .insert(format!("ctx_{:04}", i), json!(format!("value_{}", i)));
     }
 
     let record = tc_otel_core::LogRecord::from_log_entry(entry);
@@ -222,7 +223,11 @@ fn test_zero_timestamp_handling() {
 
     // Should still produce valid record
     assert!(record.log_attributes.contains_key("plc.timestamp"));
-    assert!(!record.log_attributes.get("plc.timestamp").unwrap().is_null());
+    assert!(!record
+        .log_attributes
+        .get("plc.timestamp")
+        .unwrap()
+        .is_null());
 }
 
 /// Test: Unicode characters in all fields
@@ -238,14 +243,27 @@ fn test_unicode_characters() {
         LogLevel::Info,
     );
 
-    entry.context.insert("unicode".to_string(), json!(unicode_str));
+    entry
+        .context
+        .insert("unicode".to_string(), json!(unicode_str));
     entry.arguments.insert(0, json!(unicode_str));
 
     let record = tc_otel_core::LogRecord::from_log_entry(entry);
 
     // Should preserve Unicode throughout
-    assert_eq!(record.resource_attributes.get("host.name").unwrap().as_str().unwrap(), unicode_str);
-    assert_eq!(record.log_attributes.get("unicode"), Some(&json!(unicode_str)));
+    assert_eq!(
+        record
+            .resource_attributes
+            .get("host.name")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        unicode_str
+    );
+    assert_eq!(
+        record.log_attributes.get("unicode"),
+        Some(&json!(unicode_str))
+    );
 }
 
 // Helper function (1-byte length prefix)

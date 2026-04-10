@@ -1,27 +1,21 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tc_otel_benches::LogEntryFixtures;
 
 fn bench_create_simple(c: &mut Criterion) {
     c.bench_function("create_simple_log_entry", |b| {
-        b.iter(|| {
-            LogEntryFixtures::simple_message()
-        })
+        b.iter(|| LogEntryFixtures::simple_message())
     });
 }
 
 fn bench_create_typical(c: &mut Criterion) {
     c.bench_function("create_typical_log_entry", |b| {
-        b.iter(|| {
-            LogEntryFixtures::typical_message()
-        })
+        b.iter(|| LogEntryFixtures::typical_message())
     });
 }
 
 fn bench_create_complex(c: &mut Criterion) {
     c.bench_function("create_complex_log_entry", |b| {
-        b.iter(|| {
-            LogEntryFixtures::complex_message()
-        })
+        b.iter(|| LogEntryFixtures::complex_message())
     });
 }
 
@@ -36,7 +30,7 @@ fn bench_create_variable_complexity(c: &mut Criterion) {
                 b.iter(|| {
                     LogEntryFixtures::with_counts(black_box(*num_args), black_box(*num_context))
                 })
-            }
+            },
         );
     }
     group.finish();

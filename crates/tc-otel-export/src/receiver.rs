@@ -1,12 +1,7 @@
 //! OTEL receiver endpoints for HTTP and gRPC
 
 use crate::error::*;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use tc_otel_core::LogEntry;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
@@ -81,7 +76,10 @@ async fn handle_logs_request(
         tc_otel_core::LogLevel::Info,
     )) {
         Ok(_) => (StatusCode::OK, "Received".to_string()),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Channel full".to_string()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Channel full".to_string(),
+        ),
     }
 }
 

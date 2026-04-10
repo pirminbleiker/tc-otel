@@ -1,9 +1,9 @@
 //! Module integration tests - verifying multiple crates work together
 
+use serde_json::json;
 use tc_otel_ads::AdsParser;
 use tc_otel_core::{AppSettings, LogLevel};
 use tc_otel_export::OtelMapping;
-use serde_json::json;
 
 /// Test: Parser + Core + OTEL integration
 #[test]
@@ -166,7 +166,8 @@ fn test_serde_integration() {
     let json = serde_json::to_string(&entry).expect("Failed to serialize");
 
     // Deserialize back
-    let deserialized: tc_otel_core::LogEntry = serde_json::from_str(&json).expect("Failed to deserialize");
+    let deserialized: tc_otel_core::LogEntry =
+        serde_json::from_str(&json).expect("Failed to deserialize");
 
     // Verify round-trip
     assert_eq!(deserialized.source, entry.source);
