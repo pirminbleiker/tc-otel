@@ -1272,7 +1272,10 @@ mod tests {
         assert_eq!(entry.unit, "mm");
         assert_eq!(entry.hostname, "plc-01");
         assert_eq!(entry.task_name, "MotionTask");
-        assert_eq!(entry.attributes["plc.symbol"], serde_json::json!("GVL.axis1.pos"));
+        assert_eq!(
+            entry.attributes["plc.symbol"],
+            serde_json::json!("GVL.axis1.pos")
+        );
     }
 
     #[test]
@@ -1312,9 +1315,10 @@ mod tests {
         entry.task_name = "MotionTask".to_string();
         entry.task_index = 1;
         entry.task_cycle_counter = 5000;
-        entry
-            .attributes
-            .insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+        entry.attributes.insert(
+            "plc.symbol".to_string(),
+            serde_json::json!("GVL.motor.temp"),
+        );
 
         let record = MetricRecord::from_metric_entry(entry);
 
@@ -1337,7 +1341,10 @@ mod tests {
             record.attributes["plc.symbol"],
             serde_json::json!("GVL.motor.temp")
         );
-        assert_eq!(record.attributes["task.name"], serde_json::json!("MotionTask"));
+        assert_eq!(
+            record.attributes["task.name"],
+            serde_json::json!("MotionTask")
+        );
         assert_eq!(record.attributes["task.cycle"], serde_json::json!(5000));
     }
 
@@ -1384,6 +1391,8 @@ mod tests {
         assert!(record.resource_attributes.contains_key("service.name"));
         // Should not have ams_net_id or ams_source_port when empty/zero
         assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
-        assert!(!record.resource_attributes.contains_key("plc.ams_source_port"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("plc.ams_source_port"));
     }
 }

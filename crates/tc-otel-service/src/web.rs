@@ -752,10 +752,7 @@ mod tests {
     #[tokio::test]
     async fn test_unsubscribe() {
         let state = test_state();
-        state
-            .subscriptions
-            .subscribe("GVL.bTest")
-            .unwrap();
+        state.subscriptions.subscribe("GVL.bTest").unwrap();
 
         let app = router(state);
         let resp = app
@@ -799,7 +796,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/html"));
     }
 
@@ -990,11 +992,7 @@ mod tests {
     async fn test_symbols_endpoint_empty() {
         let app = router(test_state());
         let resp = app
-            .oneshot(
-                Request::get("/api/symbols")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/api/symbols").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1034,11 +1032,7 @@ mod tests {
 
         let app = router(state);
         let resp = app
-            .oneshot(
-                Request::get("/api/symbols")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/api/symbols").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

@@ -324,8 +324,11 @@ impl OtelExporter {
                     return Ok(());
                 }
                 Ok(response) => {
-                    let err =
-                        OtelError::ExportFailed(format!("HTTP {} from {}", response.status(), endpoint));
+                    let err = OtelError::ExportFailed(format!(
+                        "HTTP {} from {}",
+                        response.status(),
+                        endpoint
+                    ));
                     if !Self::is_retryable_error(&err) {
                         return Err(err);
                     }
@@ -416,7 +419,10 @@ impl OtelExporter {
         });
 
         serde_json::to_string(&payload).map_err(|e| {
-            OtelError::SerializationError(format!("Failed to serialize OTEL metrics payload: {}", e))
+            OtelError::SerializationError(format!(
+                "Failed to serialize OTEL metrics payload: {}",
+                e
+            ))
         })
     }
 
@@ -674,7 +680,10 @@ mod tests {
             },
             attributes: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+                m.insert(
+                    "plc.symbol".to_string(),
+                    serde_json::json!("GVL.motor.temp"),
+                );
                 m
             },
             histogram_bounds: Vec::new(),

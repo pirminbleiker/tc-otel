@@ -481,7 +481,10 @@ fn test_otlp_histogram_payload_structure() {
 
     let dp = &hist["dataPoints"][0];
     assert_eq!(dp["sum"], 320.5);
-    assert_eq!(dp["explicitBounds"], serde_json::json!([1.0, 5.0, 10.0, 50.0]));
+    assert_eq!(
+        dp["explicitBounds"],
+        serde_json::json!([1.0, 5.0, 10.0, 50.0])
+    );
 }
 
 // ─── End-to-end: ADS bytes → parse → convert → OTLP payload ──────
@@ -754,18 +757,7 @@ fn test_histogram_with_empty_buckets() {
 
 #[test]
 fn test_metric_empty_name_and_description() {
-    let data = build_ads_metric_bytes(
-        MetricKind::Gauge,
-        "",
-        "",
-        "",
-        1.0,
-        false,
-        1,
-        100,
-        &[],
-        None,
-    );
+    let data = build_ads_metric_bytes(MetricKind::Gauge, "", "", "", 1.0, false, 1, 100, &[], None);
 
     let result = AdsParser::parse_all(&data).unwrap();
     assert_eq!(result.metrics[0].name, "");

@@ -645,13 +645,11 @@ impl AdsParser {
 
             // Total count and sum
             let hc = reader.read_bytes(8)?;
-            histogram_count = u64::from_le_bytes([
-                hc[0], hc[1], hc[2], hc[3], hc[4], hc[5], hc[6], hc[7],
-            ]);
+            histogram_count =
+                u64::from_le_bytes([hc[0], hc[1], hc[2], hc[3], hc[4], hc[5], hc[6], hc[7]]);
             let hs = reader.read_bytes(8)?;
-            histogram_sum = f64::from_le_bytes([
-                hs[0], hs[1], hs[2], hs[3], hs[4], hs[5], hs[6], hs[7],
-            ]);
+            histogram_sum =
+                f64::from_le_bytes([hs[0], hs[1], hs[2], hs[3], hs[4], hs[5], hs[6], hs[7]]);
         }
 
         // Attributes

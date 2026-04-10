@@ -735,10 +735,7 @@ fn test_distributed_trace_with_domain_attributes() {
         SpanStatusCode::Ok,
         "labeling.apply",
         "",
-        &[
-            ("batch.id", 12, &batch_id),
-            ("label.type", 12, &label_type),
-        ],
+        &[("batch.id", 12, &batch_id), ("label.type", 12, &label_type)],
         &[],
     );
 
@@ -827,13 +824,7 @@ fn test_distributed_trace_with_events_across_plcs() {
     let r1 = AdsParser::parse_all(&plc1_data).unwrap();
     let r2 = AdsParser::parse_all(&plc2_data).unwrap();
 
-    let oven = ads_span_to_span_entry(
-        &r1.spans[0],
-        "10.0.0.10",
-        "oven-plc",
-        "10.0.0.10.1.1",
-        851,
-    );
+    let oven = ads_span_to_span_entry(&r1.spans[0], "10.0.0.10", "oven-plc", "10.0.0.10.1.1", 851);
     let conveyor = ads_span_to_span_entry(
         &r2.spans[0],
         "10.0.0.11",
@@ -909,10 +900,7 @@ fn test_distributed_trace_error_on_downstream_plc() {
 
     assert_eq!(initiator.status_code, SpanStatusCode::Ok);
     assert_eq!(receiver.status_code, SpanStatusCode::Error);
-    assert_eq!(
-        receiver.status_message,
-        "Buffer overflow on receiving PLC"
-    );
+    assert_eq!(receiver.status_message, "Buffer overflow on receiving PLC");
     assert_eq!(
         receiver.attributes["error.code"],
         serde_json::json!(0x8001u32)
@@ -971,8 +959,10 @@ fn test_distributed_trace_partial_failure() {
     let r3 = AdsParser::parse_all(&err_data).unwrap();
 
     let root = ads_span_to_span_entry(&r1.spans[0], "10.0.0.1", "coordinator", "10.0.0.1.1.1", 851);
-    let ok_worker = ads_span_to_span_entry(&r2.spans[0], "10.0.0.2", "worker-a", "10.0.0.2.1.1", 851);
-    let err_worker = ads_span_to_span_entry(&r3.spans[0], "10.0.0.3", "worker-b", "10.0.0.3.1.1", 851);
+    let ok_worker =
+        ads_span_to_span_entry(&r2.spans[0], "10.0.0.2", "worker-a", "10.0.0.2.1.1", 851);
+    let err_worker =
+        ads_span_to_span_entry(&r3.spans[0], "10.0.0.3", "worker-b", "10.0.0.3.1.1", 851);
 
     // All in same trace
     assert_eq!(root.trace_id, ok_worker.trace_id);
@@ -1090,8 +1080,8 @@ fn test_aggregate_spans_by_trace_id() {
 fn test_trace_id_hex_consistency_across_plcs() {
     // Verify trace_id_hex() produces consistent output for correlation
     let trace_id = [
-        0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-        0x67, 0x89,
+        0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        0x89,
     ];
 
     let data = build_ads_span_bytes(
@@ -1108,20 +1098,8 @@ fn test_trace_id_hex_consistency_across_plcs() {
 
     let result = AdsParser::parse_all(&data).unwrap();
 
-    let plc1 = ads_span_to_span_entry(
-        &result.spans[0],
-        "10.0.0.1",
-        "plc-1",
-        "10.0.0.1.1.1",
-        851,
-    );
-    let plc2 = ads_span_to_span_entry(
-        &result.spans[0],
-        "10.0.0.2",
-        "plc-2",
-        "10.0.0.2.1.1",
-        851,
-    );
+    let plc1 = ads_span_to_span_entry(&result.spans[0], "10.0.0.1", "plc-1", "10.0.0.1.1.1", 851);
+    let plc2 = ads_span_to_span_entry(&result.spans[0], "10.0.0.2", "plc-2", "10.0.0.2.1.1", 851);
 
     // Hex representation must be identical for grouping
     assert_eq!(plc1.trace_id_hex(), plc2.trace_id_hex());
@@ -1225,9 +1203,15 @@ fn test_e2e_bottling_line_distributed_trace() {
     assert_eq!(inspect.kind, SpanKind::Consumer);
 
     // Domain attributes preserved
-    assert_eq!(fill.attributes["bottle.volume_ml"], serde_json::json!(500.0));
+    assert_eq!(
+        fill.attributes["bottle.volume_ml"],
+        serde_json::json!(500.0)
+    );
     assert_eq!(cap.attributes["cap.torque_nm"], serde_json::json!(2.5));
-    assert_eq!(inspect.attributes["inspection.passed"], serde_json::json!(true));
+    assert_eq!(
+        inspect.attributes["inspection.passed"],
+        serde_json::json!(true)
+    );
 
     // Events on fill span
     assert_eq!(fill.events.len(), 1);
@@ -1561,30 +1545,60 @@ fn test_distributed_trace_diamond_topology() {
     let plc4_from_3_id = [0x05; 8];
 
     let d1 = build_ads_span_bytes(
-        trace_id, plc1_id, [0x00; 8],
-        SpanKind::Internal, SpanStatusCode::Ok,
-        "diamond.source", "", &[], &[],
+        trace_id,
+        plc1_id,
+        [0x00; 8],
+        SpanKind::Internal,
+        SpanStatusCode::Ok,
+        "diamond.source",
+        "",
+        &[],
+        &[],
     );
     let d2 = build_ads_span_bytes(
-        trace_id, plc2_id, plc1_id,
-        SpanKind::Internal, SpanStatusCode::Ok,
-        "diamond.branch_a", "", &[], &[],
+        trace_id,
+        plc2_id,
+        plc1_id,
+        SpanKind::Internal,
+        SpanStatusCode::Ok,
+        "diamond.branch_a",
+        "",
+        &[],
+        &[],
     );
     let d3 = build_ads_span_bytes(
-        trace_id, plc3_id, plc1_id,
-        SpanKind::Internal, SpanStatusCode::Ok,
-        "diamond.branch_b", "", &[], &[],
+        trace_id,
+        plc3_id,
+        plc1_id,
+        SpanKind::Internal,
+        SpanStatusCode::Ok,
+        "diamond.branch_b",
+        "",
+        &[],
+        &[],
     );
     // PLC-4 receives from both PLC-2 and PLC-3 (two separate spans)
     let d4a = build_ads_span_bytes(
-        trace_id, plc4_from_2_id, plc2_id,
-        SpanKind::Internal, SpanStatusCode::Ok,
-        "diamond.merge_from_a", "", &[], &[],
+        trace_id,
+        plc4_from_2_id,
+        plc2_id,
+        SpanKind::Internal,
+        SpanStatusCode::Ok,
+        "diamond.merge_from_a",
+        "",
+        &[],
+        &[],
     );
     let d4b = build_ads_span_bytes(
-        trace_id, plc4_from_3_id, plc3_id,
-        SpanKind::Internal, SpanStatusCode::Ok,
-        "diamond.merge_from_b", "", &[], &[],
+        trace_id,
+        plc4_from_3_id,
+        plc3_id,
+        SpanKind::Internal,
+        SpanStatusCode::Ok,
+        "diamond.merge_from_b",
+        "",
+        &[],
+        &[],
     );
 
     let r1 = AdsParser::parse_all(&d1).unwrap();
