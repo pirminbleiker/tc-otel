@@ -161,7 +161,10 @@ mod tests {
             .expect("watch channel error");
 
         let new_config = rx.borrow().clone();
-        assert_eq!(new_config.export.endpoint, "http://new-endpoint:9428/insert");
+        assert_eq!(
+            new_config.export.endpoint,
+            "http://new-endpoint:9428/insert"
+        );
         assert_eq!(new_config.export.batch_size, 5000);
 
         handle.abort();
@@ -218,9 +221,11 @@ mod tests {
         std::fs::write(&config_path, "{ invalid json !!!").unwrap();
 
         // Wait a bit — should NOT receive a change
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), rx.changed()).await;
-        assert!(result.is_err(), "Should timeout because invalid config is rejected");
+        let result = tokio::time::timeout(Duration::from_millis(500), rx.changed()).await;
+        assert!(
+            result.is_err(),
+            "Should timeout because invalid config is rejected"
+        );
 
         // Original config should still be in place
         assert_eq!(rx.borrow().logging.log_level, "info");
@@ -249,9 +254,11 @@ mod tests {
         write_config(&config_path, &initial);
 
         // Should NOT trigger a change notification
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), rx.changed()).await;
-        assert!(result.is_err(), "Should timeout because content is identical");
+        let result = tokio::time::timeout(Duration::from_millis(500), rx.changed()).await;
+        assert!(
+            result.is_err(),
+            "Should timeout because content is identical"
+        );
 
         handle.abort();
     }

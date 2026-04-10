@@ -57,7 +57,10 @@ impl Log4TcService {
                     }
                 }
             });
-            tracing::info!("Config hot-reload enabled, watching {}", config_path.display());
+            tracing::info!(
+                "Config hot-reload enabled, watching {}",
+                config_path.display()
+            );
             Some(handle)
         } else {
             None
