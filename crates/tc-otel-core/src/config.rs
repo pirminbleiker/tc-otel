@@ -342,6 +342,7 @@ mod tests {
                 output_path: None,
             },
             receiver: ReceiverConfig::default(),
+            export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
         };
