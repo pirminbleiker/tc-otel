@@ -3,6 +3,8 @@
 //! Tests the complete span flow: ADS binary parsing → SpanEntry → OTEL attributes
 //! Focused on recipe execution start/end spans with recipe-specific attributes.
 
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 use chrono::Utc;
 use std::collections::HashMap;
 use tc_otel_ads::AdsParser;

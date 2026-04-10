@@ -8,7 +8,8 @@
 //!
 //! Covers: Gauge, Sum (monotonic/non-monotonic), Histogram metric kinds.
 
-use std::collections::HashMap;
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 use tc_otel_ads::AdsParser;
 use tc_otel_core::{MetricEntry, MetricKind, MetricRecord};
 use tc_otel_export::OtelExporter;
@@ -665,7 +666,7 @@ fn test_gauge_with_negative_value() {
         "plc.error_offset",
         "",
         "mm",
-        -3.14,
+        -3.125,
         false,
         1,
         100,
@@ -674,7 +675,7 @@ fn test_gauge_with_negative_value() {
     );
 
     let result = AdsParser::parse_all(&data).unwrap();
-    assert_eq!(result.metrics[0].value, -3.14);
+    assert_eq!(result.metrics[0].value, -3.125);
 }
 
 #[test]

@@ -3,6 +3,8 @@
 //! Tests the complete span flow for distributed traces that span multiple PLCs:
 //! ADS binary parsing → SpanEntry → cross-PLC correlation via shared trace_id
 //!
+
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 //! Distributed tracing key concepts:
 //!   - Shared trace_id across PLCs links spans into a single distributed trace
 //!   - parent_span_id enables cross-PLC parent-child relationships
