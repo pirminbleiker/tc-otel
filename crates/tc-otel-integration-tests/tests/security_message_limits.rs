@@ -101,7 +101,10 @@ fn test_security_message_size_1mb_limit_parse_all() {
     // Same check via parse_all (the multi-message entry point)
     let over_limit = build_oversized_buffer(1_048_576 + 1);
     let result = AdsParser::parse_all(&over_limit);
-    assert!(result.is_err(), "parse_all: Message > 1 MB must be rejected");
+    assert!(
+        result.is_err(),
+        "parse_all: Message > 1 MB must be rejected"
+    );
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
         err_msg.contains("Message size") && err_msg.contains("exceeds maximum"),
@@ -289,7 +292,10 @@ fn test_security_nested_object_depth_limit() {
     let entry = result.unwrap();
     // The value is stored as a plain string, not parsed as JSON
     let ctx_val = entry.context.get("scope_0_key").unwrap();
-    assert!(ctx_val.is_string(), "Context values are flat strings, not parsed JSON objects");
+    assert!(
+        ctx_val.is_string(),
+        "Context values are flat strings, not parsed JSON objects"
+    );
 }
 
 // =============================================================================
@@ -314,12 +320,19 @@ fn test_security_batch_message_limit() {
     let msg2 = build_ads_message("Entry 2", "logger", 2);
     let mut combined = msg1;
     combined.extend_from_slice(&msg2);
-    assert!(combined.len() < 1_048_576, "Combined buffer should be under 1 MB");
+    assert!(
+        combined.len() < 1_048_576,
+        "Combined buffer should be under 1 MB"
+    );
 
     let result = AdsParser::parse_all(&combined);
     assert!(result.is_ok());
     let parsed = result.unwrap();
-    assert_eq!(parsed.entries.len(), 2, "Should parse both entries from batch");
+    assert_eq!(
+        parsed.entries.len(),
+        2,
+        "Should parse both entries from batch"
+    );
 }
 
 // =============================================================================
@@ -439,8 +452,8 @@ fn test_security_special_character_filtering() {
     let special_messages = vec![
         "Normal ASCII message",
         "Unicode: \u{00E9}\u{00F1}\u{00FC}", // accented chars
-        "CJK: \u{4E16}\u{754C}",              // 世界
-        "Emoji: \u{1F680}\u{1F389}",          // 🚀🎉
+        "CJK: \u{4E16}\u{754C}",             // 世界
+        "Emoji: \u{1F680}\u{1F389}",         // 🚀🎉
         "Newlines\nand\ttabs",
         "Backslash: C:\\path\\to\\file",
     ];

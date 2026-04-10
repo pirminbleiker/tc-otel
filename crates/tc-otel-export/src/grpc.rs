@@ -152,11 +152,9 @@ pub fn any_value_to_json(av: &AnyValue) -> serde_json::Value {
         Some(any_value::Value::StringValue(s)) => serde_json::Value::String(s.clone()),
         Some(any_value::Value::BoolValue(b)) => serde_json::Value::Bool(*b),
         Some(any_value::Value::IntValue(i)) => serde_json::json!(*i),
-        Some(any_value::Value::DoubleValue(d)) => {
-            serde_json::Number::from_f64(*d)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        Some(any_value::Value::DoubleValue(d)) => serde_json::Number::from_f64(*d)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         Some(any_value::Value::ArrayValue(arr)) => {
             serde_json::Value::Array(arr.values.iter().map(any_value_to_json).collect())
         }
@@ -431,17 +429,12 @@ where
             "/opentelemetry.proto.collector.logs.v1.LogsService/Export" => {
                 struct ExportSvc<T: LogsService>(Arc<T>);
 
-                impl<T: LogsService> tonic::server::UnaryService<ExportLogsServiceRequest>
-                    for ExportSvc<T>
-                {
+                impl<T: LogsService> tonic::server::UnaryService<ExportLogsServiceRequest> for ExportSvc<T> {
                     type Response = ExportLogsServiceResponse;
                     type Future = std::pin::Pin<
                         Box<
                             dyn std::future::Future<
-                                    Output = Result<
-                                        tonic::Response<Self::Response>,
-                                        tonic::Status,
-                                    >,
+                                    Output = Result<tonic::Response<Self::Response>, tonic::Status>,
                                 > + Send
                                 + 'static,
                         >,
@@ -530,12 +523,7 @@ mod tests {
         }
     }
 
-    fn make_log_record(
-        severity: i32,
-        body: &str,
-        attrs: Vec<KeyValue>,
-        time_ns: u64,
-    ) -> LogRecord {
+    fn make_log_record(severity: i32, body: &str, attrs: Vec<KeyValue>, time_ns: u64) -> LogRecord {
         LogRecord {
             time_unix_nano: time_ns,
             observed_time_unix_nano: 0,
@@ -734,10 +722,7 @@ mod tests {
             vec![make_log_record(
                 9,
                 "msg",
-                vec![
-                    kv_string("user_id", "user123"),
-                    kv_int("error_code", 500),
-                ],
+                vec![kv_string("user_id", "user123"), kv_int("error_code", 500)],
                 0,
             )],
         );
@@ -773,11 +758,7 @@ mod tests {
 
     #[test]
     fn test_convert_zero_timestamp_uses_now() {
-        let req = make_request(
-            vec![],
-            "logger",
-            vec![make_log_record(9, "msg", vec![], 0)],
-        );
+        let req = make_request(vec![], "logger", vec![make_log_record(9, "msg", vec![], 0)]);
 
         let before = Utc::now();
         let entries = convert_request_to_entries(&req);
@@ -869,11 +850,7 @@ mod tests {
 
     #[test]
     fn test_convert_default_source_when_no_address() {
-        let req = make_request(
-            vec![],
-            "logger",
-            vec![make_log_record(9, "msg", vec![], 0)],
-        );
+        let req = make_request(vec![], "logger", vec![make_log_record(9, "msg", vec![], 0)]);
 
         let entries = convert_request_to_entries(&req);
         assert_eq!(entries[0].source, "otel-grpc");

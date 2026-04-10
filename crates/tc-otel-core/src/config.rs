@@ -131,14 +131,12 @@ impl TlsConfig {
         }
 
         // Client cert requirement needs client cert paths
-        if self.require_client_cert {
-            if self.ca_cert_path.is_none() {
-                errors.push(
-                    "require_client_cert=true but ca_cert_path is not set: \
-                     CA certificate is needed to verify client certificates"
-                        .to_string(),
-                );
-            }
+        if self.require_client_cert && self.ca_cert_path.is_none() {
+            errors.push(
+                "require_client_cert=true but ca_cert_path is not set: \
+                 CA certificate is needed to verify client certificates"
+                    .to_string(),
+            );
         }
 
         // Validate TLS versions

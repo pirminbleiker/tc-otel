@@ -20,7 +20,9 @@ pub use ams::{
     ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
 pub use ams_server::AmsTcpServer;
-pub use connection_manager::{ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection};
+pub use connection_manager::{
+    ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection,
+};
 pub use error::{AdsError, Result};
 pub use listener::AdsListener;
 pub use parser::AdsParser;

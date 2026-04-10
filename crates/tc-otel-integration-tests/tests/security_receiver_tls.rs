@@ -29,7 +29,10 @@ fn test_security_tls_https_only_enforcement() {
 
     // HTTP endpoint must be rejected
     let result = config.validate_endpoint("http://localhost:4318/v1/logs");
-    assert!(result.is_err(), "HTTP endpoint must be rejected when https_only=true");
+    assert!(
+        result.is_err(),
+        "HTTP endpoint must be rejected when https_only=true"
+    );
     let err = result.unwrap_err();
     assert!(
         err.contains("https_only"),
@@ -38,7 +41,10 @@ fn test_security_tls_https_only_enforcement() {
 
     // HTTPS endpoint must be accepted
     let result = config.validate_endpoint("https://localhost:4318/v1/logs");
-    assert!(result.is_ok(), "HTTPS endpoint must be accepted when https_only=true");
+    assert!(
+        result.is_ok(),
+        "HTTPS endpoint must be accepted when https_only=true"
+    );
 
     // Overall config must be valid (https_only with TLS enabled)
     assert!(
@@ -53,7 +59,10 @@ fn test_security_tls_https_only_enforcement() {
         ..ReceiverConfig::default()
     };
     let result = bad_config.validate();
-    assert!(result.is_err(), "https_only=true without TLS enabled must be rejected");
+    assert!(
+        result.is_err(),
+        "https_only=true without TLS enabled must be rejected"
+    );
 }
 
 #[test]
@@ -70,7 +79,10 @@ fn test_security_tls_certificate_validation() {
         ..TlsConfig::default()
     };
     let result = insecure.validate();
-    assert!(result.is_err(), "insecure_skip_verify=true must be rejected");
+    assert!(
+        result.is_err(),
+        "insecure_skip_verify=true must be rejected"
+    );
     let errors = result.unwrap_err();
     assert!(
         errors.iter().any(|e| e.contains("insecure_skip_verify")),
@@ -104,7 +116,10 @@ fn test_security_tls_certificate_validation() {
 
     // Valid config must pass
     let valid = valid_tls_config();
-    assert!(valid.validate().is_ok(), "Valid TLS config must pass validation");
+    assert!(
+        valid.validate().is_ok(),
+        "Valid TLS config must pass validation"
+    );
 }
 
 #[test]
@@ -124,7 +139,9 @@ fn test_security_tls_minimum_version_enforcement() {
     assert!(result.is_err(), "TLS 1.0 must be rejected");
     let errors = result.unwrap_err();
     assert!(
-        errors.iter().any(|e| e.contains("TLSv1_0") && e.contains("below minimum")),
+        errors
+            .iter()
+            .any(|e| e.contains("TLSv1_0") && e.contains("below minimum")),
         "Error should indicate TLSv1_0 is below minimum: {errors:?}"
     );
 
@@ -219,7 +236,10 @@ fn test_security_tls_cipher_suite_validation() {
         ..TlsConfig::default()
     };
     let result = config_with_weak.validate();
-    assert!(result.is_err(), "Config with weak cipher must fail validation");
+    assert!(
+        result.is_err(),
+        "Config with weak cipher must fail validation"
+    );
 }
 
 #[test]
@@ -236,7 +256,10 @@ fn test_security_tls_client_certificate_requirement() {
         ..TlsConfig::default()
     };
     let result = mtls_no_ca.validate();
-    assert!(result.is_err(), "mTLS without ca_cert_path must be rejected");
+    assert!(
+        result.is_err(),
+        "mTLS without ca_cert_path must be rejected"
+    );
     let errors = result.unwrap_err();
     assert!(
         errors.iter().any(|e| e.contains("ca_cert_path")),
@@ -294,7 +317,10 @@ fn test_security_tls_self_signed_cert_rejection() {
         ..TlsConfig::default()
     };
     let result = insecure.validate();
-    assert!(result.is_err(), "insecure_skip_verify=true must always be rejected");
+    assert!(
+        result.is_err(),
+        "insecure_skip_verify=true must always be rejected"
+    );
     let errors = result.unwrap_err();
     assert!(
         errors.iter().any(|e| e.contains("insecure_skip_verify")),

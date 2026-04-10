@@ -199,10 +199,7 @@ impl ConnectionManager {
     /// Get the number of active connections from a specific IP.
     pub fn connections_for_ip(&self, ip: &IpAddr) -> usize {
         let states = self.ip_states.lock().unwrap();
-        states
-            .get(ip)
-            .map(|s| s.active_connections)
-            .unwrap_or(0)
+        states.get(ip).map(|s| s.active_connections).unwrap_or(0)
     }
 
     /// Initiate graceful shutdown. New connections will be rejected.
@@ -280,6 +277,14 @@ pub struct ConnectionPermit {
     ip_states: Arc<Mutex<HashMap<IpAddr, IpState>>>,
     _semaphore_permit: tokio::sync::OwnedSemaphorePermit,
     active_count: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Debug for ConnectionPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionPermit")
+            .field("ip", &self.ip)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConnectionPermit {
