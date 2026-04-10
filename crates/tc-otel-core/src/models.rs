@@ -149,6 +149,98 @@ impl MetricEntry {
     }
 }
 
+/// OTEL MetricRecord — the OTLP representation of a metric data point
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricRecord {
+    pub name: String,
+    pub description: String,
+    pub unit: String,
+    pub kind: MetricKind,
+    pub timestamp: DateTime<Utc>,
+    pub value: f64,
+    pub is_monotonic: bool,
+    pub resource_attributes: HashMap<String, serde_json::Value>,
+    pub attributes: HashMap<String, serde_json::Value>,
+    // Histogram-specific
+    pub histogram_bounds: Vec<f64>,
+    pub histogram_counts: Vec<u64>,
+    pub histogram_count: u64,
+    pub histogram_sum: f64,
+}
+
+impl MetricRecord {
+    /// Convert a MetricEntry to OTEL MetricRecord
+    pub fn from_metric_entry(entry: MetricEntry) -> Self {
+        let mut resource_attributes = HashMap::with_capacity(5);
+        resource_attributes.insert(
+            "service.name".to_string(),
+            serde_json::Value::String(entry.project_name),
+        );
+        resource_attributes.insert(
+            "service.instance.id".to_string(),
+            serde_json::Value::String(entry.app_name),
+        );
+        resource_attributes.insert(
+            "host.name".to_string(),
+            serde_json::Value::String(entry.hostname),
+        );
+        if !entry.ams_net_id.is_empty() {
+            resource_attributes.insert(
+                "plc.ams_net_id".to_string(),
+                serde_json::Value::String(entry.ams_net_id),
+            );
+        }
+        if entry.ams_source_port > 0 {
+            resource_attributes.insert(
+                "plc.ams_source_port".to_string(),
+                serde_json::Value::Number(entry.ams_source_port.into()),
+            );
+        }
+
+        let mut attributes = entry.attributes;
+        if !entry.source.is_empty() {
+            attributes.insert(
+                "source.address".to_string(),
+                serde_json::Value::String(entry.source),
+            );
+        }
+        if !entry.task_name.is_empty() {
+            attributes.insert(
+                "task.name".to_string(),
+                serde_json::Value::String(entry.task_name),
+            );
+        }
+        if entry.task_index > 0 {
+            attributes.insert(
+                "task.index".to_string(),
+                serde_json::Value::Number(entry.task_index.into()),
+            );
+        }
+        if entry.task_cycle_counter > 0 {
+            attributes.insert(
+                "task.cycle".to_string(),
+                serde_json::Value::Number(entry.task_cycle_counter.into()),
+            );
+        }
+
+        Self {
+            name: entry.name,
+            description: entry.description,
+            unit: entry.unit,
+            kind: entry.kind,
+            timestamp: entry.timestamp,
+            value: entry.value,
+            is_monotonic: entry.is_monotonic,
+            resource_attributes,
+            attributes,
+            histogram_bounds: entry.histogram_bounds,
+            histogram_counts: entry.histogram_counts,
+            histogram_count: entry.histogram_count,
+            histogram_sum: entry.histogram_sum,
+        }
+    }
+}
+
 // ─── Span / Trace types ────────────────────────────────────────────
 
 /// OpenTelemetry span kind
@@ -1205,5 +1297,93 @@ mod tests {
         assert_eq!(deserialized.name, "test.gauge");
         assert_eq!(deserialized.value, 99.9);
         assert_eq!(deserialized.kind, MetricKind::Gauge);
+    }
+
+    // ─── MetricRecord tests ────────────────────────────────────────
+
+    #[test]
+    fn test_metric_record_from_gauge_entry() {
+        let mut entry = MetricEntry::gauge("plc.motor.temperature".to_string(), 72.5);
+        entry.hostname = "plc-01".to_string();
+        entry.ams_net_id = "172.17.0.2.1.1".to_string();
+        entry.ams_source_port = 851;
+        entry.project_name = "ProductionLine".to_string();
+        entry.app_name = "HydraulicPress".to_string();
+        entry.task_name = "MotionTask".to_string();
+        entry.task_index = 1;
+        entry.task_cycle_counter = 5000;
+        entry
+            .attributes
+            .insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+
+        let record = MetricRecord::from_metric_entry(entry);
+
+        assert_eq!(record.name, "plc.motor.temperature");
+        assert_eq!(record.kind, MetricKind::Gauge);
+        assert_eq!(record.value, 72.5);
+        assert_eq!(
+            record.resource_attributes["service.name"],
+            serde_json::json!("ProductionLine")
+        );
+        assert_eq!(
+            record.resource_attributes["host.name"],
+            serde_json::json!("plc-01")
+        );
+        assert_eq!(
+            record.resource_attributes["plc.ams_net_id"],
+            serde_json::json!("172.17.0.2.1.1")
+        );
+        assert_eq!(
+            record.attributes["plc.symbol"],
+            serde_json::json!("GVL.motor.temp")
+        );
+        assert_eq!(record.attributes["task.name"], serde_json::json!("MotionTask"));
+        assert_eq!(record.attributes["task.cycle"], serde_json::json!(5000));
+    }
+
+    #[test]
+    fn test_metric_record_from_counter_entry() {
+        let mut entry = MetricEntry::sum("plc.errors.total".to_string(), 42.0, true);
+        entry.project_name = "TestProject".to_string();
+        entry.app_name = "TestApp".to_string();
+
+        let record = MetricRecord::from_metric_entry(entry);
+
+        assert_eq!(record.kind, MetricKind::Sum);
+        assert!(record.is_monotonic);
+        assert_eq!(record.value, 42.0);
+    }
+
+    #[test]
+    fn test_metric_record_from_histogram_entry() {
+        let mut entry = MetricEntry::histogram(
+            "plc.cycle_time_ms".to_string(),
+            vec![1.0, 5.0, 10.0],
+            vec![10, 25, 5, 1],
+            41,
+            230.5,
+        );
+        entry.project_name = "TestProject".to_string();
+        entry.app_name = "TestApp".to_string();
+
+        let record = MetricRecord::from_metric_entry(entry);
+
+        assert_eq!(record.kind, MetricKind::Histogram);
+        assert_eq!(record.histogram_bounds, vec![1.0, 5.0, 10.0]);
+        assert_eq!(record.histogram_counts, vec![10, 25, 5, 1]);
+        assert_eq!(record.histogram_count, 41);
+        assert_eq!(record.histogram_sum, 230.5);
+    }
+
+    #[test]
+    fn test_metric_record_empty_optional_fields() {
+        let entry = MetricEntry::gauge("test".to_string(), 0.0);
+        let record = MetricRecord::from_metric_entry(entry);
+
+        // Should still have service.name (empty string)
+        assert!(record.resource_attributes.contains_key("service.name"));
+        // Should not have ams_net_id or ams_source_port when empty/zero
+        assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
+        assert!(!record.resource_attributes.contains_key("plc.ams_source_port"));
     }
 }
