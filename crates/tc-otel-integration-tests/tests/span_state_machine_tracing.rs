@@ -3,6 +3,8 @@
 //! Tests the complete span flow for PLC state machine transitions:
 //! ADS binary parsing → SpanEntry → OTEL attributes
 //!
+
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 //! State machine spans use the same wire protocol (type 0x05) as motion spans,
 //! with domain-specific attributes:
 //!   - state_machine.name    — state machine instance name

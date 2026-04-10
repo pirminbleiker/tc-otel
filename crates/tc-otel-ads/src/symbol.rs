@@ -157,8 +157,10 @@ impl AdsSymbolEntry {
         let type_bytes = self.type_name.as_bytes();
         let comment_bytes = self.comment.as_bytes();
 
-        let entry_length =
-            SYMBOL_ENTRY_HEADER_SIZE + (name_bytes.len() + 1) + (type_bytes.len() + 1) + (comment_bytes.len() + 1);
+        let entry_length = SYMBOL_ENTRY_HEADER_SIZE
+            + (name_bytes.len() + 1)
+            + (type_bytes.len() + 1)
+            + (comment_bytes.len() + 1);
 
         let mut buf = Vec::with_capacity(entry_length);
         buf.extend_from_slice(&(entry_length as u32).to_le_bytes());

@@ -56,7 +56,7 @@ impl ConfigWatcher {
 
             match AppSettings::from_json_file(&self.config_path) {
                 Ok(new_settings) => {
-                    let diff = ConfigDiff::compute(&*self.tx.borrow(), &new_settings);
+                    let diff = ConfigDiff::compute(&self.tx.borrow(), &new_settings);
                     if diff.is_empty() {
                         tracing::debug!("Config file touched but content unchanged");
                         continue;

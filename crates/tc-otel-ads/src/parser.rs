@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_core::LogLevel;
 
-use tc_otel_core::{SpanKind, SpanStatusCode};
+use tc_otel_core::{MetricKind, SpanKind, SpanStatusCode};
 
 // Security limits for protocol parsing
 /// Maximum length for individual strings (65 KB)
@@ -21,13 +21,18 @@ const MAX_MESSAGE_SIZE: usize = 1_048_576;
 const MAX_SPAN_EVENTS: usize = 128;
 /// Maximum number of attributes per span or span event
 const MAX_SPAN_ATTRIBUTES: usize = 64;
+/// Maximum number of attributes per metric
+const MAX_METRIC_ATTRIBUTES: usize = 32;
+/// Maximum number of histogram buckets
+const MAX_HISTOGRAM_BUCKETS: usize = 100;
 
-/// Result of parsing a buffer containing log entries, registrations, and spans
+/// Result of parsing a buffer containing log entries, registrations, spans, and metrics
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     pub entries: Vec<AdsLogEntry>,
     pub registrations: Vec<RegistrationMessage>,
     pub spans: Vec<AdsSpanEntry>,
+    pub metrics: Vec<AdsMetricEntry>,
 }
 
 /// Parser for ADS binary protocol messages
@@ -48,6 +53,7 @@ impl AdsParser {
         let mut entries = Vec::new();
         let mut registrations = Vec::new();
         let mut spans = Vec::new();
+        let mut metrics = Vec::new();
         let mut reader = BytesReader::new(data);
 
         while reader.remaining() > 0 {
@@ -124,12 +130,37 @@ impl AdsParser {
                         }
                     }
                 }
+                4 => {
+                    // Metric entry
+                    match Self::parse_metric_from_reader(&mut reader) {
+                        Ok(metric) => metrics.push(metric),
+                        Err(e) => {
+                            if entries.is_empty()
+                                && registrations.is_empty()
+                                && spans.is_empty()
+                                && metrics.is_empty()
+                            {
+                                return Err(e);
+                            }
+                            tracing::debug!(
+                                "Partial metric at buffer end ({} bytes remaining): {}",
+                                reader.remaining(),
+                                e
+                            );
+                            break;
+                        }
+                    }
+                }
                 5 => {
                     // Span entry (completed span)
                     match Self::parse_span_from_reader(&mut reader) {
                         Ok(span) => spans.push(span),
                         Err(e) => {
-                            if entries.is_empty() && registrations.is_empty() && spans.is_empty() {
+                            if entries.is_empty()
+                                && registrations.is_empty()
+                                && spans.is_empty()
+                                && metrics.is_empty()
+                            {
                                 return Err(e);
                             }
                             tracing::debug!(
@@ -153,6 +184,7 @@ impl AdsParser {
             entries,
             registrations,
             spans,
+            metrics,
         })
     }
 
@@ -516,6 +548,138 @@ impl AdsParser {
             task_cycle_counter: cycle_counter,
             attributes,
             events,
+        })
+    }
+
+    /// Parse a metric entry (message type 0x04) from the reader
+    fn parse_metric_from_reader(reader: &mut BytesReader) -> Result<AdsMetricEntry> {
+        // Type byte (must be 4)
+        let type_byte = reader.read_u8()?;
+        if type_byte != 4 {
+            return Err(AdsError::ParseError(format!(
+                "Invalid metric type: {}",
+                type_byte
+            )));
+        }
+
+        // Entry length (2 bytes LE)
+        let entry_length = reader.read_u16()? as usize;
+        let entry_start = reader.pos;
+
+        // Kind (1 byte)
+        let kind_byte = reader.read_u8()?;
+        let kind = MetricKind::from_u8(kind_byte).ok_or(AdsError::ParseError(format!(
+            "Invalid metric kind: {}",
+            kind_byte
+        )))?;
+
+        // Timestamp (FILETIME)
+        let timestamp = reader.read_filetime()?;
+
+        // Task metadata
+        let task_index = reader.read_u8()? as i32;
+        let cycle_counter = reader.read_u32()?;
+
+        // Counts and flags
+        let attr_count = reader.read_u8()? as usize;
+        let flags = reader.read_u8()?;
+        let is_monotonic = (flags & 0x01) != 0;
+
+        if attr_count > MAX_METRIC_ATTRIBUTES {
+            return Err(AdsError::ParseError(format!(
+                "Metric attribute count {} exceeds maximum {}",
+                attr_count, MAX_METRIC_ATTRIBUTES
+            )));
+        }
+
+        // Strings
+        let name = reader.read_string()?;
+        let description = reader.read_string()?;
+        let unit = reader.read_string()?;
+
+        // Value (f64 LE)
+        let value_bytes = reader.read_bytes(8)?;
+        let value = f64::from_le_bytes([
+            value_bytes[0],
+            value_bytes[1],
+            value_bytes[2],
+            value_bytes[3],
+            value_bytes[4],
+            value_bytes[5],
+            value_bytes[6],
+            value_bytes[7],
+        ]);
+
+        // Histogram-specific fields
+        let mut histogram_bounds = Vec::new();
+        let mut histogram_counts = Vec::new();
+        let mut histogram_count = 0u64;
+        let mut histogram_sum = 0.0f64;
+
+        if kind == MetricKind::Histogram {
+            let bucket_count = reader.read_u8()? as usize;
+            if bucket_count > MAX_HISTOGRAM_BUCKETS {
+                return Err(AdsError::ParseError(format!(
+                    "Histogram bucket count {} exceeds maximum {}",
+                    bucket_count, MAX_HISTOGRAM_BUCKETS
+                )));
+            }
+
+            // Bounds (bucket_count × f64)
+            histogram_bounds.reserve(bucket_count);
+            for _ in 0..bucket_count {
+                let b = reader.read_bytes(8)?;
+                histogram_bounds.push(f64::from_le_bytes([
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                ]));
+            }
+
+            // Counts ((bucket_count+1) × u64)
+            histogram_counts.reserve(bucket_count + 1);
+            for _ in 0..=bucket_count {
+                let c = reader.read_bytes(8)?;
+                histogram_counts.push(u64::from_le_bytes([
+                    c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+                ]));
+            }
+
+            // Total count and sum
+            let hc = reader.read_bytes(8)?;
+            histogram_count =
+                u64::from_le_bytes([hc[0], hc[1], hc[2], hc[3], hc[4], hc[5], hc[6], hc[7]]);
+            let hs = reader.read_bytes(8)?;
+            histogram_sum =
+                f64::from_le_bytes([hs[0], hs[1], hs[2], hs[3], hs[4], hs[5], hs[6], hs[7]]);
+        }
+
+        // Attributes
+        let mut attributes = HashMap::with_capacity(attr_count);
+        for _ in 0..attr_count {
+            let key = reader.read_string()?;
+            let type_id = reader.read_u8()?;
+            let type_id_i32 = Self::remap_v2_type_id(type_id as i32);
+            let value = reader.read_value_with_type(type_id_i32)?;
+            attributes.insert(key, value);
+        }
+
+        // Sync reader position to entry boundary
+        reader.pos = entry_start + entry_length;
+
+        Ok(AdsMetricEntry {
+            name,
+            description,
+            unit,
+            kind,
+            value,
+            timestamp,
+            task_index,
+            task_cycle_counter: cycle_counter,
+            is_monotonic,
+            attributes,
+            histogram_bounds,
+            histogram_counts,
+            histogram_count,
+            histogram_sum,
         })
     }
 

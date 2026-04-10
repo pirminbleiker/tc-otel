@@ -18,8 +18,7 @@ pub mod registry;
 pub mod symbol;
 
 pub use ads_client::{
-    build_read_request_frame, build_read_response_frame, AdsClient, AdsReadRequest,
-    AdsReadResponse,
+    build_read_request_frame, build_read_response_frame, AdsClient, AdsReadRequest, AdsReadResponse,
 };
 pub use ams::{
     AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_READ, ADS_CMD_WRITE,
@@ -33,7 +32,7 @@ pub use error::{AdsError, Result};
 pub use listener::AdsListener;
 pub use parser::AdsParser;
 pub use protocol::{
-    AdsLogEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
+    AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
     RegistrationMessage, TaskMetadata,
 };
 pub use registry::TaskRegistry;

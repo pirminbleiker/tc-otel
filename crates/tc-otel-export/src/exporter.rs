@@ -4,7 +4,7 @@ use crate::error::*;
 use regex::Regex;
 use serde_json::json;
 use std::time::Duration;
-use tc_otel_core::LogRecord;
+use tc_otel_core::{LogRecord, MetricKind, MetricRecord};
 
 /// Helper function to expand environment variables in strings
 /// Supports ${VAR_NAME} syntax, e.g., "Bearer ${API_KEY}"
@@ -278,6 +278,162 @@ impl OtelExporter {
             OtelError::SerializationError(format!("Failed to serialize OTEL payload: {}", e))
         })
     }
+
+    /// Export a batch of metric records with retry logic
+    pub async fn export_metrics_batch(&self, records: Vec<MetricRecord>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let payload = self.build_otel_metrics_payload(&records)?;
+
+        // Metrics use /v1/metrics endpoint
+        let endpoint = self
+            .config
+            .endpoint
+            .replace("/v1/logs", "/v1/metrics")
+            .replace("/insert/jsonline", "/v1/metrics");
+
+        self.send_metrics_with_retry(&payload, &endpoint).await
+    }
+
+    /// Send metrics payload with retry
+    async fn send_metrics_with_retry(&self, payload: &str, endpoint: &str) -> Result<()> {
+        let mut retry_count = 0;
+        let mut delay_ms = self.config.retry_delay_ms;
+
+        loop {
+            let mut request = self
+                .http_client
+                .post(endpoint)
+                .header("Content-Type", "application/json");
+
+            if let Some(auth) = &self.config.auth_header {
+                let expanded_auth = expand_env_vars(auth);
+                request = request.header("Authorization", expanded_auth);
+            }
+
+            match request
+                .body(payload.to_string())
+                .timeout(Duration::from_secs(self.config.timeout_secs))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    tracing::debug!("Successfully exported metrics to {}", endpoint);
+                    return Ok(());
+                }
+                Ok(response) => {
+                    let err = OtelError::ExportFailed(format!(
+                        "HTTP {} from {}",
+                        response.status(),
+                        endpoint
+                    ));
+                    if !Self::is_retryable_error(&err) {
+                        return Err(err);
+                    }
+                    retry_count += 1;
+                    if retry_count > self.config.max_retries {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(5000);
+                }
+                Err(e) => {
+                    let err = OtelError::HttpError(format!("Request failed: {}", e));
+                    retry_count += 1;
+                    if retry_count > self.config.max_retries {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(5000);
+                }
+            }
+        }
+    }
+
+    /// Build OTLP MetricsData JSON payload
+    pub fn build_otel_metrics_payload(&self, records: &[MetricRecord]) -> Result<String> {
+        let resource_metrics = records
+            .iter()
+            .map(|record| {
+                let data_point = self.build_metric_data_point(record);
+                let metric = match record.kind {
+                    MetricKind::Gauge => json!({
+                        "name": record.name,
+                        "description": record.description,
+                        "unit": record.unit,
+                        "gauge": {
+                            "dataPoints": [data_point]
+                        }
+                    }),
+                    MetricKind::Sum => json!({
+                        "name": record.name,
+                        "description": record.description,
+                        "unit": record.unit,
+                        "sum": {
+                            "dataPoints": [data_point],
+                            "aggregationTemporality": 2, // CUMULATIVE
+                            "isMonotonic": record.is_monotonic
+                        }
+                    }),
+                    MetricKind::Histogram => {
+                        let hist_point = json!({
+                            "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+                            "attributes": Self::to_otlp_attributes(&record.attributes),
+                            "count": format!("{}", record.histogram_count),
+                            "sum": record.histogram_sum,
+                            "bucketCounts": record.histogram_counts.iter().map(|c| format!("{}", c)).collect::<Vec<_>>(),
+                            "explicitBounds": record.histogram_bounds
+                        });
+                        json!({
+                            "name": record.name,
+                            "description": record.description,
+                            "unit": record.unit,
+                            "histogram": {
+                                "dataPoints": [hist_point],
+                                "aggregationTemporality": 2
+                            }
+                        })
+                    }
+                };
+
+                json!({
+                    "resource": {
+                        "attributes": Self::to_otlp_attributes(&record.resource_attributes)
+                    },
+                    "scopeMetrics": [
+                        {
+                            "scope": {
+                                "name": "tc-otel"
+                            },
+                            "metrics": [metric]
+                        }
+                    ]
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let payload = json!({
+            "resourceMetrics": resource_metrics
+        });
+
+        serde_json::to_string(&payload).map_err(|e| {
+            OtelError::SerializationError(format!(
+                "Failed to serialize OTEL metrics payload: {}",
+                e
+            ))
+        })
+    }
+
+    /// Build a single OTLP metric data point (for Gauge and Sum)
+    fn build_metric_data_point(&self, record: &MetricRecord) -> serde_json::Value {
+        json!({
+            "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+            "asDouble": record.value,
+            "attributes": Self::to_otlp_attributes(&record.attributes)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +657,127 @@ mod tests {
 
         // Verify JSON is valid and serializable
         let _parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    }
+
+    // ─── Metric payload tests ─────────────────────────────────────
+
+    #[test]
+    fn test_build_gauge_metrics_payload() {
+        let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
+
+        let record = MetricRecord {
+            name: "plc.motor.temperature".to_string(),
+            description: "Motor temperature".to_string(),
+            unit: "Cel".to_string(),
+            kind: MetricKind::Gauge,
+            timestamp: chrono::Utc::now(),
+            value: 72.5,
+            is_monotonic: false,
+            resource_attributes: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("service.name".to_string(), serde_json::json!("TestProject"));
+                m
+            },
+            attributes: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "plc.symbol".to_string(),
+                    serde_json::json!("GVL.motor.temp"),
+                );
+                m
+            },
+            histogram_bounds: Vec::new(),
+            histogram_counts: Vec::new(),
+            histogram_count: 0,
+            histogram_sum: 0.0,
+        };
+
+        let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        // Verify OTLP metrics structure
+        assert!(payload.get("resourceMetrics").is_some());
+        let rm = &payload["resourceMetrics"][0];
+        assert!(rm.get("resource").is_some());
+        assert!(rm.get("scopeMetrics").is_some());
+
+        let metric = &rm["scopeMetrics"][0]["metrics"][0];
+        assert_eq!(metric["name"], "plc.motor.temperature");
+        assert_eq!(metric["unit"], "Cel");
+        assert!(metric.get("gauge").is_some());
+        assert_eq!(metric["gauge"]["dataPoints"][0]["asDouble"], 72.5);
+    }
+
+    #[test]
+    fn test_build_sum_metrics_payload() {
+        let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
+
+        let record = MetricRecord {
+            name: "plc.errors.total".to_string(),
+            description: "Total error count".to_string(),
+            unit: "{count}".to_string(),
+            kind: MetricKind::Sum,
+            timestamp: chrono::Utc::now(),
+            value: 42.0,
+            is_monotonic: true,
+            resource_attributes: std::collections::HashMap::new(),
+            attributes: std::collections::HashMap::new(),
+            histogram_bounds: Vec::new(),
+            histogram_counts: Vec::new(),
+            histogram_count: 0,
+            histogram_sum: 0.0,
+        };
+
+        let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let metric = &payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0];
+        assert!(metric.get("sum").is_some());
+        assert_eq!(metric["sum"]["isMonotonic"], true);
+        assert_eq!(metric["sum"]["aggregationTemporality"], 2);
+        assert_eq!(metric["sum"]["dataPoints"][0]["asDouble"], 42.0);
+    }
+
+    #[test]
+    fn test_build_histogram_metrics_payload() {
+        let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
+
+        let record = MetricRecord {
+            name: "plc.cycle_time".to_string(),
+            description: "PLC cycle time".to_string(),
+            unit: "ms".to_string(),
+            kind: MetricKind::Histogram,
+            timestamp: chrono::Utc::now(),
+            value: 0.0,
+            is_monotonic: false,
+            resource_attributes: std::collections::HashMap::new(),
+            attributes: std::collections::HashMap::new(),
+            histogram_bounds: vec![1.0, 5.0, 10.0],
+            histogram_counts: vec![10, 25, 5, 1],
+            histogram_count: 41,
+            histogram_sum: 230.5,
+        };
+
+        let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let metric = &payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0];
+        assert!(metric.get("histogram").is_some());
+        assert_eq!(metric["histogram"]["dataPoints"][0]["sum"], 230.5);
+        assert_eq!(
+            metric["histogram"]["dataPoints"][0]["explicitBounds"],
+            serde_json::json!([1.0, 5.0, 10.0])
+        );
+    }
+
+    #[test]
+    fn test_build_metrics_payload_empty() {
+        let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
+        let payload_str = exporter.build_otel_metrics_payload(&[]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        assert!(payload["resourceMetrics"].is_array());
+        assert_eq!(payload["resourceMetrics"].as_array().unwrap().len(), 0);
     }
 
     #[test]
