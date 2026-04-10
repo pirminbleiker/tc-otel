@@ -11,7 +11,7 @@ pub mod models;
 
 pub use config::{
     AppSettings, ExportConfig, LogFormat, LoggingConfig, OutputConfig, ReceiverConfig,
-    ServiceConfig, TlsConfig,
+    ServiceConfig, TlsConfig, WebConfig,
 };
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};

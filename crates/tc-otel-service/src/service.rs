@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tc_otel_ads::{AmsNetId, AmsTcpServer, ConnectionConfig};
 use tc_otel_core::AppSettings;
@@ -11,6 +12,7 @@ use tokio::time::timeout;
 
 use crate::config_watcher::ConfigWatcher;
 use crate::dispatcher::LogDispatcher;
+use crate::web::{self, DiagnosticStats, SubscriptionManager, WebState};
 
 /// Main Log4TC Service
 pub struct Log4TcService {
@@ -88,6 +90,11 @@ impl Log4TcService {
         )
         .with_connection_config(conn_config);
 
+        // Extract shared state for the web UI before spawning AMS server
+        let conn_manager = ams_server.connection_manager().clone();
+        let task_registry = ams_server.task_registry().clone();
+        let diagnostic_stats = Arc::new(DiagnosticStats::new());
+
         let mut shutdown_rx_ams = shutdown_tx.subscribe();
         let ams_handle = tokio::spawn(async move {
             tokio::select! {
@@ -102,17 +109,21 @@ impl Log4TcService {
             }
         });
 
-        // Start dispatcher
+        // Start dispatcher with diagnostic stats tracking
         let dispatcher = self.log_dispatcher.clone();
+        let stats_for_dispatcher = diagnostic_stats.clone();
         let dispatcher_handle = tokio::spawn(async move {
             let mut processed = 0u64;
             loop {
                 tokio::select! {
                     Some(entry) = log_rx.recv() => {
+                        stats_for_dispatcher.logs_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if let Err(e) = dispatcher.dispatch(entry).await {
                             tracing::error!("Dispatch error: {}", e);
+                            stats_for_dispatcher.logs_failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         } else {
                             processed += 1;
+                            stats_for_dispatcher.logs_dispatched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                     _ = shutdown_rx.recv() => {
@@ -122,6 +133,31 @@ impl Log4TcService {
                 }
             }
         });
+
+        // Start web UI server if enabled
+        let web_handle = if self.settings.web.enabled {
+            let web_state = WebState {
+                stats: diagnostic_stats,
+                conn_manager,
+                task_registry,
+                subscriptions: Arc::new(SubscriptionManager::new(
+                    self.settings.web.max_subscriptions,
+                )),
+                service_name: self.settings.service.name.clone(),
+            };
+            let web_config = self.settings.web.clone();
+            let shutdown_rx_web = shutdown_tx.subscribe();
+            let handle = tokio::spawn(async move {
+                if let Err(e) = web::start_web_server(&web_config, web_state, shutdown_rx_web).await
+                {
+                    tracing::error!("Web UI server error: {}", e);
+                }
+            });
+            Some(handle)
+        } else {
+            tracing::info!("Web UI disabled");
+            None
+        };
 
         // Wait for Ctrl+C / SIGTERM
         tokio::signal::ctrl_c().await?;
@@ -133,6 +169,9 @@ impl Log4TcService {
         let _ = timeout(shutdown_timeout, async {
             let _ = tokio::join!(ams_handle, dispatcher_handle);
             if let Some(handle) = config_watcher_handle {
+                let _ = handle.await;
+            }
+            if let Some(handle) = web_handle {
                 let _ = handle.await;
             }
         })

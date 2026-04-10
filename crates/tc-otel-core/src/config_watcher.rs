@@ -13,6 +13,7 @@ pub struct ConfigDiff {
     pub receiver_changed: bool,
     pub service_changed: bool,
     pub outputs_changed: bool,
+    pub web_changed: bool,
 }
 
 impl ConfigDiff {
@@ -24,6 +25,7 @@ impl ConfigDiff {
             receiver_changed: old.receiver != new.receiver,
             service_changed: old.service != new.service,
             outputs_changed: old.outputs != new.outputs,
+            web_changed: old.web != new.web,
         }
     }
 
@@ -34,7 +36,7 @@ impl ConfigDiff {
 
     /// Returns true if any settings that require restart changed
     pub fn has_restart_required_changes(&self) -> bool {
-        self.receiver_changed || self.service_changed || self.outputs_changed
+        self.receiver_changed || self.service_changed || self.outputs_changed || self.web_changed
     }
 
     /// Returns true if nothing changed
@@ -44,6 +46,7 @@ impl ConfigDiff {
             && !self.receiver_changed
             && !self.service_changed
             && !self.outputs_changed
+            && !self.web_changed
     }
 }
 
@@ -63,6 +66,7 @@ mod tests {
             export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
+            web: WebConfig::default(),
         }
     }
 

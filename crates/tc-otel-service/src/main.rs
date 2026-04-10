@@ -11,6 +11,7 @@ use tc_otel_core::AppSettings;
 mod config_watcher;
 mod dispatcher;
 mod service;
+pub mod web;
 
 use service::Log4TcService;
 

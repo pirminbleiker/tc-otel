@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub export: ExportConfig,
     pub outputs: Vec<OutputConfig>,
     pub service: ServiceConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Logging configuration
@@ -442,6 +444,47 @@ impl Default for ExportConfig {
     }
 }
 
+/// Web UI configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Enable the web UI (default: true)
+    #[serde(default = "default_web_enabled")]
+    pub enabled: bool,
+    /// Web UI listening address (default: "127.0.0.1")
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    /// Web UI listening port (default: 8080)
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    /// Maximum number of tag subscriptions (default: 500)
+    #[serde(default = "default_max_subscriptions")]
+    pub max_subscriptions: usize,
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+fn default_web_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_web_port() -> u16 {
+    8080
+}
+fn default_max_subscriptions() -> usize {
+    500
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_enabled(),
+            host: default_web_host(),
+            port: default_web_port(),
+            max_subscriptions: default_max_subscriptions(),
+        }
+    }
+}
+
 /// Service configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -665,6 +708,7 @@ mod tests {
             export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
+            web: WebConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");

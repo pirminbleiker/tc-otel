@@ -202,6 +202,16 @@ impl ConnectionManager {
         states.get(ip).map(|s| s.active_connections).unwrap_or(0)
     }
 
+    /// Get all IPs with active connections and their connection counts.
+    pub fn connected_ips(&self) -> Vec<(IpAddr, usize)> {
+        let states = self.ip_states.lock().unwrap();
+        states
+            .iter()
+            .filter(|(_, state)| state.active_connections > 0)
+            .map(|(ip, state)| (*ip, state.active_connections))
+            .collect()
+    }
+
     /// Initiate graceful shutdown. New connections will be rejected.
     /// Returns a future that resolves when all active connections are closed
     /// or the shutdown timeout expires.

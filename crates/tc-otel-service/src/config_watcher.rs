@@ -119,6 +119,7 @@ mod tests {
             export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
+            web: WebConfig::default(),
         }
     }
 

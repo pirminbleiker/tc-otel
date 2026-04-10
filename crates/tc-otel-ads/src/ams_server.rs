@@ -62,6 +62,11 @@ impl AmsTcpServer {
         &self.conn_manager
     }
 
+    /// Get a reference to the task registry
+    pub fn task_registry(&self) -> &Arc<TaskRegistry> {
+        &self.registry
+    }
+
     pub async fn start(&self) -> crate::Result<()> {
         let tcp_addr = format!("{}:{}", self.host, self.port);
         let _udp_addr = format!("{}:{}", self.host, self.port + 1); // 48899
