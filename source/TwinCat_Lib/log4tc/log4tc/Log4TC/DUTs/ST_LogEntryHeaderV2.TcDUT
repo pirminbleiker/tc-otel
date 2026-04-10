@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <DUT Name="ST_LogEntryHeaderV2" Id="{b1c2d3e4-f5a6-7b8c-9d0e-1f2a3b4c5d6e}">
+    <Declaration><![CDATA[{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_LogEntryHeaderV2 :
+STRUCT
+	nType			: BYTE;		// 0x02 for v2 log entry
+	nEntryLength	: UINT;		// Total length from after this field
+	nLevel			: BYTE;		// Log level
+	nTsPlc			: LINT;		// PLC timestamp (FILETIME)
+	nTsClock		: LINT;		// Clock timestamp (FILETIME)
+	nTaskIndex		: BYTE;		// Task index (0-63)
+	nCycleCount		: UDINT;	// Cycle counter
+	nArgCount		: BYTE;		// Argument count
+	nContextCount	: BYTE;		// Context group count
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

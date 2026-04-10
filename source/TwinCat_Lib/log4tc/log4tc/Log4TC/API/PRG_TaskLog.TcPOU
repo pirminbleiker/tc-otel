@@ -1,0 +1,121 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
+  <POU Name="PRG_TaskLog" Id="{d9deec54-041b-4d4a-a876-7d0487674ab5}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
+PROGRAM PRG_TaskLog
+VAR
+	aTaskLogger			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTask;
+	aTaskRtcTime		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_RTC_Sync;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="Call" Id="{7aeb9926-c091-4a02-a0d3-9930716cb4d1}">
+      <Declaration><![CDATA[(*
+:Description: Sends collected log message of a single task to the service. 
+
+This method must be called in each task which uses logging. It should be
+called once a cycle.
+
+**Example**
+
+.. code:: 
+
+    PRG_TaskLog.Call();
+	
+*)
+METHOD PUBLIC Call
+VAR
+	nIdx	: DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+aTaskLogger[nIdx].Call();
+aTaskRtcTime[nIdx].Call();
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Init" Id="{a5681b61-7170-465c-b800-f922f70178d3}">
+      <Declaration><![CDATA[(*
+:Description: Initialise the task logger with custom parameter. 
+
+This method must be called in each task which uses logging. As long as
+the parameter do not change a single call is sufficient.
+
+**Example**
+
+.. code:: 
+
+	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+		// For Remote Log4TC Server change the AMS net ID and configure a route
+	  PRG_TaskLog.Init('127.0.0.1.1.1');
+	END_IF
+    
+*)
+METHOD PUBLIC Init : BOOL
+VAR_INPUT
+	sAmsNetId	: Tc2_Utilities.T_AmsNetID;	(* The ams net id of the log service. Defaults to localhost (empty string). *)
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[aTaskLogger[Tc2_Utilities.GETCURTASKINDEXEX()].Init(sAmsNetId);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="RtcTime" Id="{3577743f-dcc4-455c-a535-d7ff2826b706}">
+      <Declaration><![CDATA[PROPERTY INTERNAL RtcTime : LINT]]></Declaration>
+      <Get Name="Get" Id="{743e0e5a-c100-4c91-84fb-00ad8ebc0e39}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[RtcTime := aTaskRtcTime[Tc2_Utilities.GETCURTASKINDEXEX()].RtcTime;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="TaskContextBuilder" Id="{37ede606-5a7a-4581-9bfb-710648eb6050}">
+      <Declaration><![CDATA[(*
+:Description: Returns the ``I_ContextBuilder`` for task specific context
+	properties. 
+
+Task specific properties are added to each log message which is created
+on the same task. 
+
+For best performance properties should only be added or removed if the
+values have changed.
+
+**Example**
+
+.. code:: 
+
+	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+		PRG_TaskLog.TaskContextBuilder.AddInt('machineNo', nMachineNumber);
+	END_IF
+    
+*)
+PROPERTY PUBLIC TaskContextBuilder : I_ContextBuilder]]></Declaration>
+      <Get Name="Get" Id="{0565efa6-0f30-4a5a-8d01-6c8dcd2d67fb}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TaskContextBuilder := aTaskLogger[GETCURTASKINDEXEX()].TaskContext;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="TaskLogger" Id="{e5ae713c-f421-49cb-9871-258b1113ba41}">
+      <Declaration><![CDATA[PROPERTY INTERNAL TaskLogger : REFERENCE TO FB_Log4TcTask]]></Declaration>
+      <Get Name="Get" Id="{2041d993-1b63-44b0-b94c-7510408823c4}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TaskLogger REF= aTaskLogger[GETCURTASKINDEXEX()];
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="FB_LogBuilder" Id="{431f68a7-460e-47c3-bd71-217f559bd016}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
+{attribute 'conditionalshow'}
+FUNCTION_BLOCK INTERNAL FB_LogBuilder IMPLEMENTS I_LogBuilder
+VAR
+	sMessage			: T_MaxString;
+	eLogLevel			: E_LogLevel;
+	sLogger				: T_MaxString := Const.sGlobalLogger;
+	fbLogEntry			: FB_LogEntry();
+	iLogEntryAdder		: I_LogEntryAdder;
+	nIdx				: UINT;
+	refScopedContext	: REFERENCE TO ST_ScopedContextStack;
+	iContextBuilder		: I_ContextBuilder;
+	bStarted			: BOOL;		// TRUE after StartV2 has been called
+	bError				: BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Private" Id="{4ef16d42-a2ab-482a-a484-f42954a6e403}" />
+    <Method Name="_EnsureStarted" Id="{e3604386-9c5c-45a7-9663-936eb9ac80ff}" FolderPath="Private\">
+      <Declaration><![CDATA[METHOD PRIVATE _EnsureStarted
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bStarted OR bError THEN
+	RETURN;
+END_IF
+
+fbLogEntry.StartV2(
+	pLogger			:= ADR(THIS^.sLogger),
+	pMessage		:= ADR(THIS^.sMessage),
+	eLogLevel		:= eLogLevel,
+	nTimeStampPlc	:= 0,
+	nTimeStampClock	:= 0
+);
+bStarted := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_IsLogLevelActive" Id="{ed00c891-12ea-498a-9892-ef7c629ea7f1}" FolderPath="Private\">
+      <Declaration><![CDATA[METHOD PRIVATE _IsLogLevelActive : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_IsLogLevelActive := eLogLevel >= Config.eMaxLogLevel;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Clear" Id="{b4fa87be-fbb6-485f-9775-709e6fc518bf}">
+      <Declaration><![CDATA[METHOD INTERNAL Clear : I_LogBuilder
+VAR_INPUT
+	eLogLevel		: E_LogLevel;
+	pMessage		: POINTER TO T_MaxString;
+	pLogger			: POINTER TO T_MaxString := 0;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[Clear := THIS^;
+THIS^.eLogLevel := eLogLevel;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+THIS^.fbLogEntry.Reset();
+THIS^.iContextBuilder := 0;
+THIS^.sMessage := pMessage^;
+IF pLogger <> 0 THEN
+	THIS^.sLogger := pLogger^;
+ELSE
+	THIS^.sLogger := Const.sGlobalLogger;
+END_IF
+bStarted := FALSE;
+bError := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="CreateLog" Id="{23124095-055b-4642-9cec-439e81a94569}">
+      <Declaration><![CDATA[METHOD CreateLog
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+
+// Ensure header+message+logger are written (in case no args were added)
+_EnsureStarted();
+
+// Context comes after args in the wire format
+IF __QUERYINTERFACE(PRG_TaskLog.TaskLogger.TaskContext, iLogEntryAdder) THEN
+	iLogEntryAdder.AddToLogEntry(E_Scope.eTask, fbLogEntry);
+END_IF
+
+refScopedContext REF= PRG_ScopedContextStack.TaskContextStack;
+IF refScopedContext.nScopeContextCount > 0 THEN
+	FOR nIdx := 0 TO refScopedContext.nScopeContextCount - 1 DO
+		IF __QUERYINTERFACE(refScopedContext.aScopedContext[nIdx], iLogEntryAdder) THEN
+			iLogEntryAdder.AddToLogEntry(E_Scope.eScoped, fbLogEntry);
+		END_IF
+	END_FOR
+END_IF
+
+IF iContextBuilder <> 0 AND __QUERYINTERFACE(iContextBuilder, iLogEntryAdder) THEN
+	iLogEntryAdder.AddToLogEntry(E_Scope.eLogger, fbLogEntry);
+END_IF
+
+fbLogEntry.End();
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithAnyArg" Id="{8b10c811-cffb-4efb-98e9-827ac612e8d3}">
+      <Declaration><![CDATA[METHOD WithAnyArg : I_Logger
+VAR_INPUT
+	stArg	: ANY;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithAnyArg := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+
+// Lazy start: write header+message+logger on first arg
+_EnsureStarted();
+
+// Write arg directly into LogEntry buffer (v2 format)
+fbLogEntry.AddAnyArg(0, stArg);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithContext" Id="{7a50707d-ae3e-4603-8990-842a852e28f7}">
+      <Declaration><![CDATA[METHOD WithContext : I_Logger
+VAR_INPUT
+	iContextBuilder	: I_ContextBuilder;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithContext := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+THIS^.iContextBuilder := iContextBuilder;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithLogger" Id="{66d1aa45-8d1b-4222-99f1-0f681c4fd5d5}">
+      <Declaration><![CDATA[METHOD WithLogger : I_WithContext
+VAR_INPUT
+	sLogger	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithLogger := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+THIS^.sLogger := sLogger;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithTArg" Id="{d3f48c9f-ff2e-465b-bbd7-5053ade8f282}">
+      <Declaration><![CDATA[METHOD WithTArg : I_Logger
+VAR_INPUT
+	stArg	: T_Arg;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithTArg := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+
+// Lazy start: write header+message+logger on first arg
+_EnsureStarted();
+
+// Write arg directly into LogEntry buffer
+fbLogEntry.AddTArg(0, stArg);
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

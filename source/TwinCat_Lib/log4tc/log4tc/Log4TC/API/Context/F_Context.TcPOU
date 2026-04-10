@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+  <POU Name="F_Context" Id="{15bc0808-4d58-45ab-93cf-1a8d645eec0b}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_Context : I_ContextBuilder
+VAR_STAT
+	aTaskContext		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_ContextBuilder;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[F_Context := aTaskContext[Tc2_System.GETCURTASKINDEXEX()].Clear();
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

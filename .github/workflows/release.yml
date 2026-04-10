@@ -1,0 +1,243 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+  build-binaries:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: tc-otel
+            asset_name: tc-otel-linux-amd64
+
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: tc-otel
+            asset_name: tc-otel-linux-arm64
+            cross: true
+
+          - name: windows-amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: tc-otel.exe
+            asset_name: tc-otel-windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (arm64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release -p tc-otel-service --target ${{ matrix.target }}
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          tag_name: ${{ github.ref_name }}
+
+      - name: Upload artifact for deb/docker jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+  build-deb:
+    name: Build .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: [create-release, build-binaries]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            binary_artifact: binary-linux-amd64
+          - arch: arm64
+            binary_artifact: binary-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.binary_artifact }}
+          path: ./binary
+
+      - name: Build .deb package
+        run: |
+          VERSION=${{ needs.create-release.outputs.version }}
+          PKG_DIR="tc-otel_${VERSION}_${{ matrix.arch }}"
+
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/etc/tc-otel"
+          mkdir -p "${PKG_DIR}/lib/systemd/system"
+
+          # Control file
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: tc-otel
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: ${{ matrix.arch }}
+          Maintainer: Pirmin Bleiker <pirmin.bleiker@outlook.com>
+          Description: tc-otel - Structured logging for TwinCAT 3 PLCs
+           Receives ADS log messages from TwinCAT PLCs via AMS/TCP
+           and exports them via OpenTelemetry (OTLP) to any compatible backend.
+          Homepage: https://github.com/pirminbleiker/tc-otel
+          EOF
+
+          # Systemd service
+          cat > "${PKG_DIR}/lib/systemd/system/tc-otel.service" << EOF
+          [Unit]
+          Description=tc-otel - TwinCAT PLC Logging Service
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/tc-otel --config /etc/tc-otel/config.json
+          Restart=on-failure
+          RestartSec=5
+          Environment=RUST_LOG=tc_otel_service=info
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # Default config
+          cp config.example.json "${PKG_DIR}/etc/tc-otel/config.json"
+
+          # Post-install script
+          cat > "${PKG_DIR}/DEBIAN/postinst" << 'EOF'
+          #!/bin/sh
+          set -e
+          systemctl daemon-reload
+          echo "tc-otel installed. Edit /etc/tc-otel/config.json, then:"
+          echo "  sudo systemctl enable --now tc-otel"
+          EOF
+          chmod 755 "${PKG_DIR}/DEBIAN/postinst"
+
+          # Binary
+          cp binary/tc-otel "${PKG_DIR}/usr/bin/tc-otel"
+          chmod 755 "${PKG_DIR}/usr/bin/tc-otel"
+
+          # Build package
+          dpkg-deb --build "${PKG_DIR}"
+
+      - name: Upload .deb to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.deb"
+          tag_name: ${{ github.ref_name }}
+
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        run: |
+          cargo publish -p tc-otel-core --token ${{ secrets.CARGO_TOKEN }} || true
+          sleep 30
+          cargo publish -p tc-otel-ads --token ${{ secrets.CARGO_TOKEN }} || true
+          sleep 30
+          cargo publish -p tc-otel-export --token ${{ secrets.CARGO_TOKEN }} || true
+          sleep 30
+          cargo publish -p tc-otel-service --token ${{ secrets.CARGO_TOKEN }} || true

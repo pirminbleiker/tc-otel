@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="MAIN" Id="{9e023de9-a7d3-47c5-b36b-a81c12c72c93}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+	fbTime			: FB_TcExternalTime(ETcExternalTimeType.SystemTime);
+	nOffset			: LINT;
+	bWriteLog		: BOOL;
+	bWriteCont		: BOOL;
+	nVar1			: INT;
+	nVar2			: T_MaxString := 'ä';
+	nVar3			: REAL;
+	var1			: __SYSTEM.VAR_INFO;
+	b1 : BYTE;
+	b2 : BYTE;
+END_VAR
+
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+	// For Remote Log4TC Server change the AMS net ID and configure a route
+	PRG_TaskLog.Init('172.25.160.1.1.1');
+	F_Log(E_LogLevel.eInfo, 'Started');
+END_IF
+
+
+PRG_TestSimpleApi();
+	
+
+PRG_TaskLog.Call();
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

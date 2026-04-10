@@ -1,0 +1,31 @@
+[package]
+name = "tc-otel-export"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OpenTelemetry OTLP exporter for tc-otel TwinCAT observability bridge"
+
+[dependencies]
+tc-otel-core = { path = "../tc-otel-core" }
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+prost.workspace = true
+opentelemetry.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+regex = "1.10"
+
+[dev-dependencies]
+mockall.workspace = true

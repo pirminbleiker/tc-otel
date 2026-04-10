@@ -1,0 +1,207 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="FB_Log" Id="{a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Persistent logger with instance-scoped logger name and context.
+
+Use this function block when you need a fixed logger name and/or persistent
+context properties across multiple log calls. For one-off logging, use F_Log() instead.
+
+The logger name is set during instantiation. Use the constant
+``Const.sLoggerFromInstance`` to automatically derive the logger name
+from the instance path (only works when instantiated inside a function block).
+
+**Example**
+
+.. code::
+    VAR
+        fbLog : FB_Log('Drives.Motor');
+    END_VAR
+
+    // Log with persistent logger name
+    fbLog.Log(E_LogLevel.eInfo, 'Motor {0} started')
+        .WithAnyArg(nMotorId)
+        .CreateLog();
+
+    // Set persistent context (set once, included in every log)
+    fbLog.LoggerContext.AddDInt('MachineId', nMachineId);
+*)
+{attribute 'reflection'}
+FUNCTION_BLOCK FB_Log
+VAR
+	{attribute 'instance-path'}
+	{attribute 'noinit'}
+	sInstancePath		: T_MaxString;
+	sLogger				: T_MaxString;
+	fbLoggerContext		: FB_ContextBuilder;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="Debug" Id="{7ec3435c-f466-0455-0509-0f75b3012c03}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Debug : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+VAR
+	builder : I_LogBuilder;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Debug := F_Log(E_LogLevel.eDebug, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Error" Id="{6b25f92e-161a-0899-3653-14cdc5ccac4b}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Error : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Error := F_Log(E_LogLevel.eError, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Fatal" Id="{0dd5cb61-3de7-0738-17e2-bac64218d9dd}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Fatal : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Fatal := F_Log(E_LogLevel.eFatal, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FB_Init" Id="{3f6c08e7-45a5-034e-2d6b-ca66c6bcddb0}">
+      <Declaration><![CDATA[//FB_Init is always available implicitly and it is used primarily for initialization.
+//The return value is not evaluated. For a specific influence, you can also declare the
+//methods explicitly and provide additional code there with the standard initialization
+//code. You can evaluate the return value.
+METHOD FB_Init: BOOL
+VAR_INPUT
+    bInitRetains: BOOL; // TRUE: the retain variables are initialized (reset warm / reset cold)
+    bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)   
+END_VAR
+VAR
+	nFindIdx	: INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nFindIdx := Tc2_Standard.FIND(sInstancePath, '.');
+IF nFindIdx > 0 THEN
+	sInstancePath := Tc2_Standard.DELETE(sInstancePath, nFindIdx + 1, 0);
+	nFindIdx := Tc2_Standard.FIND(sInstancePath, '.');
+	IF nFindIdx > 0 THEN
+		sInstancePath := Tc2_Standard.DELETE(sInstancePath, nFindIdx + 1, 0);
+		sLogger := sInstancePath;
+	END_IF
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Info" Id="{c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Info : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Info := F_Log(E_LogLevel.eInfo, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="LoggerContext" Id="{d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80}">
+      <Declaration><![CDATA[// Persistent context properties attached to every log entry from this instance.
+// Add properties once; they are automatically included in all subsequent Log() calls.
+PROPERTY PUBLIC LoggerContext : I_ContextBuilder]]></Declaration>
+      <Get Name="Get" Id="{e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[LoggerContext := fbLoggerContext;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Name" Id="{2f643616-5731-0fe9-2ea1-6dc2d4ac1d10}">
+      <Declaration><![CDATA[PROPERTY Name : Tc2_System.T_MaxString]]></Declaration>
+      <Get Name="Get" Id="{a87ad5af-4681-0352-3d4e-1b95e82ef46d}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Name := sLogger;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{85fffd0f-bfee-08ac-1f60-573b71fb5603}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[sLogger := Name;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Method Name="Trace" Id="{7dff51e6-5925-06c6-27a1-8923f8d768c5}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Trace : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Trace := F_Log(E_LogLevel.eTrace, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Warn" Id="{b8daf4ac-d380-0c63-0064-b4b8a6719777}">
+      <Declaration><![CDATA[// Creates a new log entry with the persistent logger name and context.
+// Returns an I_LogBuilder for fluent chaining of arguments and additional context.
+METHOD Warn : I_Logger
+VAR_INPUT
+	sMessage	: T_MaxString;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+
+Warn := F_Log(E_LogLevel.eWarn, sMessage)
+	.WithLogger(sLogger)
+	.WithContext(fbLoggerContext);
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

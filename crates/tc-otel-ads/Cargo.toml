@@ -1,0 +1,22 @@
+[package]
+name = "tc-otel-ads"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ADS/AMS protocol handler for tc-otel TwinCAT observability bridge"
+
+[dependencies]
+tc-otel-core = { path = "../tc-otel-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

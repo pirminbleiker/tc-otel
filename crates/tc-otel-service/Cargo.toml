@@ -1,0 +1,39 @@
+[package]
+name = "tc-otel-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "tc-otel service - OpenTelemetry bridge for Beckhoff TwinCAT PLCs"
+
+[[bin]]
+name = "tc-otel"
+path = "src/main.rs"
+
+[dependencies]
+tc-otel-core = { path = "../tc-otel-core" }
+tc-otel-ads = { path = "../tc-otel-ads" }
+tc-otel-export = { path = "../tc-otel-export" }
+tokio.workspace = true
+async-trait.workspace = true
+tokio-util.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+clap = { version = "4.4", features = ["derive"] }
+reqwest.workspace = true
+
+[dev-dependencies]
+mockall.workspace = true

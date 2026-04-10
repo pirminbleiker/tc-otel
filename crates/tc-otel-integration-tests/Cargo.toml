@@ -1,0 +1,29 @@
+[package]
+name = "tc-otel-integration-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Integration and end-to-end tests for tc-otel TwinCAT observability bridge"
+
+[dependencies]
+tc-otel-core.workspace = true
+tc-otel-ads.workspace = true
+tc-otel-export.workspace = true
+
+tokio = { workspace = true, features = ["full"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+bytes.workspace = true
+
+# Testing utilities
+mockall.workspace = true
+
+# Async utilities for testing
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile = "3.8"

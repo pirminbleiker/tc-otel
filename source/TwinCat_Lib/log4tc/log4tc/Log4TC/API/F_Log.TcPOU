@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="F_Log" Id="{c970aefe-3199-4c53-b630-5acb322a775a}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_Log : I_LogBuilder
+VAR_INPUT
+	eLogLevel		: E_LogLevel;
+	sMessage		: T_MaxString;
+END_VAR
+VAR_STAT
+	aLogBuilder		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_LogBuilder;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[F_Log := aLogBuilder[Tc2_System.GETCURTASKINDEXEX()].Clear(eLogLevel, ADR(sMessage));
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

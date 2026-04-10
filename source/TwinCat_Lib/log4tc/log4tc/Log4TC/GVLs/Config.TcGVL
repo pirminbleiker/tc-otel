@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+  <GVL Name="Config" Id="{a1726ba6-7c08-42a0-82ef-a943824dc09f}" ParameterList="True">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL CONSTANT
+	eInternalLog			: E_LogLevel := E_LogLevel.eInfo;	(* min. log level for internal logging. *)
+	nBufferLen 				: UDINT := 1048576;	(* Length of per task log buffer in bytes, max 1MB *)
+	nMaxScopedContext		: UINT := 4;		(* Max. number of nested scope context. *)
+	eMaxLogLevel			: E_LogLevel := E_LogLevel.eWarn;
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

@@ -1,0 +1,860 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+  <POU Name="FB_LogEntry" Id="{fdc002f1-7166-489a-9e27-9853cb239b8c}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'} 
+{attribute 'conditionalshow'}
+FUNCTION_BLOCK INTERNAL FB_LogEntry IMPLEMENTS I_LogEntry
+VAR
+	pBuffer				: PVOID;	// pointer to the current message buffer
+	nBufferCount		: UDINT;	// number of bytes written to the message buffer
+	nBufferRemaining	: UDINT;	// remaining bytes in the message buffer
+	bError				: BOOL;		// indicates an error in the current message building
+	// v2 Protocol fields
+	nEntryStart			: UDINT;	// Buffer position where entry begins
+	nEntryLenOffset		: UDINT;	// Position of entry_length field (for backfill)
+	nArgCountOffset		: UDINT;	// Position of arg_count field (for backfill)
+	nCtxCountOffset		: UDINT;	// Position of context_count field (for backfill)
+	nArgCount			: BYTE;		// Argument count (v2 only)
+	nContextCount		: BYTE;		// Context group count (v2 only)
+	bV2					: BOOL;		// TRUE if v2 protocol is active
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="_Copy" Id="{99ee4e2d-22a8-4520-82ff-7cdfea7b9682}">
+      <Declaration><![CDATA[METHOD PRIVATE _Copy
+VAR_INPUT
+	pSrc		: PVOID;
+	nCount		: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT bError AND_THEN nBufferRemaining >= nCount THEN
+	Tc2_System.MEMCPY(pBuffer + nBufferCount, pSrc, nCount);
+	nBufferCount := nBufferCount + nCount;
+	nBufferRemaining := nBufferRemaining - nCount;
+ELSE
+	IF NOT bError THEN
+		F_InternalLog(
+			E_LogLevel.eWarn,
+			'FB_LogEntry._Copy',
+			'Error buffer overflow for log message (act=%d, new=%d)',
+			Tc2_Utilities.F_UDINT(nBufferCount),
+			Tc2_Utilities.F_UDINT(nCount),
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);
+	END_IF
+	bError := TRUE;
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_Reset" Id="{3b95adfe-4470-48c7-9883-459b79c8d02e}">
+      <Declaration><![CDATA[METHOD PRIVATE _Reset
+VAR
+	pWriteBuffer	: POINTER TO FB_LogBuffer;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[pWriteBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+pBuffer := pWriteBuffer^.BufferPtr;
+nBufferCount := 0;
+nBufferRemaining := pWriteBuffer^.BufferFree;
+
+bError := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteByte" Id="{0f2a32d5-7ca1-4461-b5b3-ecdba5089cf7}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteByte 
+VAR_INPUT
+	nValue		: BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteDInt" Id="{c63bcde7-178a-4194-a393-a2f27be4ab2f}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteDInt
+VAR_INPUT
+	nValue		: DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteInt" Id="{a2eba8aa-0721-4c7f-b560-c2f82e32f7e6}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteInt 
+VAR_INPUT
+	nValue		: INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteLInt" Id="{a9241a29-7b50-42e6-8816-7c3677e86c02}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteLInt
+VAR_INPUT
+	nValue		: LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteString" Id="{72f9a8b3-3c1d-4761-ae72-3d6b25a6f9bc}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteString
+VAR_INPUT
+	pValue		: POINTER TO Tc2_Utilities.T_MaxString;
+END_VAR
+VAR
+	nLen			: INT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF pValue <> 0 THEN
+	nLen := TO_INT(Tc2_Utilities.LEN2(pValue));
+	IF nLen >= 0 AND nLen <= 255 THEN
+		_WriteByte(INT_TO_BYTE(nLen)); 
+		_Copy(pValue, INT_TO_UINT(nLen));
+	ELSE
+		// should not happen because T_MaxString is <= 255 bytes long
+		bError := TRUE;
+		F_InternalLog(
+			E_LogLevel.eError,
+			'FB_LogEntry._WriteString',
+			'String longer than 255 bytes (actual=%d) - missin 0-byte?',
+			Tc2_Utilities.F_INT(nLen),
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);
+	END_IF
+ELSE
+		bError := TRUE;
+		F_InternalLog(
+			E_LogLevel.eError,
+			'FB_LogEntry._WriteString',
+			'String null pointer',
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteUDInt" Id="{00acea58-e60f-44e9-9b47-aa0f37886570}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteUDInt
+VAR_INPUT
+	nValue		: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteUInt" Id="{a5e49c9b-672a-45af-a878-aeae834cb9a4}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteUInt 
+VAR_INPUT
+	nValue		: UINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteULInt" Id="{c2a1b3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteULInt
+VAR_INPUT
+	nValue		: ULINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(ADR(nValue), SIZEOF(nValue));
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteWString" Id="{dc0dfbaf-9456-4b98-98e8-0bfdf2eb4895}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteWString
+VAR_INPUT
+	pValue		: POINTER TO WSTRING(255);
+END_VAR
+VAR
+	nLen			: INT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF pValue <> 0 THEN
+	nLen := Tc2_Standard.WLEN(pValue^);
+	IF nLen >= 0 AND nLen <= 255 THEN
+		_WriteByte(INT_TO_BYTE(nLen)); 
+		_Copy(pValue, INT_TO_UINT(nLen) * 2);
+	ELSE
+		// should not happen because T_MaxString is <= 255 bytes long
+		bError := TRUE;
+		F_InternalLog(
+			E_LogLevel.eError,
+			'FB_LogEntry._WriteWString',
+			'String longer than 255 bytes (actual=%d) - missin 0-byte?',
+			Tc2_Utilities.F_INT(nLen),
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);
+	END_IF
+ELSE
+		bError := TRUE;
+		F_InternalLog(
+			E_LogLevel.eError,
+			'FB_LogEntry._WriteWString',
+			'String null pointer',
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE,
+			Tc2_Utilities.EMPTY_ARG_VALUE
+		);
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddAnyArg" Id="{8d510acf-92fd-4561-af25-430687de9976}">
+      <Declaration><![CDATA[METHOD PUBLIC AddAnyArg : BOOL
+VAR_INPUT
+	nArgNo		: BYTE;
+	stArg		: ANY;
+END_VAR
+VAR
+	nLen		: INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bError THEN
+	RETURN;
+END_IF
+
+IF stArg.pValue = 0 THEN
+	RETURN;
+END_IF
+
+IF bV2 THEN
+	// v2 format: type_id as 1 byte, no marker byte, no index byte
+	CASE stArg.TypeClass OF
+		__SYSTEM.TYPE_CLASS.TYPE_BOOL:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_BOOL));
+			IF Tc2_Utilities.PBYTE_TO_BYTE(stArg.pValue) <> 0 THEN
+				_WriteByte(1);
+			ELSE
+				_WriteByte(0);
+			END_IF
+
+		__SYSTEM.TYPE_CLASS.TYPE_BYTE:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_BYTE));
+			_Copy(stArg.pValue, SIZEOF(BYTE));
+
+		__SYSTEM.TYPE_CLASS.TYPE_WORD:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_WORD));
+			_Copy(stArg.pValue, SIZEOF(WORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DWORD:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_DWORD));
+			_Copy(stArg.pValue, SIZEOF(DWORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LWORD:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_LWORD));
+			_Copy(stArg.pValue, SIZEOF(LWORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_SINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_SINT));
+			_Copy(stArg.pValue, SIZEOF(SINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_INT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_INT));
+			_Copy(stArg.pValue, SIZEOF(INT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_DINT));
+			_Copy(stArg.pValue, SIZEOF(DINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_LARGE));
+			_Copy(stArg.pValue, SIZEOF(LINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_USINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_USINT));
+			_Copy(stArg.pValue, SIZEOF(USINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_UINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_UINT));
+			_Copy(stArg.pValue, SIZEOF(UINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_UDINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_UDINT));
+			_Copy(stArg.pValue, SIZEOF(UDINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_ULINT:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_ULARGE));
+			_Copy(stArg.pValue, SIZEOF(ULINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_REAL:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_REAL));
+			_Copy(stArg.pValue, SIZEOF(REAL));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LREAL:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_LREAL));
+			_Copy(stArg.pValue, SIZEOF(LREAL));
+
+		__SYSTEM.TYPE_CLASS.TYPE_STRING:
+			_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_STRING));
+			_WriteString(stArg.pValue);
+
+		__SYSTEM.TYPE_CLASS.TYPE_WSTRING:
+			_WriteByte(E_TypeIdV2.eType_WSTRING_V2);
+			_WriteWString(stArg.pValue);
+
+		__SYSTEM.TYPE_CLASS.TYPE_TIME:
+			_WriteByte(E_TypeIdV2.eType_TIME_V2);
+			_Copy(stArg.pValue, SIZEOF(TIME));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DATE:
+			_WriteByte(E_TypeIdV2.eType_DATE_V2);
+			_Copy(stArg.pValue, SIZEOF(DATE));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DATEANDTIME:
+			_WriteByte(E_TypeIdV2.eType_DATE_AND_TIME_V2);
+			_Copy(stArg.pValue, SIZEOF(DATE_AND_TIME));
+
+		__SYSTEM.TYPE_CLASS.TYPE_TIMEOFDAY:
+			_WriteByte(E_TypeIdV2.eType_TIME_OF_DAY_V2);
+			_Copy(stArg.pValue, SIZEOF(TIME_OF_DAY));
+
+		__SYSTEM.TYPE_CLASS.TYPE_ENUM:
+			_WriteByte(E_TypeIdV2.eType_ENUM_V2);
+			// Write the integer value of the enumeration
+			CASE stArg.diSize OF
+				1:
+					_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_BYTE));
+					_Copy(stArg.pValue, SIZEOF(BYTE));
+				2:
+					_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_WORD));
+					_Copy(stArg.pValue, SIZEOF(WORD));
+				4:
+					_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_DWORD));
+					_Copy(stArg.pValue, SIZEOF(DWORD));
+				8:
+					_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_LWORD));
+					_Copy(stArg.pValue, SIZEOF(LWORD));
+				ELSE
+					_WriteByte(TO_BYTE(Tc2_Utilities.E_ArgType.ARGTYPE_UNKNOWN));
+			END_CASE
+
+		__SYSTEM.TYPE_CLASS.TYPE_LTIME:
+			_WriteByte(E_TypeIdV2.eType_LTIME_V2);
+			_Copy(stArg.pValue, SIZEOF(LTIME));
+
+		ELSE
+			F_InternalLog(
+				E_LogLevel.eWarn,
+				'FB_LogEntry.AddAnyArg',
+				'Unhandled ANY type=%d',
+				Tc2_Utilities.F_UDINT(stArg.TypeClass),
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE
+			);
+			bError := TRUE;
+	END_CASE
+	nArgCount := nArgCount + 1;
+
+ELSE
+	// v1 format: existing code
+	_WriteByte(1); // Type 1: Argument follows
+	_WriteByte(nArgno);
+
+	CASE stArg.TypeClass OF
+		__SYSTEM.TYPE_CLASS.TYPE_BOOL:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_BOOL);
+			IF Tc2_Utilities.PBYTE_TO_BYTE(stArg.pValue) <> 0 THEN
+				_WriteByte(1);
+			ELSE
+				_WriteByte(0);
+			END_IF
+
+		__SYSTEM.TYPE_CLASS.TYPE_BYTE:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_BYTE);
+			_Copy(stArg.pValue, SIZEOF(BYTE));
+
+		__SYSTEM.TYPE_CLASS.TYPE_WORD:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_WORD);
+			_Copy(stArg.pValue, SIZEOF(WORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DWORD:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_DWORD);
+			_Copy(stArg.pValue, SIZEOF(DWORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LWORD:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_LWORD);
+			_Copy(stArg.pValue, SIZEOF(LWORD));
+
+		__SYSTEM.TYPE_CLASS.TYPE_SINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_SINT);
+			_Copy(stArg.pValue, SIZEOF(SINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_INT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_INT);
+			_Copy(stArg.pValue, SIZEOF(INT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_DINT);
+			_Copy(stArg.pValue, SIZEOF(DINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_LARGE);
+			_Copy(stArg.pValue, SIZEOF(LINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_USINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_USINT);
+			_Copy(stArg.pValue, SIZEOF(USINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_UINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_UINT);
+			_Copy(stArg.pValue, SIZEOF(UINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_UDINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_UDINT);
+			_Copy(stArg.pValue, SIZEOF(UDINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_ULINT:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_ULARGE);
+			_Copy(stArg.pValue, SIZEOF(ULINT));
+
+		__SYSTEM.TYPE_CLASS.TYPE_REAL:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_REAL);
+			_Copy(stArg.pValue, SIZEOF(REAL));
+
+		__SYSTEM.TYPE_CLASS.TYPE_LREAL:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_LREAL);
+			_Copy(stArg.pValue, SIZEOF(LREAL));
+
+		__SYSTEM.TYPE_CLASS.TYPE_STRING:
+			_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_STRING);
+			_WriteString(stArg.pValue);
+
+		__SYSTEM.TYPE_CLASS.TYPE_WSTRING:
+			_WriteInt(E_CustomTypes.eType_WSTRING);
+			_WriteWString(stArg.pValue);
+
+		__SYSTEM.TYPE_CLASS.TYPE_TIME:
+			_WriteInt(E_CustomTypes.eType_TIME);
+			_Copy(stArg.pValue, SIZEOF(TIME));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DATE:
+			_WriteInt(E_CustomTypes.eType_DATE);
+			_Copy(stArg.pValue, SIZEOF(DATE));
+
+		__SYSTEM.TYPE_CLASS.TYPE_DATEANDTIME:
+			_WriteInt(E_CustomTypes.eType_DATE_AND_TIME);
+			_Copy(stArg.pValue, SIZEOF(DATE_AND_TIME));
+
+		__SYSTEM.TYPE_CLASS.TYPE_TIMEOFDAY:
+			_WriteInt(E_CustomTypes.eType_TIME_OF_DAY);
+			_Copy(stArg.pValue, SIZEOF(TIME_OF_DAY));
+
+		__SYSTEM.TYPE_CLASS.TYPE_ENUM:
+			_WriteInt(E_CustomTypes.eType_ENUM);
+			// First write the integer value of the enumeration, expected 1 to 8 bytes
+			CASE stArg.diSize OF
+				1:
+					_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_BYTE);
+					_Copy(stArg.pValue, SIZEOF(BYTE));
+				2:
+					_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_WORD);
+					_Copy(stArg.pValue, SIZEOF(WORD));
+				4:
+					_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_DWORD);
+					_Copy(stArg.pValue, SIZEOF(DWORD));
+				5:
+					_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_LWORD);
+					_Copy(stArg.pValue, SIZEOF(LWORD));
+				ELSE
+					_WriteInt(Tc2_Utilities.E_ArgType.ARGTYPE_UNKNOWN);
+			END_CASE
+
+		__SYSTEM.TYPE_CLASS.TYPE_LTIME:
+			_WriteInt(E_CustomTypes.eType_LTIME);
+			_Copy(stArg.pValue, SIZEOF(LTIME));
+
+		ELSE
+			F_InternalLog(
+				E_LogLevel.eWarn,
+				'FB_LogEntry.AddAnyArg',
+				'Unhandled ANY type=%d',
+				Tc2_Utilities.F_UDINT(stArg.TypeClass),
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE,
+				Tc2_Utilities.EMPTY_ARG_VALUE
+			);
+			// TODO maybe rollback and ignore argument or use replacement value (null)
+			bError := TRUE;
+	END_CASE
+
+END_IF
+
+AddAnyArg := NOT bError;
+
+
+
+
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddBuffer" Id="{31c2876b-d726-4f69-9895-f6a6abe66cef}">
+      <Declaration><![CDATA[METHOD PUBLIC AddBuffer
+VAR_INPUT
+	pBuffer			: PVOID;
+	nBufferLen		: UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Copy(pBuffer, nBufferLen);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddContext" Id="{a72c87a4-55c3-45a0-9300-6595ac48ec35}">
+      <Declaration><![CDATA[METHOD PUBLIC AddContext
+VAR_INPUT
+	eScope			: E_Scope;
+	pBuffer			: PVOID;
+	nBufferLen		: UDINT;
+END_VAR
+
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bV2 THEN
+	// v2 format: scope + prop_count + buffer (prop_count already included in nBufferLen)
+	_WriteByte(eScope);
+	_Copy(pBuffer, nBufferLen);
+	nContextCount := nContextCount + 1;
+ELSE
+	// v1 format: existing code
+	_WriteByte(2); // Type 2: Context follows
+	_WriteByte(eScope);
+	_Copy(pBuffer, nBufferLen);
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddTArg" Id="{304f53b9-cac0-4330-9fa1-d6d2839918cb}">
+      <Declaration><![CDATA[METHOD PUBLIC AddTArg
+VAR_INPUT
+	nArgNo		: BYTE;
+	stArg		: Tc2_Utilities.T_Arg;
+END_VAR
+
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bError THEN
+	RETURN;
+END_IF
+
+IF stArg.eType = E_ArgType.ARGTYPE_UNKNOWN OR stArg.pData = 0 THEN
+	RETURN;
+END_IF
+
+_WriteByte(1); // Type 1: Argument follows
+_WriteByte(nArgNo);
+_WriteInt(stArg.eType);
+
+_Copy(ADR(stArg.eType), SIZEOF(stArg.eType));
+CASE stArg.eType OF
+	Tc2_Utilities.E_ArgType.ARGTYPE_BYTE:
+		_Copy(stArg.pData, SIZEOF(BYTE));
+	Tc2_Utilities.E_ArgType.ARGTYPE_WORD:
+		_Copy(stArg.pData, SIZEOF(WORD));
+	Tc2_Utilities.E_ArgType.ARGTYPE_DWORD:
+		_Copy(stArg.pData, SIZEOF(DWORD));
+	Tc2_Utilities.E_ArgType.ARGTYPE_REAL:
+		_Copy(stArg.pData, SIZEOF(REAL));
+	Tc2_Utilities.E_ArgType.ARGTYPE_LREAL:
+		_Copy(stArg.pData, SIZEOF(LREAL));
+	Tc2_Utilities.E_ArgType.ARGTYPE_SINT:
+		_Copy(stArg.pData, SIZEOF(SINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_INT:
+		_Copy(stArg.pData, SIZEOF(INT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_DINT:
+		_Copy(stArg.pData, SIZEOF(DINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_USINT:
+		_Copy(stArg.pData, SIZEOF(USINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_UINT:
+		_Copy(stArg.pData, SIZEOF(UINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_UDINT:
+		_Copy(stArg.pData, SIZEOF(UDINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_STRING:
+		_WriteString(stArg.pData);
+	Tc2_Utilities.E_ArgType.ARGTYPE_BOOL:
+		_WriteByte(SEL(Tc2_Utilities.PBOOL_TO_BOOL(stArg.pData), 0, 1));
+	Tc2_Utilities.E_ArgType.ARGTYPE_ULARGE:
+		_Copy(stArg.pData, SIZEOF(ULINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_LARGE:
+		_Copy(stArg.pData, SIZEOF(LINT));
+	Tc2_Utilities.E_ArgType.ARGTYPE_LWORD:
+		_Copy(stArg.pData, SIZEOF(LWORD));
+END_CASE
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="End" Id="{4019125f-ca1b-4897-a5d1-68f974a63a5a}">
+      <Declaration><![CDATA[METHOD PUBLIC End : BOOL
+VAR
+	pWriteBuffer	: POINTER TO FB_LogBuffer;
+	nBufferFree		: UINT;
+	nActTaskIndex	: DINT;
+	nEntryLength	: UINT;
+	pEntryLenPtr	: POINTER TO UINT;
+	pArgCountPtr	: POINTER TO BYTE;
+	pCtxCountPtr	: POINTER TO BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bError THEN
+	RETURN;
+END_IF
+
+nActTaskIndex := GETCURTASKINDEXEX();
+
+// end buffer write access
+pWriteBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+
+IF pWriteBuffer^.BufferPtr <> pBuffer THEN
+	// sanity check
+	F_InternalLog(
+		E_LogLevel.eError,
+		'FB_LogEntry.End',
+		'Expected buffer to be the same.',
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);
+
+	bError := TRUE;
+
+ELSIF pWriteBuffer^.BufferFree < nBufferCount THEN
+	nBufferFree := TO_UINT(pWriteBuffer^.BufferFree);
+	F_InternalLog(
+		E_LogLevel.eError,
+		'FB_LogEntry.End',
+		'Buffer capacity does not match buffer count. BufferFree=%d BufferCount=%d',
+		Tc2_Utilities.F_UINT(nBufferFree),
+		Tc2_Utilities.F_UDINT(nBufferCount),
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);
+
+	bError := TRUE;
+
+ELSE
+	IF bV2 THEN
+		// v2: Backfill entry_length, arg_count, context_count
+		// entry_length = total bytes from after the entry_length field
+		nEntryLength := TO_UINT(nBufferCount - nEntryStart - 3);  // -3 for type(1) + length(2)
+
+		// Backfill entry_length at offset
+		pEntryLenPtr := pBuffer + nEntryLenOffset;
+		pEntryLenPtr^ := nEntryLength;
+
+		// Backfill arg_count at offset
+		pArgCountPtr := pBuffer + nArgCountOffset;
+		pArgCountPtr^ := nArgCount;
+
+		// Backfill context_count at offset
+		pCtxCountPtr := pBuffer + nCtxCountOffset;
+		pCtxCountPtr^ := nContextCount;
+
+		// No terminator for v2
+		pWriteBuffer^.DataAdded(nBufferCount);
+
+		// Reset v2 flag for next use
+		bV2 := FALSE;
+	ELSE
+		// v1: Write terminator byte
+		_WriteByte(255);
+		pWriteBuffer^.DataAdded(nBufferCount);
+	END_IF
+END_IF
+
+// Statistic
+IF bError THEN
+	IncUDINT(Log4TcInfo.aTaskInfo[nActTaskIndex].nAddLogToBufferErrorCount);
+ELSE
+	IncUDINT(Log4TcInfo.aTaskInfo[nActTaskIndex].nAddLogToBuffer);
+END_IF
+
+IF Log4TcInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize < pWriteBuffer^.BufferUsed THEN
+	Log4TcInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize := pWriteBuffer^.BufferUsed;
+END_IF
+
+End := NOT bError;
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Reset" Id="{01f894cb-34c4-40ff-b449-a5f4460cccfd}">
+      <Declaration><![CDATA[METHOD Reset
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_Reset();]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetArgCount" Id="{f1a2b3c4-d5e6-7f80-9a1b-2c3d4e5f6a7b}">
+      <Declaration><![CDATA[METHOD PUBLIC SetArgCount
+VAR_INPUT
+	nCount		: BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nArgCount := nCount;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Start" Id="{e5a72334-4567-4486-8751-71a0aba4e1b2}">
+      <Declaration><![CDATA[METHOD PUBLIC Start : BOOL
+VAR_INPUT
+	pLogger		: POINTER TO T_MaxString;
+	pMessage		: POINTER TO T_MaxString;
+	eLogLevel		: E_LogLevel;
+	nTimeStampPlc	: LINT;
+	nTimeStampClock	: LINT;
+END_VAR
+VAR
+	fbSysTime		: Tc2_System.GETSYSTEMTIME;
+	nTaskIndex		: DINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// Timestamp PLC
+IF nTimestampPlc = 0 THEN
+	fbSysTime();
+	nTimeStampPlc := ULINT_TO_LINT(SHL(UDINT_TO_ULINT(fbSysTime.timeHiDW), 32) OR fbSysTime.timeLoDW);
+END_IF
+
+// Timestamp RTC
+IF nTimestampClock = 0 THEN
+	nTimestampClock := PRG_TaskLog.RtcTime;
+END_IF
+
+// Log-Entry Version
+_WriteByte(1);
+
+// Message
+_WriteString(pMessage);
+
+// Logger
+_WriteString(pLogger);
+
+// Level
+_WriteUInt(eLogLevel);
+
+// Timestamp PLC
+_WriteLInt(nTimeStampPlc);
+
+// Timestamp Clock
+_WriteLInt(nTimeStampClock);
+
+// Task Infos 
+nTaskIndex := Tc2_System.GETCURTASKINDEXEX();
+_WriteDInt(nTaskIndex);
+_WriteString(ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].TaskName));
+_WriteUDInt(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].CycleCount);
+
+// App Infos
+_WriteString(ADR(TwinCAT_SystemInfoVarList._AppInfo.AppName));
+_WriteString(ADR(TwinCAT_SystemInfoVarList._AppInfo.ProjectName));
+_WriteUDInt(TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt);
+
+Start := NOT bError;
+
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="StartV2" Id="{f6e7d8c9-a0b1-4c2d-3e4f-5a6b7c8d9e0f}">
+      <Declaration><![CDATA[METHOD PUBLIC StartV2 : BOOL
+VAR_INPUT
+	pLogger		: POINTER TO T_MaxString;
+	pMessage		: POINTER TO T_MaxString;
+	eLogLevel		: E_LogLevel;
+	nTimeStampPlc	: LINT;
+	nTimeStampClock	: LINT;
+END_VAR
+VAR
+	fbSysTime		: Tc2_System.GETSYSTEMTIME;
+	nTaskIndex		: DINT;
+	stHeader		: ST_LogEntryHeaderV2;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// Timestamp PLC
+IF nTimestampPlc = 0 THEN
+	fbSysTime();
+	nTimeStampPlc := ULINT_TO_LINT(SHL(UDINT_TO_ULINT(fbSysTime.timeHiDW), 32) OR fbSysTime.timeLoDW);
+END_IF
+
+// Timestamp RTC
+IF nTimestampClock = 0 THEN
+	nTimestampClock := PRG_TaskLog.RtcTime;
+END_IF
+
+// Save entry start position for backfill calculations
+nEntryStart := nBufferCount;
+
+// Build fixed header struct (27 bytes total)
+stHeader.nType := 2;						// 0x02 = v2 Log Entry
+stHeader.nEntryLength := 0;					// Placeholder, backfilled in End()
+stHeader.nLevel := TO_BYTE(eLogLevel);
+stHeader.nTsPlc := nTimeStampPlc;			// 8 bytes
+stHeader.nTsClock := nTimeStampClock;		// 8 bytes
+nTaskIndex := GETCURTASKINDEXEX();
+stHeader.nTaskIndex := TO_BYTE(nTaskIndex);
+stHeader.nCycleCount := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].CycleCount;
+stHeader.nArgCount := 0;					// Placeholder, backfilled in End()
+stHeader.nContextCount := 0;				// Placeholder, backfilled in End()
+
+// Save offsets for backfill
+nEntryLenOffset := nBufferCount + 1;		// +1 byte for type
+nArgCountOffset := nBufferCount + 25;		// type(1) + length(2) + level(1) + ts_plc(8) + ts_clock(8) + task_index(1) + cycle(4) = 25
+nCtxCountOffset := nBufferCount + 26;		// nArgCount(1) after offset 25 = 26
+
+// Write fixed header as single MEMCPY (27 bytes)
+_Copy(ADR(stHeader), SIZEOF(stHeader));
+
+// Write message string
+_WriteString(pMessage);
+
+// Write logger string (len=0 if null for default logger)
+IF pLogger <> 0 THEN
+	_WriteString(pLogger);
+ELSE
+	_WriteByte(0);	// len=0 for default logger
+END_IF
+
+// Initialize counters
+nArgCount := 0;
+nContextCount := 0;
+bV2 := TRUE;
+
+StartV2 := NOT bError;
+
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

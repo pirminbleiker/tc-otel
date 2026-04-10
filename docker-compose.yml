@@ -1,0 +1,14 @@
+services:
+  tc-otel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/pirminbleiker/tc-otel:latest
+    container_name: tc-otel
+    ports:
+      - "48898:48898/tcp"   # AMS/TCP (ADS from PLC)
+    environment:
+      - RUST_LOG=tc_otel_service=info,tc_otel_ads=info
+    volumes:
+      - ./config.example.json:/etc/tc-otel/config.json:ro
+    restart: unless-stopped
