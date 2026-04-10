@@ -11,6 +11,7 @@ pub mod ams;
 pub mod ams_server;
 pub mod connection_manager;
 pub mod error;
+pub mod health_metrics;
 pub mod listener;
 pub mod parser;
 pub mod protocol;
@@ -29,6 +30,7 @@ pub use connection_manager::{
     ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection,
 };
 pub use error::{AdsError, Result};
+pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;
 pub use parser::AdsParser;
 pub use protocol::{
