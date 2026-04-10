@@ -86,15 +86,24 @@ jobs:
       - name: Start tc-otel service
         run: |
           RUST_LOG=tc_otel_service=debug,tc_otel_ads=debug \
-            ./target/release/tc-otel --config /tmp/tc-otel-test.json &
+            ./target/release/tc-otel --config /tmp/tc-otel-test.json \
+            > /tmp/tc-otel-stdout.log 2> /tmp/tc-otel-stderr.log &
           echo $! > /tmp/tc-otel.pid
-          sleep 2
-          echo "tc-otel service started"
+          sleep 3
+          echo "tc-otel service started (pid $(cat /tmp/tc-otel.pid))"
+          echo "--- stderr ---"
+          cat /tmp/tc-otel-stderr.log || true
+          echo "--- stdout ---"
+          cat /tmp/tc-otel-stdout.log || true
 
       - name: Verify service is listening
         run: |
-          # Check AMS/TCP port is open
-          timeout 5 bash -c 'until nc -z 127.0.0.1 14898; do sleep 0.5; done'
+          if ! kill -0 $(cat /tmp/tc-otel.pid) 2>/dev/null; then
+            echo "Service died! Logs:"
+            cat /tmp/tc-otel-stderr.log || true
+            exit 1
+          fi
+          timeout 10 bash -c 'until nc -z 127.0.0.1 14898; do sleep 0.5; done'
           echo "AMS/TCP port 14898 is listening"
 
       - name: Send mock ADS log entries
