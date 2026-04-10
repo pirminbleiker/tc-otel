@@ -618,9 +618,9 @@ mod tests {
     #[test]
     fn test_any_value_double() {
         let av = AnyValue {
-            value: Some(any_value::Value::DoubleValue(2.71)),
+            value: Some(any_value::Value::DoubleValue(42.5)),
         };
-        assert_eq!(any_value_to_json(&av), serde_json::json!(2.71));
+        assert_eq!(any_value_to_json(&av), serde_json::json!(42.5));
     }
 
     #[test]

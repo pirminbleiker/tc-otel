@@ -72,17 +72,14 @@ fn test_security_message_size_1mb_limit() {
     let at_limit = build_oversized_buffer(1_048_576);
     let result = AdsParser::parse(&at_limit);
     // Should not be a "Message size exceeds maximum" error
-    match &result {
-        Err(e) => {
-            let msg = format!("{}", e);
-            assert!(
-                !msg.contains("Message size") || !msg.contains("exceeds maximum"),
-                "1 MB message should pass the size check, got: {}",
-                msg
-            );
-        }
-        Ok(_) => {} // acceptable
-    }
+    if let Err(e) = &result {
+        let msg = format!("{}", e);
+        assert!(
+            !msg.contains("Message size") || !msg.contains("exceeds maximum"),
+            "1 MB message should pass the size check, got: {}",
+            msg
+        );
+    } // Ok(_) is acceptable
 
     // A buffer at 1 MB + 1 should be rejected with a size error
     let over_limit = build_oversized_buffer(1_048_576 + 1);
