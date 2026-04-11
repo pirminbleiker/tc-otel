@@ -10,6 +10,7 @@ description = "Integration and end-to-end tests for tc-otel TwinCAT observabilit
 tc-otel-core.workspace = true
 tc-otel-ads.workspace = true
 tc-otel-export.workspace = true
+tc-otel-service = { path = "../tc-otel-service" }
 
 tokio = { workspace = true, features = ["full"] }
 serde.workspace = true

@@ -74,10 +74,7 @@ impl MetricMapper {
 
         for (i, def) in defs.iter().enumerate() {
             if def.symbol.is_empty() {
-                errors.push(format!(
-                    "custom_metrics[{}]: symbol must not be empty",
-                    i
-                ));
+                errors.push(format!("custom_metrics[{}]: symbol must not be empty", i));
             }
             if def.metric_name.is_empty() {
                 errors.push(format!(

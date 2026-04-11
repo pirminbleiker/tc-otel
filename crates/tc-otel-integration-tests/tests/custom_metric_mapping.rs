@@ -158,9 +158,10 @@ fn test_mapper_applies_matching_symbol() {
     let mapper = MetricMapper::from_config(&config);
 
     let mut entry = MetricEntry::gauge("raw.metric".to_string(), 72.5);
-    entry
-        .attributes
-        .insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+    entry.attributes.insert(
+        "plc.symbol".to_string(),
+        serde_json::json!("GVL.motor.temp"),
+    );
 
     let applied = mapper.apply(&mut entry);
     assert!(applied);
@@ -273,10 +274,9 @@ fn test_mapper_preserves_existing_attributes() {
     entry
         .attributes
         .insert("plc.symbol".to_string(), serde_json::json!("GVL.axis1.pos"));
-    entry.attributes.insert(
-        "plc.data_type".to_string(),
-        serde_json::json!("LREAL"),
-    );
+    entry
+        .attributes
+        .insert("plc.data_type".to_string(), serde_json::json!("LREAL"));
     entry.task_name = "MotionTask".to_string();
     entry.hostname = "plc-01".to_string();
 
@@ -332,8 +332,10 @@ fn test_mapper_with_multiple_definitions() {
 
     // First symbol
     let mut e1 = MetricEntry::gauge("raw1".to_string(), 72.5);
-    e1.attributes
-        .insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+    e1.attributes.insert(
+        "plc.symbol".to_string(),
+        serde_json::json!("GVL.motor.temp"),
+    );
     assert!(mapper.apply(&mut e1));
     assert_eq!(e1.name, "plc.motor.temperature");
 
@@ -462,9 +464,10 @@ fn test_end_to_end_custom_metric_to_otlp() {
 
     // Step 2: Create a raw metric entry (as if from ADS)
     let mut entry = MetricEntry::gauge("raw.value".to_string(), 72.5);
-    entry
-        .attributes
-        .insert("plc.symbol".to_string(), serde_json::json!("GVL.motor.temp"));
+    entry.attributes.insert(
+        "plc.symbol".to_string(),
+        serde_json::json!("GVL.motor.temp"),
+    );
     entry.project_name = "ProductionLine".to_string();
     entry.app_name = "HydraulicPress".to_string();
     entry.hostname = "plc-01".to_string();

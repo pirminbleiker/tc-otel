@@ -2157,6 +2157,7 @@ dependencies = [
  "tc-otel-ads",
  "tc-otel-core",
  "tc-otel-export",
+ "tc-otel-service",
  "tempfile",
  "tokio",
  "tokio-util",
