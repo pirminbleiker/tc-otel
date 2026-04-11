@@ -12,6 +12,7 @@ mod config_watcher;
 pub mod cycle_time;
 mod dispatcher;
 mod service;
+pub mod system_metrics;
 pub mod web;
 
 use service::Log4TcService;

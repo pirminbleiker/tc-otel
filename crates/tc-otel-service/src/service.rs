@@ -13,6 +13,7 @@ use tokio::time::timeout;
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
+use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebState};
 
 /// Main Log4TC Service
@@ -215,6 +216,40 @@ impl Log4TcService {
             None
         };
 
+        // Start periodic PLC system metrics collector (if metrics export enabled)
+        let system_metrics_handle = if metrics_export_enabled {
+            if let Some(ref m_tx) = metric_tx {
+                let collector = PlcSystemMetricsCollector::new(
+                    cycle_tracker.clone(),
+                    self.settings.service.name.clone(),
+                );
+                let m_tx = m_tx.clone();
+                let mut shutdown_rx_sys = shutdown_tx.subscribe();
+                let collection_interval =
+                    Duration::from_millis(self.settings.metrics.export_flush_interval_ms);
+                Some(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(collection_interval);
+                    loop {
+                        tokio::select! {
+                            _ = interval.tick() => {
+                                for entry in collector.collect() {
+                                    let _ = m_tx.send(entry).await;
+                                }
+                            }
+                            _ = shutdown_rx_sys.recv() => {
+                                tracing::info!("System metrics collector stopped");
+                                break;
+                            }
+                        }
+                    }
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Start web UI server if enabled
         let web_handle = if self.settings.web.enabled {
             let web_state = WebState {
@@ -252,6 +287,9 @@ impl Log4TcService {
         let _ = timeout(shutdown_timeout, async {
             let _ = tokio::join!(ams_handle, dispatcher_handle);
             if let Some(handle) = metric_dispatcher_handle {
+                let _ = handle.await;
+            }
+            if let Some(handle) = system_metrics_handle {
                 let _ = handle.await;
             }
             if let Some(handle) = config_watcher_handle {
