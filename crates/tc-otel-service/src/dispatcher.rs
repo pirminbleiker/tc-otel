@@ -1,12 +1,13 @@
-//! Log dispatcher with batched async export to Victoria-Logs
+//! Log and metric dispatchers with batched async export
 //!
-//! Logs are collected in a batch buffer and flushed either when the batch
+//! Records are collected in a batch buffer and flushed either when the batch
 //! is full or after a timeout - whichever comes first. This minimizes
 //! HTTP overhead and CPU usage.
 
 use anyhow::Result;
 use std::time::Duration;
-use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter};
+use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter, MetricEntry, MetricRecord};
+use tc_otel_export::OtelExporter;
 use tokio::sync::{mpsc, watch};
 
 /// Log dispatcher - converts LogEntries and sends them to a batched export worker
@@ -240,6 +241,177 @@ impl LogDispatcher {
     }
 }
 
+/// Metric dispatcher - converts MetricEntries, batches, and exports via OTLP HTTP
+#[derive(Clone)]
+pub struct MetricDispatcher {
+    export_tx: mpsc::Sender<MetricRecord>,
+}
+
+impl MetricDispatcher {
+    pub async fn new(
+        settings: &AppSettings,
+        config_rx: Option<watch::Receiver<AppSettings>>,
+    ) -> Result<Self> {
+        let endpoint = Self::resolve_endpoint(settings);
+        let batch_size = settings.metrics.export_batch_size;
+        let flush_interval = Duration::from_millis(settings.metrics.export_flush_interval_ms);
+
+        let (export_tx, export_rx) =
+            mpsc::channel::<MetricRecord>(settings.service.channel_capacity);
+
+        tokio::spawn(Self::batch_worker(
+            export_rx,
+            endpoint,
+            batch_size,
+            flush_interval,
+            settings.export.max_retries,
+            settings.export.timeout_secs,
+            config_rx,
+        ));
+
+        tracing::info!(
+            "MetricDispatcher ready (batch={}, flush={}ms)",
+            batch_size,
+            flush_interval.as_millis()
+        );
+
+        Ok(Self { export_tx })
+    }
+
+    /// Resolve the metrics export endpoint from config.
+    /// Uses metrics.export_endpoint if set, otherwise derives from the main
+    /// export endpoint by replacing /v1/logs with /v1/metrics.
+    fn resolve_endpoint(settings: &AppSettings) -> String {
+        if let Some(ref ep) = settings.metrics.export_endpoint {
+            return ep.clone();
+        }
+        // Derive from the main export endpoint
+        settings
+            .export
+            .endpoint
+            .replace("/v1/logs", "/v1/metrics")
+            .replace("/insert/jsonline", "/v1/metrics")
+    }
+
+    /// Dispatch a metric entry - converts to MetricRecord and sends to export worker
+    pub async fn dispatch(&self, entry: MetricEntry) -> Result<()> {
+        let record = MetricRecord::from_metric_entry(entry);
+
+        if self.export_tx.try_send(record).is_err() {
+            tracing::warn!("Metric export channel full, dropping metric");
+        }
+
+        Ok(())
+    }
+
+    /// Background worker that batches metric records and flushes to the OTLP endpoint.
+    async fn batch_worker(
+        mut rx: mpsc::Receiver<MetricRecord>,
+        initial_endpoint: String,
+        initial_batch_size: usize,
+        initial_flush_interval: Duration,
+        max_retries: usize,
+        timeout_secs: u64,
+        config_rx: Option<watch::Receiver<AppSettings>>,
+    ) {
+        let exporter = OtelExporter::new(initial_endpoint.clone(), initial_batch_size, max_retries);
+        // Keep exporter config in sync — for now we rebuild on endpoint change
+        let mut current_endpoint = initial_endpoint;
+        let mut batch_size = initial_batch_size;
+        let mut flush_interval = initial_flush_interval;
+        let mut config_rx = config_rx;
+        let mut current_max_retries = max_retries;
+        let mut current_timeout_secs = timeout_secs;
+        let mut exporter = exporter;
+
+        let mut batch: Vec<MetricRecord> = Vec::with_capacity(batch_size);
+        let mut interval = tokio::time::interval(flush_interval);
+        let mut total_sent: u64 = 0;
+        let mut total_errors: u64 = 0;
+
+        loop {
+            tokio::select! {
+                Some(record) = rx.recv() => {
+                    batch.push(record);
+                    if batch.len() >= batch_size {
+                        match exporter.export_metrics_batch(std::mem::take(&mut batch)).await {
+                            Ok(()) => total_sent += batch_size as u64,
+                            Err(e) => {
+                                total_errors += 1;
+                                tracing::error!("Metric batch export error: {}", e);
+                            }
+                        }
+                    }
+                }
+                _ = interval.tick() => {
+                    if !batch.is_empty() {
+                        let count = batch.len();
+                        match exporter.export_metrics_batch(std::mem::take(&mut batch)).await {
+                            Ok(()) => total_sent += count as u64,
+                            Err(e) => {
+                                total_errors += 1;
+                                tracing::error!("Metric batch export error: {}", e);
+                            }
+                        }
+                    }
+                }
+                result = async {
+                    match config_rx.as_mut() {
+                        Some(crx) => crx.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if result.is_err() {
+                        config_rx = None;
+                        continue;
+                    }
+                    let new_settings = config_rx.as_ref().unwrap().borrow().clone();
+                    let new_endpoint = Self::resolve_endpoint_from(&new_settings);
+                    let new_batch_size = new_settings.metrics.export_batch_size;
+                    let new_flush_interval = Duration::from_millis(new_settings.metrics.export_flush_interval_ms);
+
+                    if new_endpoint != current_endpoint || new_settings.export.max_retries != current_max_retries || new_settings.export.timeout_secs != current_timeout_secs {
+                        tracing::info!("Hot-reload: metrics export endpoint changed to {}", new_endpoint);
+                        current_endpoint = new_endpoint.clone();
+                        current_max_retries = new_settings.export.max_retries;
+                        current_timeout_secs = new_settings.export.timeout_secs;
+                        exporter = OtelExporter::new(current_endpoint.clone(), new_batch_size, current_max_retries);
+                    }
+                    if new_batch_size != batch_size {
+                        tracing::info!("Hot-reload: metrics batch_size changed from {} to {}", batch_size, new_batch_size);
+                        batch_size = new_batch_size;
+                        batch.reserve(new_batch_size.saturating_sub(batch.capacity()));
+                    }
+                    if new_flush_interval != flush_interval {
+                        tracing::info!("Hot-reload: metrics flush_interval changed to {}ms", new_flush_interval.as_millis());
+                        flush_interval = new_flush_interval;
+                        interval = tokio::time::interval(flush_interval);
+                    }
+                }
+                else => {
+                    if !batch.is_empty() {
+                        let _ = exporter.export_metrics_batch(std::mem::take(&mut batch)).await;
+                    }
+                    tracing::info!("Metric export worker stopped. Total sent: {}, errors: {}", total_sent, total_errors);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Resolve endpoint from settings (used inside batch_worker for hot-reload)
+    fn resolve_endpoint_from(settings: &AppSettings) -> String {
+        if let Some(ref ep) = settings.metrics.export_endpoint {
+            return ep.clone();
+        }
+        settings
+            .export
+            .endpoint
+            .replace("/v1/logs", "/v1/metrics")
+            .replace("/insert/jsonline", "/v1/metrics")
+    }
+}
+
 /// Write a JSON key:value pair directly to buffer
 #[inline]
 fn push_json_key_value(buf: &mut String, key: &str, value: &serde_json::Value) {
@@ -464,6 +636,158 @@ mod tests {
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         dispatcher.dispatch(make_test_entry()).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "should still flush after watch channel closes"
+        );
+    }
+
+    // ─── MetricDispatcher tests ──────────────────────────────────────
+
+    fn test_settings_with_metrics(endpoint: &str) -> AppSettings {
+        let mut settings = test_settings_with_endpoint(endpoint);
+        settings.metrics.export_enabled = true;
+        settings.metrics.export_endpoint = Some(endpoint.to_string());
+        settings.metrics.export_batch_size = 2;
+        settings.metrics.export_flush_interval_ms = 50;
+        settings
+    }
+
+    fn make_test_metric_entry() -> MetricEntry {
+        MetricEntry::gauge("test.metric".to_string(), 42.0)
+    }
+
+    /// Start a test HTTP server that accepts POST to /v1/metrics and counts requests.
+    async fn start_metrics_test_server() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        use axum::{routing::post, Router};
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c = counter.clone();
+
+        let app = Router::new().route(
+            "/v1/metrics",
+            post(move || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    ""
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        (addr, counter)
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_batches_and_flushes() {
+        let (addr, counter) = start_metrics_test_server().await;
+        let settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        let dispatcher = MetricDispatcher::new(&settings, None).await.unwrap();
+
+        // Send enough entries to trigger batch flush (batch_size=2)
+        dispatcher.dispatch(make_test_metric_entry()).await.unwrap();
+        dispatcher.dispatch(make_test_metric_entry()).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "should have flushed metrics at least once"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_timer_flush() {
+        let (addr, counter) = start_metrics_test_server().await;
+        let settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        let dispatcher = MetricDispatcher::new(&settings, None).await.unwrap();
+
+        // Send 1 metric (below batch_size=2) — should still flush via timer
+        dispatcher.dispatch(make_test_metric_entry()).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "timer should flush even below batch size"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_endpoint_derivation() {
+        // When no explicit metrics endpoint, derive from logs endpoint
+        let mut settings = test_settings_with_endpoint("http://collector:4318/v1/logs");
+        settings.metrics.export_enabled = true;
+        settings.metrics.export_endpoint = None;
+        settings.metrics.export_batch_size = 100;
+        settings.metrics.export_flush_interval_ms = 50;
+
+        // Verify endpoint derivation logic
+        let resolved = MetricDispatcher::resolve_endpoint(&settings);
+        assert_eq!(resolved, "http://collector:4318/v1/metrics");
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_endpoint_derivation_victoria() {
+        // Victoria-logs style endpoint should also be derived
+        let mut settings = test_settings_with_endpoint("http://victoria-logs:9428/insert/jsonline");
+        settings.metrics.export_enabled = true;
+        settings.metrics.export_endpoint = None;
+
+        let resolved = MetricDispatcher::resolve_endpoint(&settings);
+        assert_eq!(resolved, "http://victoria-logs:9428/v1/metrics");
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_explicit_endpoint() {
+        let mut settings = test_settings_with_endpoint("http://collector:4318/v1/logs");
+        settings.metrics.export_enabled = true;
+        settings.metrics.export_endpoint =
+            Some("http://prometheus-gateway:9091/v1/metrics".to_string());
+
+        let resolved = MetricDispatcher::resolve_endpoint(&settings);
+        assert_eq!(resolved, "http://prometheus-gateway:9091/v1/metrics");
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_converts_entry_to_record() {
+        let (addr, counter) = start_metrics_test_server().await;
+        let settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        let dispatcher = MetricDispatcher::new(&settings, None).await.unwrap();
+
+        // Dispatch a metric with PLC metadata
+        let mut entry = MetricEntry::gauge("plc.temp".to_string(), 72.5);
+        entry.project_name = "TestProject".to_string();
+        entry.hostname = "plc-01".to_string();
+        entry.unit = "Cel".to_string();
+
+        dispatcher.dispatch(entry).await.unwrap();
+
+        // Trigger timer flush
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "should have exported the metric"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_config_watch_close_safe() {
+        let (addr, counter) = start_metrics_test_server().await;
+        let settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        let (_tx, rx) = watch::channel(settings.clone());
+        let dispatcher = MetricDispatcher::new(&settings, Some(rx)).await.unwrap();
+
+        // Drop the watch sender
+        drop(_tx);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Dispatcher should still work
+        dispatcher.dispatch(make_test_metric_entry()).await.unwrap();
+        dispatcher.dispatch(make_test_metric_entry()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
             counter.load(Ordering::SeqCst) > 0,
             "should still flush after watch channel closes"

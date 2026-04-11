@@ -541,6 +541,19 @@ pub struct MetricsConfig {
     /// Custom metric definitions mapping PLC symbols to OTEL metric names
     #[serde(default)]
     pub custom_metrics: Vec<CustomMetricDef>,
+    /// Enable metrics export to OTLP collector (default: false)
+    #[serde(default)]
+    pub export_enabled: bool,
+    /// OTLP metrics export endpoint (e.g., "http://localhost:4318/v1/metrics")
+    /// If unset, derived from the main export endpoint by replacing /v1/logs with /v1/metrics
+    #[serde(default)]
+    pub export_endpoint: Option<String>,
+    /// Batch size for metrics export (default: 1000)
+    #[serde(default = "default_metrics_batch_size")]
+    pub export_batch_size: usize,
+    /// Flush interval for metrics export in milliseconds (default: 5000)
+    #[serde(default = "default_metrics_flush_interval_ms")]
+    pub export_flush_interval_ms: u64,
 }
 
 fn default_cycle_time_enabled() -> bool {
@@ -549,6 +562,12 @@ fn default_cycle_time_enabled() -> bool {
 fn default_cycle_time_window() -> usize {
     1000
 }
+fn default_metrics_batch_size() -> usize {
+    1000
+}
+fn default_metrics_flush_interval_ms() -> u64 {
+    5000
+}
 
 impl Default for MetricsConfig {
     fn default() -> Self {
@@ -556,6 +575,10 @@ impl Default for MetricsConfig {
             cycle_time_enabled: default_cycle_time_enabled(),
             cycle_time_window: default_cycle_time_window(),
             custom_metrics: Vec::new(),
+            export_enabled: false,
+            export_endpoint: None,
+            export_batch_size: default_metrics_batch_size(),
+            export_flush_interval_ms: default_metrics_flush_interval_ms(),
         }
     }
 }

@@ -546,6 +546,7 @@ fn test_custom_metrics_config_round_trip() {
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
         }],
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&config).unwrap();
