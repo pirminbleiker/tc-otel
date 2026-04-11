@@ -487,7 +487,49 @@ impl Default for WebConfig {
     }
 }
 
-/// Metrics configuration (cycle time tracking, etc.)
+/// Metric kind for configuration (string representation)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricKindConfig {
+    #[default]
+    Gauge,
+    Sum,
+    Histogram,
+}
+
+impl MetricKindConfig {
+    /// Convert to the core MetricKind used in data models
+    pub fn to_metric_kind(self) -> crate::models::MetricKind {
+        match self {
+            MetricKindConfig::Gauge => crate::models::MetricKind::Gauge,
+            MetricKindConfig::Sum => crate::models::MetricKind::Sum,
+            MetricKindConfig::Histogram => crate::models::MetricKind::Histogram,
+        }
+    }
+}
+
+/// Maps a PLC symbol to an OTEL metric definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomMetricDef {
+    /// PLC symbol path (e.g., "GVL.motor.temperature")
+    pub symbol: String,
+    /// OTEL metric name (e.g., "plc.motor.temperature")
+    pub metric_name: String,
+    /// Metric description
+    #[serde(default)]
+    pub description: String,
+    /// Metric unit (e.g., "Cel", "mm/s", "rpm")
+    #[serde(default)]
+    pub unit: String,
+    /// Metric kind: "gauge", "sum", or "histogram"
+    #[serde(default)]
+    pub kind: MetricKindConfig,
+    /// For Sum kind: whether monotonic (counter vs up-down counter)
+    #[serde(default)]
+    pub is_monotonic: bool,
+}
+
+/// Metrics configuration (cycle time tracking, custom metric definitions)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricsConfig {
     /// Enable task cycle time tracking (default: true)
@@ -496,6 +538,9 @@ pub struct MetricsConfig {
     /// Rolling window size for cycle time statistics (default: 1000)
     #[serde(default = "default_cycle_time_window")]
     pub cycle_time_window: usize,
+    /// Custom metric definitions mapping PLC symbols to OTEL metric names
+    #[serde(default)]
+    pub custom_metrics: Vec<CustomMetricDef>,
 }
 
 fn default_cycle_time_enabled() -> bool {
@@ -510,6 +555,7 @@ impl Default for MetricsConfig {
         Self {
             cycle_time_enabled: default_cycle_time_enabled(),
             cycle_time_window: default_cycle_time_window(),
+            custom_metrics: Vec::new(),
         }
     }
 }
