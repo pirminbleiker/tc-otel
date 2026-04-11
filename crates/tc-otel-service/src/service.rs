@@ -6,13 +6,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tc_otel_ads::{AmsNetId, AmsTcpServer, ConnectionConfig};
-use tc_otel_core::AppSettings;
+use tc_otel_core::{AppSettings, MetricEntry};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
-use crate::dispatcher::LogDispatcher;
+use crate::dispatcher::{LogDispatcher, MetricDispatcher};
 use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebState};
 
 /// Main Log4TC Service
@@ -76,8 +76,25 @@ impl Log4TcService {
             (None, None)
         };
 
-        // Create dispatcher with config watch receiver for hot-reload
-        let log_dispatcher = LogDispatcher::new(&self.settings, config_rx).await?;
+        // Create log dispatcher with config watch receiver for hot-reload
+        let log_dispatcher = LogDispatcher::new(&self.settings, config_rx.clone()).await?;
+
+        // Create metric dispatcher and channel (if metrics export is enabled)
+        let metrics_export_enabled = self.settings.metrics.export_enabled;
+        let (metric_tx, metric_rx) = if metrics_export_enabled {
+            let (tx, rx) = mpsc::channel::<MetricEntry>(self.settings.service.channel_capacity);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        let metric_dispatcher = if metrics_export_enabled {
+            let dispatcher = MetricDispatcher::new(&self.settings, config_rx).await?;
+            Some(dispatcher)
+        } else {
+            tracing::info!("Metrics export disabled");
+            None
+        };
 
         // Start AMS/TCP server (receives ADS from PLC via AMS routing)
         let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
@@ -93,13 +110,18 @@ impl Log4TcService {
             shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
         };
 
-        let ams_server = AmsTcpServer::new(
+        let mut ams_server = AmsTcpServer::new(
             self.settings.receiver.host.clone(),
             net_id,
             self.settings.receiver.ads_port,
             log_tx.clone(),
         )
         .with_connection_config(conn_config);
+
+        // Attach metric sender to AMS server if enabled
+        if let Some(ref m_tx) = metric_tx {
+            ams_server = ams_server.with_metric_sender(m_tx.clone());
+        }
 
         // Extract shared state for the web UI before spawning AMS server
         let conn_manager = ams_server.connection_manager().clone();
@@ -164,6 +186,35 @@ impl Log4TcService {
             }
         });
 
+        // Start metric dispatcher loop (if enabled)
+        let metric_dispatcher_handle = if let (Some(mut m_rx), Some(m_dispatcher)) =
+            (metric_rx, metric_dispatcher)
+        {
+            let mut shutdown_rx_metrics = shutdown_tx.subscribe();
+            let stats_for_metrics = diagnostic_stats.clone();
+            Some(tokio::spawn(async move {
+                let mut processed = 0u64;
+                loop {
+                    tokio::select! {
+                        Some(entry) = m_rx.recv() => {
+                            stats_for_metrics.logs_received.fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+                            if let Err(e) = m_dispatcher.dispatch(entry).await {
+                                tracing::error!("Metric dispatch error: {}", e);
+                            } else {
+                                processed += 1;
+                            }
+                        }
+                        _ = shutdown_rx_metrics.recv() => {
+                            tracing::info!("Metric dispatcher stopped. Processed: {}", processed);
+                            break;
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         // Start web UI server if enabled
         let web_handle = if self.settings.web.enabled {
             let web_state = WebState {
@@ -200,6 +251,9 @@ impl Log4TcService {
         let shutdown_timeout = Duration::from_secs(self.settings.service.shutdown_timeout_secs);
         let _ = timeout(shutdown_timeout, async {
             let _ = tokio::join!(ams_handle, dispatcher_handle);
+            if let Some(handle) = metric_dispatcher_handle {
+                let _ = handle.await;
+            }
             if let Some(handle) = config_watcher_handle {
                 let _ = handle.await;
             }
