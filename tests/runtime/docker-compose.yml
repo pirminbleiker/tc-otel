@@ -1,0 +1,103 @@
+name: tc-otel-runtime-tests
+
+# Runtime integration test stack (rt-1 skeleton).
+#
+# Two ads-runtime variants gated by compose profiles:
+#   --profile softbeckhoff  → fbarresi/softbeckhoff (public CI default)
+#   --profile tc-runtime    → user-supplied TwinCAT runtime via $TC_RUNTIME_IMAGE
+#
+# Both variants register as host "ads-runtime" on the runtime network so
+# downstream services have a stable target regardless of which profile is up.
+#
+# OTLP output lands at /var/log/otlp.jsonl inside the collector, exposed on
+# the host as /tmp/otlp.jsonl via the bind mount below — tests assert on it.
+
+services:
+  ads-runtime-softbeckhoff:
+    image: fbarresi/softbeckhoff:latest
+    profiles: ["softbeckhoff"]
+    container_name: ads-runtime
+    hostname: ads-runtime
+    networks: [runtime]
+    expose:
+      - "48898"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/48898' 2>/dev/null || nc -z 127.0.0.1 48898"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  ads-runtime-tc:
+    image: ${TC_RUNTIME_IMAGE:-tc-otel/tc-runtime-placeholder:not-set}
+    profiles: ["tc-runtime"]
+    container_name: ads-runtime
+    hostname: ads-runtime
+    networks: [runtime]
+    expose:
+      - "48898"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/48898' 2>/dev/null || nc -z 127.0.0.1 48898"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  tc-otel:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ghcr.io/pirminbleiker/tc-otel:runtime-tests
+    container_name: tc-otel
+    hostname: tc-otel
+    networks: [runtime]
+    environment:
+      - RUST_LOG=tc_otel_service=info,tc_otel_ads=info
+      - TC_OTEL_EXPORT__ENDPOINT=http://otel-collector:4318/v1/logs
+    volumes:
+      - ../../config.example.json:/etc/tc-otel/config.json:ro
+    expose:
+      - "48898"
+      - "4317"
+      - "4318"
+    depends_on:
+      ads-runtime-softbeckhoff:
+        condition: service_healthy
+        required: false
+      ads-runtime-tc:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/48898' 2>/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.112.0
+    container_name: otel-collector
+    hostname: otel-collector
+    networks: [runtime]
+    command: ["--config=/etc/otel-collector/config.yml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otel-collector/config.yml:ro
+      - /tmp:/var/log
+    expose:
+      - "4317"
+      - "4318"
+      - "13133"
+    # otel/opentelemetry-collector-contrib is FROM scratch — no shell, no
+    # wget/curl. The binary itself is the only thing we can invoke, so we use
+    # `validate` as a liveness probe. The collector's own health_check
+    # extension is queryable on :13133 from outside the container.
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otel-collector/config.yml"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  runtime:
+    driver: bridge
