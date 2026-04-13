@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "tc-otel service - OpenTelemetry bridge for Beckhoff TwinCAT PLCs"
 
+[lib]
+name = "tc_otel_service"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tc-otel"
 path = "src/main.rs"
@@ -37,3 +41,5 @@ reqwest.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true
+tempfile = "3.27"
+tower.workspace = true

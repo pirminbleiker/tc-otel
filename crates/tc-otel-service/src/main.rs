@@ -8,8 +8,12 @@ use clap::Parser;
 use std::path::PathBuf;
 use tc_otel_core::AppSettings;
 
+mod config_watcher;
+pub mod cycle_time;
 mod dispatcher;
 mod service;
+pub mod system_metrics;
+pub mod web;
 
 use service::Log4TcService;
 
@@ -47,7 +51,9 @@ async fn main() -> Result<()> {
         settings.export.endpoint,
     );
 
-    let service = Log4TcService::new(settings).await?;
+    let service = Log4TcService::new(settings)
+        .await?
+        .with_config_watch(args.config);
     service.run().await?;
 
     Ok(())

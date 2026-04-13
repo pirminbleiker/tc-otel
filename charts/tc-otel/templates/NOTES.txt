@@ -1,0 +1,9 @@
+tc-otel has been deployed.
+
+Ports:
+  AMS/TCP:  {{ .Values.service.ports.ams.port }}
+  gRPC:     {{ .Values.service.ports.grpc.port }}
+  HTTP:     {{ .Values.service.ports.http.port }}
+
+Get the service address:
+  kubectl get svc {{ include "tc-otel.fullname" . }} -n {{ .Release.Namespace }}

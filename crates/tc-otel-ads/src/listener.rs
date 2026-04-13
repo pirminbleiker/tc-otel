@@ -1,5 +1,6 @@
 //! ADS TCP listener for receiving log entries from TwinCAT PLCs
 
+use crate::connection_manager::{ConnectionConfig, ConnectionManager};
 use crate::error::*;
 use crate::parser::AdsParser;
 use crate::protocol::AdsLogEntry;
@@ -8,28 +9,21 @@ use std::sync::Arc;
 use tc_otel_core::LogEntry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
-
-/// Connection timeout: 5 minutes
-const CONNECTION_TIMEOUT_SECS: u64 = 300;
-
-/// Maximum concurrent connections (security: DoS prevention)
-const DEFAULT_MAX_CONNECTIONS: usize = 100;
 
 /// ADS TCP listener for accepting connections from TwinCAT PLCs
 pub struct AdsListener {
     host: String,
     port: u16,
     log_tx: mpsc::Sender<LogEntry>,
-    max_connections: usize,
-    connection_semaphore: Arc<Semaphore>,
+    conn_manager: Arc<ConnectionManager>,
 }
 
 impl AdsListener {
-    /// Create a new ADS listener with default max connections
+    /// Create a new ADS listener with default connection config
     pub fn new(host: String, port: u16, log_tx: mpsc::Sender<LogEntry>) -> Self {
-        Self::with_max_connections(host, port, log_tx, DEFAULT_MAX_CONNECTIONS)
+        Self::with_connection_config(host, port, log_tx, ConnectionConfig::default())
     }
 
     /// Create a new ADS listener with custom max connections
@@ -39,13 +33,31 @@ impl AdsListener {
         log_tx: mpsc::Sender<LogEntry>,
         max_connections: usize,
     ) -> Self {
+        let config = ConnectionConfig {
+            max_connections,
+            ..Default::default()
+        };
+        Self::with_connection_config(host, port, log_tx, config)
+    }
+
+    /// Create a new ADS listener with full connection configuration
+    pub fn with_connection_config(
+        host: String,
+        port: u16,
+        log_tx: mpsc::Sender<LogEntry>,
+        config: ConnectionConfig,
+    ) -> Self {
         Self {
             host,
             port,
             log_tx,
-            max_connections,
-            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
+            conn_manager: Arc::new(ConnectionManager::new(config)),
         }
+    }
+
+    /// Get a reference to the connection manager
+    pub fn connection_manager(&self) -> &Arc<ConnectionManager> {
+        &self.conn_manager
     }
 
     /// Start listening for incoming ADS connections
@@ -58,7 +70,7 @@ impl AdsListener {
         tracing::info!(
             "ADS listener started on {} (max {} concurrent connections)",
             addr,
-            self.max_connections
+            self.conn_manager.max_connections()
         );
 
         loop {
@@ -67,14 +79,24 @@ impl AdsListener {
                 .await
                 .map_err(|e| AdsError::BufferError(format!("Accept error: {}", e)))?;
 
-            // Acquire connection permit (respects max_connections limit)
-            let semaphore = self.connection_semaphore.clone();
-            let permit = semaphore.acquire_owned().await;
+            // Acquire connection permit (enforces all limits)
+            let permit = match self.conn_manager.try_acquire(peer_addr.ip()) {
+                Ok(permit) => permit,
+                Err(rejection) => {
+                    tracing::warn!("Connection rejected from {}: {}", peer_addr, rejection);
+                    drop(socket);
+                    continue;
+                }
+            };
+
             let log_tx = self.log_tx.clone();
+            let idle_timeout = self.conn_manager.idle_timeout();
 
             tokio::spawn(async move {
-                let _permit = permit.ok(); // Hold permit until connection ends
-                if let Err(e) = Self::handle_connection(socket, peer_addr, log_tx).await {
+                let _permit = permit; // Hold permit until connection ends
+                if let Err(e) =
+                    Self::handle_connection(socket, peer_addr, log_tx, idle_timeout).await
+                {
                     tracing::error!("Connection error from {}: {}", peer_addr, e);
                 }
             });
@@ -86,6 +108,7 @@ impl AdsListener {
         mut socket: TcpStream,
         peer_addr: SocketAddr,
         log_tx: mpsc::Sender<LogEntry>,
+        idle_timeout: Duration,
     ) -> Result<()> {
         tracing::debug!("New connection from {}", peer_addr);
 
@@ -93,11 +116,7 @@ impl AdsListener {
 
         loop {
             // Security: Enforce read timeout to prevent slow-read DoS attacks
-            let read_result = timeout(
-                Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                socket.read(&mut buffer),
-            )
-            .await;
+            let read_result = timeout(idle_timeout, socket.read(&mut buffer)).await;
 
             let n = match read_result {
                 Ok(Ok(n)) => n,
@@ -108,7 +127,7 @@ impl AdsListener {
                     tracing::warn!(
                         "Connection timeout from {} after {} seconds",
                         peer_addr,
-                        CONNECTION_TIMEOUT_SECS
+                        idle_timeout.as_secs()
                     );
                     break;
                 }
@@ -177,6 +196,8 @@ impl AdsListener {
         entry.online_change_count = ads_entry.online_change_count;
         entry.arguments = ads_entry.arguments;
         entry.context = ads_entry.context;
+        entry.trace_id = ads_entry.trace_id;
+        entry.span_id = ads_entry.span_id;
 
         entry
     }
@@ -202,6 +223,8 @@ mod tests {
             app_name: "TestApp".to_string(),
             project_name: "TestProject".to_string(),
             online_change_count: 0,
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
             arguments: std::collections::HashMap::new(),
             context: std::collections::HashMap::new(),
         };

@@ -11,10 +11,12 @@
 
 pub mod error;
 pub mod exporter;
+pub mod grpc;
 pub mod mapping;
 pub mod receiver;
 
 pub use error::{OtelError, Result};
 pub use exporter::OtelExporter;
+pub use grpc::{LogsServiceImpl, LogsServiceServer};
 pub use mapping::OtelMapping;
 pub use receiver::{OtelGrpcReceiver, OtelHttpReceiver};

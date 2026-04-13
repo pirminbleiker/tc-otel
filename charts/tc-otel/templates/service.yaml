@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tc-otel.fullname" . }}
+  labels:
+    {{- include "tc-otel.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    {{- range $name, $port := .Values.service.ports }}
+    - port: {{ $port.port }}
+      targetPort: {{ $name }}
+      protocol: {{ $port.protocol }}
+      name: {{ $name }}
+    {{- end }}
+  selector:
+    {{- include "tc-otel.selectorLabels" . | nindent 4 }}

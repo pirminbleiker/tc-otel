@@ -12,7 +12,13 @@
     "request_timeout_secs": 30,
     "ams_net_id": "0.0.0.0.1.1",
     "ams_tcp_port": 48898,
-    "ads_port": 16150
+    "ads_port": 16150,
+    "max_connections": 100,
+    "idle_timeout_secs": 300,
+    "max_connections_per_ip": 10,
+    "rate_limit_per_sec_per_ip": 10,
+    "keepalive_interval_secs": 60,
+    "send_buffer_size": 1048576
   },
   "export": {
     "endpoint": "http://localhost:3100/otlp/v1/logs",
@@ -28,5 +34,32 @@
     "worker_threads": null,
     "channel_capacity": 50000,
     "shutdown_timeout_secs": 30
+  },
+  "web": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080,
+    "max_subscriptions": 500
+  },
+  "metrics": {
+    "cycle_time_enabled": true,
+    "cycle_time_window": 1000,
+    "custom_metrics": [
+      {
+        "symbol": "GVL.motor.temperature",
+        "metric_name": "plc.motor.temperature",
+        "description": "Motor 1 winding temperature",
+        "unit": "Cel",
+        "kind": "gauge"
+      },
+      {
+        "symbol": "GVL.partsProduced",
+        "metric_name": "plc.parts_produced",
+        "description": "Total parts produced",
+        "unit": "{count}",
+        "kind": "sum",
+        "is_monotonic": true
+      }
+    ]
   }
 }

@@ -7,12 +7,13 @@ use crate::ams::{
     AdsWriteRequest, AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
     ADS_CMD_READ_STATE, ADS_CMD_WRITE,
 };
+use crate::connection_manager::{ConnectionConfig, ConnectionManager};
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tc_otel_core::LogEntry;
+use tc_otel_core::{LogEntry, MetricEntry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -24,7 +25,9 @@ pub struct AmsTcpServer {
     port: u16,
     ads_port: u16,
     log_tx: mpsc::Sender<LogEntry>,
+    metric_tx: Option<mpsc::Sender<MetricEntry>>,
     registry: Arc<TaskRegistry>,
+    conn_manager: Arc<ConnectionManager>,
 }
 
 impl AmsTcpServer {
@@ -40,13 +43,36 @@ impl AmsTcpServer {
             port: 48898,
             ads_port,
             log_tx,
+            metric_tx: None,
             registry: Arc::new(TaskRegistry::new()),
+            conn_manager: Arc::new(ConnectionManager::new(ConnectionConfig::default())),
         }
+    }
+
+    /// Enable metrics forwarding by providing a channel sender
+    pub fn with_metric_sender(mut self, metric_tx: mpsc::Sender<MetricEntry>) -> Self {
+        self.metric_tx = Some(metric_tx);
+        self
     }
 
     pub fn with_registry(mut self, registry: Arc<TaskRegistry>) -> Self {
         self.registry = registry;
         self
+    }
+
+    pub fn with_connection_config(mut self, config: ConnectionConfig) -> Self {
+        self.conn_manager = Arc::new(ConnectionManager::new(config));
+        self
+    }
+
+    /// Get a reference to the connection manager
+    pub fn connection_manager(&self) -> &Arc<ConnectionManager> {
+        &self.conn_manager
+    }
+
+    /// Get a reference to the task registry
+    pub fn task_registry(&self) -> &Arc<TaskRegistry> {
+        &self.registry
     }
 
     pub async fn start(&self) -> crate::Result<()> {
@@ -58,9 +84,10 @@ impl AmsTcpServer {
         })?;
 
         tracing::info!(
-            "AMS/TCP server listening on {} with Net ID {}",
+            "AMS/TCP server listening on {} with Net ID {} (max {} connections)",
             tcp_addr,
-            self.net_id.to_string()
+            self.net_id.to_string(),
+            self.conn_manager.max_connections()
         );
 
         // Start UDP route discovery listener
@@ -78,17 +105,35 @@ impl AmsTcpServer {
                 .accept()
                 .await
                 .map_err(|e| crate::AdsError::BufferError(format!("Accept error: {}", e)))?;
+
+            // Enforce connection limits
+            let permit = match self.conn_manager.try_acquire(peer_addr.ip()) {
+                Ok(permit) => permit,
+                Err(rejection) => {
+                    tracing::warn!(
+                        "AMS/TCP connection rejected from {}: {}",
+                        peer_addr,
+                        rejection
+                    );
+                    drop(stream);
+                    continue;
+                }
+            };
+
             tracing::trace!("AMS/TCP connection from {}", peer_addr);
 
             let net_id = self.net_id;
             let ads_port = self.ads_port;
             let log_tx = self.log_tx.clone();
+            let metric_tx = self.metric_tx.clone();
             let registry = self.registry.clone();
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    Self::handle_connection(stream, peer_addr, net_id, ads_port, log_tx, registry)
-                        .await
+                let _permit = permit; // Hold permit until connection ends
+                if let Err(e) = Self::handle_connection(
+                    stream, peer_addr, net_id, ads_port, log_tx, metric_tx, registry,
+                )
+                .await
                 {
                     tracing::warn!("AMS/TCP connection error from {}: {}", peer_addr, e);
                 }
@@ -161,6 +206,7 @@ impl AmsTcpServer {
         _net_id: AmsNetId,
         ads_port: u16,
         log_tx: mpsc::Sender<LogEntry>,
+        metric_tx: Option<mpsc::Sender<MetricEntry>>,
         registry: Arc<TaskRegistry>,
     ) -> crate::Result<()> {
         let _ = stream.set_nodelay(true);
@@ -214,7 +260,8 @@ impl AmsTcpServer {
             } else if cmd == ADS_CMD_WRITE {
                 // Log data - full processing path
                 if let Ok(ams_response) =
-                    Self::handle_frame(data, ads_port, peer_addr, &log_tx, &registry).await
+                    Self::handle_frame(data, ads_port, peer_addr, &log_tx, &metric_tx, &registry)
+                        .await
                 {
                     // Wrap in AMS/TCP header (6 bytes: reserved + length)
                     let mut full_response = Vec::with_capacity(6 + ams_response.len());
@@ -323,6 +370,7 @@ impl AmsTcpServer {
         ads_port: u16,
         peer_addr: SocketAddr,
         log_tx: &mpsc::Sender<LogEntry>,
+        metric_tx: &Option<mpsc::Sender<MetricEntry>>,
         registry: &Arc<TaskRegistry>,
     ) -> crate::Result<Vec<u8>> {
         if data.len() < 32 {
@@ -503,8 +551,61 @@ impl AmsTcpServer {
                                 log_entry.context = ads_entry.context;
                                 log_entry.ams_net_id = source_net_id.clone();
                                 log_entry.ams_source_port = source_port;
+                                log_entry.trace_id = ads_entry.trace_id;
+                                log_entry.span_id = ads_entry.span_id;
 
                                 let _ = log_tx.send(log_entry).await;
+                            }
+
+                            // Process metrics (if a metric channel is configured)
+                            if let Some(m_tx) = metric_tx {
+                                for ads_metric in parse_result.metrics {
+                                    let source = peer_addr.ip().to_string();
+                                    let hostname = format!("plc-{}", peer_addr.port());
+
+                                    // Enrich with registry metadata
+                                    let reg_key = RegistrationKey {
+                                        ams_net_id: source_net_id.clone(),
+                                        ams_source_port: source_port,
+                                        task_index: ads_metric.task_index as u8,
+                                    };
+                                    let (task_name, app_name, project_name) =
+                                        if let Some(metadata) = registry.lookup(&reg_key) {
+                                            (
+                                                metadata.task_name,
+                                                metadata.app_name,
+                                                metadata.project_name,
+                                            )
+                                        } else {
+                                            (String::new(), String::new(), String::new())
+                                        };
+
+                                    let metric_entry = MetricEntry {
+                                        name: ads_metric.name,
+                                        description: ads_metric.description,
+                                        unit: ads_metric.unit,
+                                        kind: ads_metric.kind,
+                                        value: ads_metric.value,
+                                        timestamp: ads_metric.timestamp,
+                                        source,
+                                        hostname,
+                                        ams_net_id: source_net_id.clone(),
+                                        ams_source_port: source_port,
+                                        task_index: ads_metric.task_index,
+                                        task_name,
+                                        task_cycle_counter: ads_metric.task_cycle_counter,
+                                        app_name,
+                                        project_name,
+                                        attributes: ads_metric.attributes,
+                                        histogram_bounds: ads_metric.histogram_bounds,
+                                        histogram_counts: ads_metric.histogram_counts,
+                                        histogram_count: ads_metric.histogram_count,
+                                        histogram_sum: ads_metric.histogram_sum,
+                                        is_monotonic: ads_metric.is_monotonic,
+                                    };
+
+                                    let _ = m_tx.send(metric_entry).await;
+                                }
                             }
                         }
                         Err(e) => {

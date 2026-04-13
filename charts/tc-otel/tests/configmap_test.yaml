@@ -1,0 +1,41 @@
+suite: configmap
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: should render a ConfigMap
+    asserts:
+      - isKind:
+          of: ConfigMap
+
+  - it: should contain config.json key
+    asserts:
+      - isNotEmpty:
+          path: data["config.json"]
+
+  - it: should include default export endpoint in config
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: "localhost:3100"
+
+  - it: should include AMS port in config
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: "48898"
+
+  - it: should reflect custom export endpoint
+    set:
+      config.export.endpoint: "http://loki.monitoring:3100/otlp/v1/logs"
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: "loki\\.monitoring"
+
+  - it: should reflect custom log level
+    set:
+      config.logging.log_level: debug
+    asserts:
+      - matchRegex:
+          path: data["config.json"]
+          pattern: "debug"

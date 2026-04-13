@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Application-wide configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub logging: LoggingConfig,
     pub receiver: ReceiverConfig,
@@ -12,10 +12,14 @@ pub struct AppSettings {
     pub export: ExportConfig,
     pub outputs: Vec<OutputConfig>,
     pub service: ServiceConfig,
+    #[serde(default)]
+    pub web: WebConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 /// Logging configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoggingConfig {
     pub log_level: String,
     pub format: LogFormat,
@@ -29,8 +33,205 @@ pub enum LogFormat {
     Text,
 }
 
+/// TLS/SSL configuration for the receiver
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Enable TLS for the receiver
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to server certificate (PEM)
+    #[serde(default)]
+    pub cert_path: Option<PathBuf>,
+    /// Path to server private key (PEM)
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+    /// Path to CA certificate bundle for verifying client certs
+    #[serde(default)]
+    pub ca_cert_path: Option<PathBuf>,
+    /// Require client certificate (mTLS)
+    #[serde(default)]
+    pub require_client_cert: bool,
+    /// Path to client certificate (for outbound mTLS)
+    #[serde(default)]
+    pub client_cert_path: Option<PathBuf>,
+    /// Path to client private key (for outbound mTLS)
+    #[serde(default)]
+    pub client_key_path: Option<PathBuf>,
+    /// Skip server certificate verification (INSECURE — rejected in validation)
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+    /// Minimum TLS version (default: "TLSv1_2")
+    #[serde(default = "default_min_tls_version")]
+    pub min_version: String,
+    /// Maximum TLS version (default: "TLSv1_3")
+    #[serde(default = "default_max_tls_version")]
+    pub max_version: String,
+    /// Allowed cipher suites (empty = use defaults)
+    #[serde(default)]
+    pub ciphers: Vec<String>,
+}
+
+fn default_min_tls_version() -> String {
+    "TLSv1_2".to_string()
+}
+
+fn default_max_tls_version() -> String {
+    "TLSv1_3".to_string()
+}
+
+/// Known weak cipher patterns that must be rejected
+const WEAK_CIPHER_PATTERNS: &[&str] = &[
+    "DES", "RC4", "RC2", "MD5", "NULL", "EXPORT", "anon", "ADH", "AECDH",
+];
+
+/// Valid TLS versions in order
+const VALID_TLS_VERSIONS: &[&str] = &["TLSv1_0", "TLSv1_1", "TLSv1_2", "TLSv1_3"];
+
+/// Minimum acceptable TLS version (TLSv1_2)
+const MIN_ACCEPTABLE_TLS_VERSION: &str = "TLSv1_2";
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
+            require_client_cert: false,
+            client_cert_path: None,
+            client_key_path: None,
+            insecure_skip_verify: false,
+            min_version: default_min_tls_version(),
+            max_version: default_max_tls_version(),
+            ciphers: Vec::new(),
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Validate the TLS configuration. Returns a list of errors if invalid.
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if !self.enabled {
+            return Ok(());
+        }
+
+        // insecure_skip_verify is never allowed
+        if self.insecure_skip_verify {
+            errors.push(
+                "insecure_skip_verify=true is not allowed: \
+                 certificate verification must not be disabled"
+                    .to_string(),
+            );
+        }
+
+        // Server cert and key are required when TLS is enabled
+        if self.cert_path.is_none() {
+            errors.push("TLS enabled but cert_path is not set".to_string());
+        }
+        if self.key_path.is_none() {
+            errors.push("TLS enabled but key_path is not set".to_string());
+        }
+
+        // Client cert requirement needs client cert paths
+        if self.require_client_cert && self.ca_cert_path.is_none() {
+            errors.push(
+                "require_client_cert=true but ca_cert_path is not set: \
+                 CA certificate is needed to verify client certificates"
+                    .to_string(),
+            );
+        }
+
+        // Validate TLS versions
+        if let Err(e) = Self::validate_tls_version(&self.min_version) {
+            errors.push(format!("min_version: {}", e));
+        }
+        if let Err(e) = Self::validate_tls_version(&self.max_version) {
+            errors.push(format!("max_version: {}", e));
+        }
+
+        // Ensure min_version meets minimum acceptable threshold
+        if let Err(e) = Self::check_minimum_acceptable_version(&self.min_version) {
+            errors.push(e);
+        }
+
+        // Ensure min <= max
+        if Self::tls_version_ord(&self.min_version) > Self::tls_version_ord(&self.max_version) {
+            errors.push(format!(
+                "min_version ({}) is greater than max_version ({})",
+                self.min_version, self.max_version
+            ));
+        }
+
+        // Validate cipher suites
+        for cipher in &self.ciphers {
+            if let Err(e) = Self::validate_cipher_suite(cipher) {
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate a TLS version string
+    pub fn validate_tls_version(version: &str) -> std::result::Result<(), String> {
+        if VALID_TLS_VERSIONS.contains(&version) {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid TLS version '{}': must be one of {:?}",
+                version, VALID_TLS_VERSIONS
+            ))
+        }
+    }
+
+    /// Check that a TLS version meets the minimum acceptable threshold (TLSv1_2)
+    pub fn check_minimum_acceptable_version(version: &str) -> std::result::Result<(), String> {
+        let ord = Self::tls_version_ord(version);
+        let min_ord = Self::tls_version_ord(MIN_ACCEPTABLE_TLS_VERSION);
+        if ord < min_ord {
+            Err(format!(
+                "TLS version '{}' is below minimum acceptable version ({})",
+                version, MIN_ACCEPTABLE_TLS_VERSION
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Validate a cipher suite name — rejects known weak ciphers
+    pub fn validate_cipher_suite(cipher: &str) -> std::result::Result<(), String> {
+        let upper = cipher.to_uppercase();
+        for weak in WEAK_CIPHER_PATTERNS {
+            if upper.contains(weak) {
+                return Err(format!(
+                    "weak cipher suite '{}': contains banned pattern '{}'",
+                    cipher, weak
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return numeric ordering for TLS version strings
+    fn tls_version_ord(version: &str) -> u8 {
+        match version {
+            "TLSv1_0" => 0,
+            "TLSv1_1" => 1,
+            "TLSv1_2" => 2,
+            "TLSv1_3" => 3,
+            _ => 0,
+        }
+    }
+}
+
 /// Receiver configuration (OTEL listener)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiverConfig {
     /// HTTP/gRPC listening address
     pub host: String,
@@ -51,6 +252,30 @@ pub struct ReceiverConfig {
     /// ADS port for AMS/TCP server (default 16150)
     #[serde(default = "default_ads_port")]
     pub ads_port: u16,
+    /// Maximum concurrent connections (default 100)
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Idle connection timeout in seconds (default 300)
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    /// Maximum connections per IP address (default 10)
+    #[serde(default = "default_max_connections_per_ip")]
+    pub max_connections_per_ip: usize,
+    /// Max new connections per second from a single IP (default 10)
+    #[serde(default = "default_rate_limit_per_sec_per_ip")]
+    pub rate_limit_per_sec_per_ip: usize,
+    /// Keep-alive heartbeat interval in seconds (default 60)
+    #[serde(default = "default_keepalive_interval_secs")]
+    pub keepalive_interval_secs: u64,
+    /// Send buffer size limit per connection in bytes (default 1MB)
+    #[serde(default = "default_send_buffer_size")]
+    pub send_buffer_size: usize,
+    /// Enforce HTTPS-only for endpoints
+    #[serde(default)]
+    pub https_only: bool,
+    /// TLS configuration
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 fn default_ams_net_id() -> String {
@@ -65,6 +290,30 @@ fn default_ads_port() -> u16 {
     16150
 }
 
+fn default_max_connections() -> usize {
+    100
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    300
+}
+
+fn default_max_connections_per_ip() -> usize {
+    10
+}
+
+fn default_rate_limit_per_sec_per_ip() -> usize {
+    10
+}
+
+fn default_keepalive_interval_secs() -> u64 {
+    60
+}
+
+fn default_send_buffer_size() -> usize {
+    1_048_576 // 1 MB
+}
+
 impl Default for ReceiverConfig {
     fn default() -> Self {
         Self {
@@ -76,12 +325,72 @@ impl Default for ReceiverConfig {
             ams_net_id: "0.0.0.0.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            max_connections: default_max_connections(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+            max_connections_per_ip: default_max_connections_per_ip(),
+            rate_limit_per_sec_per_ip: default_rate_limit_per_sec_per_ip(),
+            keepalive_interval_secs: default_keepalive_interval_secs(),
+            send_buffer_size: default_send_buffer_size(),
+            https_only: false,
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
+impl ReceiverConfig {
+    /// Validate an endpoint URL against security policy.
+    /// When `https_only` is true, only HTTPS endpoints are accepted.
+    /// When TLS is enabled, HTTP endpoints are rejected (downgrade prevention).
+    pub fn validate_endpoint(&self, endpoint: &str) -> std::result::Result<(), String> {
+        let lower = endpoint.to_lowercase();
+
+        if self.https_only && lower.starts_with("http://") {
+            return Err(format!(
+                "endpoint '{}' uses HTTP but https_only is enabled: \
+                 only HTTPS endpoints are allowed",
+                endpoint
+            ));
+        }
+
+        if self.tls.enabled && lower.starts_with("http://") {
+            return Err(format!(
+                "endpoint '{}' uses HTTP but TLS is enabled: \
+                 cannot downgrade from HTTPS to HTTP",
+                endpoint
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate the entire receiver configuration
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        // Validate TLS config
+        if let Err(tls_errors) = self.tls.validate() {
+            errors.extend(tls_errors);
+        }
+
+        // When https_only is set, TLS should be enabled
+        if self.https_only && !self.tls.enabled {
+            errors.push(
+                "https_only=true but TLS is not enabled: \
+                 enable TLS to enforce HTTPS-only mode"
+                    .to_string(),
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }
 
 /// Output plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
     #[serde(rename = "Type")]
     pub output_type: String,
@@ -90,7 +399,7 @@ pub struct OutputConfig {
 }
 
 /// Export configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportConfig {
     /// Export endpoint URL (e.g. "http://victoria-logs:9428/insert/jsonline")
     #[serde(default = "default_export_endpoint")]
@@ -137,8 +446,145 @@ impl Default for ExportConfig {
     }
 }
 
+/// Web UI configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Enable the web UI (default: true)
+    #[serde(default = "default_web_enabled")]
+    pub enabled: bool,
+    /// Web UI listening address (default: "127.0.0.1")
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    /// Web UI listening port (default: 8080)
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    /// Maximum number of tag subscriptions (default: 500)
+    #[serde(default = "default_max_subscriptions")]
+    pub max_subscriptions: usize,
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+fn default_web_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_web_port() -> u16 {
+    8080
+}
+fn default_max_subscriptions() -> usize {
+    500
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_enabled(),
+            host: default_web_host(),
+            port: default_web_port(),
+            max_subscriptions: default_max_subscriptions(),
+        }
+    }
+}
+
+/// Metric kind for configuration (string representation)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricKindConfig {
+    #[default]
+    Gauge,
+    Sum,
+    Histogram,
+}
+
+impl MetricKindConfig {
+    /// Convert to the core MetricKind used in data models
+    pub fn to_metric_kind(self) -> crate::models::MetricKind {
+        match self {
+            MetricKindConfig::Gauge => crate::models::MetricKind::Gauge,
+            MetricKindConfig::Sum => crate::models::MetricKind::Sum,
+            MetricKindConfig::Histogram => crate::models::MetricKind::Histogram,
+        }
+    }
+}
+
+/// Maps a PLC symbol to an OTEL metric definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomMetricDef {
+    /// PLC symbol path (e.g., "GVL.motor.temperature")
+    pub symbol: String,
+    /// OTEL metric name (e.g., "plc.motor.temperature")
+    pub metric_name: String,
+    /// Metric description
+    #[serde(default)]
+    pub description: String,
+    /// Metric unit (e.g., "Cel", "mm/s", "rpm")
+    #[serde(default)]
+    pub unit: String,
+    /// Metric kind: "gauge", "sum", or "histogram"
+    #[serde(default)]
+    pub kind: MetricKindConfig,
+    /// For Sum kind: whether monotonic (counter vs up-down counter)
+    #[serde(default)]
+    pub is_monotonic: bool,
+}
+
+/// Metrics configuration (cycle time tracking, custom metric definitions)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// Enable task cycle time tracking (default: true)
+    #[serde(default = "default_cycle_time_enabled")]
+    pub cycle_time_enabled: bool,
+    /// Rolling window size for cycle time statistics (default: 1000)
+    #[serde(default = "default_cycle_time_window")]
+    pub cycle_time_window: usize,
+    /// Custom metric definitions mapping PLC symbols to OTEL metric names
+    #[serde(default)]
+    pub custom_metrics: Vec<CustomMetricDef>,
+    /// Enable metrics export to OTLP collector (default: false)
+    #[serde(default)]
+    pub export_enabled: bool,
+    /// OTLP metrics export endpoint (e.g., "http://localhost:4318/v1/metrics")
+    /// If unset, derived from the main export endpoint by replacing /v1/logs with /v1/metrics
+    #[serde(default)]
+    pub export_endpoint: Option<String>,
+    /// Batch size for metrics export (default: 1000)
+    #[serde(default = "default_metrics_batch_size")]
+    pub export_batch_size: usize,
+    /// Flush interval for metrics export in milliseconds (default: 5000)
+    #[serde(default = "default_metrics_flush_interval_ms")]
+    pub export_flush_interval_ms: u64,
+}
+
+fn default_cycle_time_enabled() -> bool {
+    true
+}
+fn default_cycle_time_window() -> usize {
+    1000
+}
+fn default_metrics_batch_size() -> usize {
+    1000
+}
+fn default_metrics_flush_interval_ms() -> u64 {
+    5000
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            cycle_time_enabled: default_cycle_time_enabled(),
+            cycle_time_window: default_cycle_time_window(),
+            custom_metrics: Vec::new(),
+            export_enabled: false,
+            export_endpoint: None,
+            export_batch_size: default_metrics_batch_size(),
+            export_flush_interval_ms: default_metrics_flush_interval_ms(),
+        }
+    }
+}
+
 /// Service configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceConfig {
     /// Service name
     pub name: String,
@@ -239,6 +685,7 @@ mod tests {
             ams_net_id: "192.168.1.100.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert_eq!(config.host, "0.0.0.0");
@@ -359,10 +806,27 @@ mod tests {
             export: ExportConfig::default(),
             outputs: vec![],
             service: ServiceConfig::default(),
+            web: WebConfig::default(),
+            metrics: MetricsConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");
         assert!(settings.outputs.is_empty());
+    }
+
+    #[test]
+    fn test_metrics_config_defaults() {
+        let config = MetricsConfig::default();
+        assert!(config.cycle_time_enabled);
+        assert_eq!(config.cycle_time_window, 1000);
+    }
+
+    #[test]
+    fn test_metrics_config_serde_defaults() {
+        let json = "{}";
+        let config: MetricsConfig = serde_json::from_str(json).unwrap();
+        assert!(config.cycle_time_enabled);
+        assert_eq!(config.cycle_time_window, 1000);
     }
 
     #[test]
@@ -377,6 +841,7 @@ mod tests {
             ams_net_id: "127.0.0.1.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert!(config.http_port > 0);
@@ -393,6 +858,7 @@ mod tests {
             ams_net_id: "127.0.0.1.1.1".to_string(),
             ams_tcp_port: 48898,
             ads_port: 16150,
+            ..Default::default()
         };
 
         assert_eq!(config.max_body_size, 100 * 1024 * 1024);

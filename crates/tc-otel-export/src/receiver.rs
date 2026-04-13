@@ -41,8 +41,7 @@ impl OtelHttpReceiver {
     }
 }
 
-/// OTEL gRPC Receiver (placeholder for future implementation)
-#[allow(dead_code)]
+/// OTEL gRPC Receiver for OTLP/gRPC endpoint
 pub struct OtelGrpcReceiver {
     host: String,
     port: u16,
@@ -56,8 +55,21 @@ impl OtelGrpcReceiver {
 
     /// Start the gRPC receiver
     pub async fn start(&self) -> Result<()> {
-        // TODO: Implement gRPC receiver using tonic
-        tracing::info!("gRPC receiver not yet implemented");
+        let svc = crate::grpc::LogsServiceImpl::new(self.log_tx.clone());
+        let server = crate::grpc::LogsServiceServer::new(svc);
+
+        let addr = format!("{}:{}", self.host, self.port)
+            .parse()
+            .map_err(|e| OtelError::ReceiverError(format!("Invalid address: {e}")))?;
+
+        tracing::info!("OTEL gRPC receiver listening on {}", addr);
+
+        tonic::transport::Server::builder()
+            .add_service(server)
+            .serve(addr)
+            .await
+            .map_err(|e| OtelError::ReceiverError(e.to_string()))?;
+
         Ok(())
     }
 }

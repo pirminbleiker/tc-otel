@@ -37,6 +37,16 @@ impl TaskRegistry {
         self.metadata.read().unwrap().is_empty()
     }
 
+    /// Get all registered tasks as a snapshot
+    pub fn all_tasks(&self) -> Vec<(RegistrationKey, TaskMetadata)> {
+        self.metadata
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
     /// Clear all registrations
     pub fn clear(&self) {
         self.metadata.write().unwrap().clear();

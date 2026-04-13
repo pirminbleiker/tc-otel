@@ -1,0 +1,78 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/pirminbleiker/tc-otel
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+
+service:
+  type: ClusterIP
+  ports:
+    ams:
+      port: 48898
+      protocol: TCP
+    grpc:
+      port: 4317
+      protocol: TCP
+    http:
+      port: 4318
+      protocol: TCP
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+config:
+  logging:
+    log_level: info
+    format: text
+    output_path: null
+  receiver:
+    host: "0.0.0.0"
+    http_port: 4318
+    grpc_port: 4317
+    max_body_size: 4194304
+    request_timeout_secs: 30
+    ams_net_id: "0.0.0.0.1.1"
+    ams_tcp_port: 48898
+    ads_port: 16150
+    max_connections: 100
+    idle_timeout_secs: 300
+    max_connections_per_ip: 10
+    rate_limit_per_sec_per_ip: 10
+    keepalive_interval_secs: 60
+    send_buffer_size: 1048576
+  export:
+    endpoint: "http://localhost:3100/otlp/v1/logs"
+    batch_size: 2000
+    flush_interval_ms: 1000
+    timeout_secs: 10
+    max_retries: 3
+  outputs: []
+  service:
+    name: tc-otel
+    display_name: "tc-otel - TwinCAT OpenTelemetry Service"
+    worker_threads: null
+    channel_capacity: 50000
+    shutdown_timeout_secs: 30

@@ -1,6 +1,6 @@
 //! Mapping utilities between Log4TC and OTEL formats
 
-use tc_otel_core::{LogEntry, LogRecord};
+use tc_otel_core::{LogEntry, LogRecord, MetricEntry, MetricRecord, SpanEntry, TraceRecord};
 
 /// Helper for mapping Log4TC types to OTEL types
 pub struct OtelMapping;
@@ -15,12 +15,22 @@ impl OtelMapping {
     pub fn record_to_json(record: &LogRecord) -> serde_json::Result<String> {
         serde_json::to_string(record)
     }
+
+    /// Convert a MetricEntry to OTEL MetricRecord
+    pub fn metric_entry_to_record(entry: MetricEntry) -> MetricRecord {
+        MetricRecord::from_metric_entry(entry)
+    }
+
+    /// Convert a SpanEntry to OTEL TraceRecord
+    pub fn span_entry_to_record(entry: SpanEntry) -> TraceRecord {
+        TraceRecord::from_span_entry(entry)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tc_otel_core::LogLevel;
+    use tc_otel_core::{LogLevel, MetricKind, SpanKind, SpanStatusCode};
 
     #[test]
     fn test_mapping_log_entry_to_record() {
@@ -359,6 +369,26 @@ mod tests {
     }
 
     #[test]
+    fn test_mapping_metric_entry_to_record() {
+        let mut entry = MetricEntry::gauge("plc.speed".to_string(), 150.0);
+        entry.unit = "mm/s".to_string();
+        entry.hostname = "plc-01".to_string();
+        entry.project_name = "TestProject".to_string();
+        entry.app_name = "TestApp".to_string();
+
+        let record = OtelMapping::metric_entry_to_record(entry);
+
+        assert_eq!(record.name, "plc.speed");
+        assert_eq!(record.kind, MetricKind::Gauge);
+        assert_eq!(record.value, 150.0);
+        assert_eq!(record.unit, "mm/s");
+        assert_eq!(
+            record.resource_attributes["service.name"],
+            serde_json::json!("TestProject")
+        );
+    }
+
+    #[test]
     fn test_severity_text_format() {
         let entry = LogEntry::new(
             "src".to_string(),
@@ -372,5 +402,25 @@ mod tests {
 
         // severity_text should contain the log level name
         assert!(record.severity_text.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_mapping_span_entry_to_record() {
+        let mut entry = SpanEntry::new([1u8; 16], [2u8; 8], "test.span".to_string());
+        entry.kind = SpanKind::Client;
+        entry.status_code = SpanStatusCode::Ok;
+        entry.hostname = "plc-01".to_string();
+        entry.project_name = "TestProject".to_string();
+        entry.app_name = "TestApp".to_string();
+
+        let record = OtelMapping::span_entry_to_record(entry);
+
+        assert_eq!(record.name, "test.span");
+        assert_eq!(record.kind, 3); // SPAN_KIND_CLIENT
+        assert_eq!(record.status_code, 1); // STATUS_CODE_OK
+        assert_eq!(
+            record.resource_attributes["service.name"],
+            serde_json::json!("TestProject")
+        );
     }
 }

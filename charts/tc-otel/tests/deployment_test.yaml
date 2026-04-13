@@ -1,0 +1,174 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: should render a Deployment
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should use the correct image with appVersion tag by default
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/pirminbleiker/tc-otel:0.1.0
+
+  - it: should respect image tag override
+    set:
+      image.tag: "1.2.3"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/pirminbleiker/tc-otel:1.2.3
+
+  - it: should set replica count
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: should expose all three container ports
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: ams
+            containerPort: 48898
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: grpc
+            containerPort: 4317
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 4318
+            protocol: TCP
+
+  - it: should mount config volume at /etc/tc-otel
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /etc/tc-otel
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config
+            configMap:
+              name: RELEASE-NAME-tc-otel
+
+  - it: should set security context defaults
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 65534
+
+  - it: should set resource limits when specified
+    set:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 256Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: 500m
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 256Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 100m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 128Mi
+
+  - it: should set environment variable for config path
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TC_OTEL_CONFIG
+            value: /etc/tc-otel/config.json
+
+  - it: should reference the service account
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-tc-otel
+
+  - it: should add pod annotations when set
+    set:
+      podAnnotations:
+        scrape: "true"
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations.scrape
+          value: "true"
+
+  - it: should set imagePullSecrets when specified
+    set:
+      imagePullSecrets:
+        - name: my-registry-secret
+    asserts:
+      - contains:
+          path: spec.template.spec.imagePullSecrets
+          content:
+            name: my-registry-secret
+
+  - it: should set nodeSelector when specified
+    set:
+      nodeSelector:
+        os: linux
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector.os
+          value: linux
+
+  - it: should set tolerations when specified
+    set:
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: tc-otel
+          effect: NoSchedule
+    asserts:
+      - contains:
+          path: spec.template.spec.tolerations
+          content:
+            key: dedicated
+            operator: Equal
+            value: tc-otel
+            effect: NoSchedule
+
+  - it: should set affinity when specified
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/os
+                    operator: In
+                    values:
+                      - linux
+    asserts:
+      - isNotEmpty:
+          path: spec.template.spec.affinity
