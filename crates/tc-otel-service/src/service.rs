@@ -159,6 +159,7 @@ impl Log4TcService {
                     ads_port: self.settings.receiver.ads_port,
                     username: mqtt_cfg.username.clone(),
                     password: mqtt_cfg.password.clone(),
+                    tls: mqtt_cfg.tls.clone(),
                 };
 
                 let mut mqtt_transport =

@@ -367,6 +367,7 @@ mod tests {
     fn test_service_memory_rss_metric() {
         let tracker = Arc::new(CycleTimeTracker::new(100));
         let collector = PlcSystemMetricsCollector::new(tracker, "svc".to_string());
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
         let metrics = collector.collect();
 
         // On Linux, should have service.memory.rss
