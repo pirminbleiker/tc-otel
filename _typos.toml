@@ -15,10 +15,14 @@ missin = "missin"
 mis = "mis"
 # MQTT broker name
 mosquitto = "mosquitto"
+# 2-char hex sequence in span_id literals and git short SHAs
+ba = "ba"
 
 [default.extend-identifiers]
-# hex span_id literal in log-trace-correlation fixture
+# hex span_id literals in log-trace-correlation fixture
 ba902b7 = "ba902b7"
+fedcba9876543210 = "fedcba9876543210"
+fedcba = "fedcba"
 
 [files]
 extend-exclude = [
