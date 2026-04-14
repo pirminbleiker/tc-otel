@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tc_otel_ads::{AmsNetId, AmsTcpServer, ConnectionConfig};
+use tc_otel_ads::transport::{MqttAmsTransport, MqttTransportConfig};
+use tc_otel_ads::{AmsNetId, AmsTransport, ConnectionConfig, ConnectionManager, TcpAmsTransport};
+use tc_otel_core::config::TransportConfig;
 use tc_otel_core::{AppSettings, MetricEntry};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
@@ -97,7 +99,7 @@ impl Log4TcService {
             None
         };
 
-        // Start AMS/TCP server (receives ADS from PLC via AMS routing)
+        // Start AMS transport (TCP or MQTT based on configuration)
         let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
             .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
 
@@ -111,22 +113,84 @@ impl Log4TcService {
             shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
         };
 
-        let mut ams_server = AmsTcpServer::new(
-            self.settings.receiver.host.clone(),
-            net_id,
-            self.settings.receiver.ads_port,
-            log_tx.clone(),
-        )
-        .with_connection_config(conn_config);
+        // Parse broker address (format: "host:port" or "host", default port 1883)
+        let parse_broker_addr = |broker: &str| -> (String, u16) {
+            let parts: Vec<&str> = broker.split(':').collect();
+            let host = parts[0].to_string();
+            let port = parts
+                .get(1)
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(1883);
+            (host, port)
+        };
 
-        // Attach metric sender to AMS server if enabled
-        if let Some(ref m_tx) = metric_tx {
-            ams_server = ams_server.with_metric_sender(m_tx.clone());
+        // Dispatch based on transport configuration
+        enum TransportVariant {
+            Tcp(Arc<TcpAmsTransport>),
+            Mqtt(Arc<MqttAmsTransport>),
         }
 
-        // Extract shared state for the web UI before spawning AMS server
-        let conn_manager = ams_server.connection_manager().clone();
-        let task_registry = ams_server.task_registry().clone();
+        let transport_variant = match &self.settings.receiver.transport {
+            TransportConfig::Tcp(tcp_cfg) => {
+                let mut tcp_transport = TcpAmsTransport::new(
+                    tcp_cfg.host.clone(),
+                    net_id,
+                    self.settings.receiver.ads_port,
+                    log_tx.clone(),
+                )
+                .with_connection_config(conn_config.clone());
+
+                if let Some(ref m_tx) = metric_tx {
+                    tcp_transport = tcp_transport.with_metric_sender(m_tx.clone());
+                }
+
+                tracing::info!("Using TCP transport on {}:{}", tcp_cfg.host, tcp_cfg.port);
+                TransportVariant::Tcp(Arc::new(tcp_transport))
+            }
+            TransportConfig::Mqtt(mqtt_cfg) => {
+                let (broker_host, broker_port) = parse_broker_addr(&mqtt_cfg.broker);
+
+                let mqtt_transport_config = MqttTransportConfig {
+                    broker_host: broker_host.clone(),
+                    broker_port,
+                    client_id: mqtt_cfg.client_id.clone(),
+                    topic_prefix: mqtt_cfg.topic_prefix.clone(),
+                    local_net_id: net_id,
+                    ads_port: self.settings.receiver.ads_port,
+                    username: mqtt_cfg.username.clone(),
+                    password: mqtt_cfg.password.clone(),
+                };
+
+                let mut mqtt_transport =
+                    MqttAmsTransport::new(mqtt_transport_config, log_tx.clone());
+
+                if let Some(ref m_tx) = metric_tx {
+                    mqtt_transport = mqtt_transport.with_metric_sender(m_tx.clone());
+                }
+
+                tracing::info!(
+                    "Using MQTT transport: broker={}:{}, client_id={}, topic_prefix={}",
+                    broker_host,
+                    broker_port,
+                    mqtt_cfg.client_id,
+                    mqtt_cfg.topic_prefix
+                );
+                TransportVariant::Mqtt(Arc::new(mqtt_transport))
+            }
+        };
+
+        // Extract connection manager and task registry based on transport type
+        let (conn_manager, task_registry) = match &transport_variant {
+            TransportVariant::Tcp(tcp) => (
+                tcp.connection_manager().clone(),
+                tcp.task_registry().clone(),
+            ),
+            TransportVariant::Mqtt(mqtt) => (
+                Arc::new(ConnectionManager::new(conn_config.clone())),
+                mqtt.task_registry().clone(),
+            ),
+        };
+
         let diagnostic_stats = Arc::new(DiagnosticStats::new());
 
         // Create cycle time tracker (shared between dispatcher and web UI)
@@ -136,18 +200,38 @@ impl Log4TcService {
         let cycle_time_enabled = self.settings.metrics.cycle_time_enabled;
 
         let mut shutdown_rx_ams = shutdown_tx.subscribe();
-        let ams_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = ams_server.start() => {
-                    if let Err(e) = result {
-                        tracing::error!("AMS/TCP server error: {}", e);
+        let ams_handle = match transport_variant {
+            TransportVariant::Tcp(tcp) => tokio::spawn(async move {
+                tokio::select! {
+                    result = {
+                        let transport: Arc<dyn AmsTransport> = tcp.clone();
+                        AmsTransport::run(transport.clone())
+                    } => {
+                        if let Err(e) = result {
+                            tracing::error!("AMS/TCP transport error: {}", e);
+                        }
+                    }
+                    _ = shutdown_rx_ams.recv() => {
+                        tracing::info!("AMS transport shutdown");
                     }
                 }
-                _ = shutdown_rx_ams.recv() => {
-                    tracing::info!("AMS/TCP server shutdown");
+            }),
+            TransportVariant::Mqtt(mqtt) => tokio::spawn(async move {
+                tokio::select! {
+                    result = {
+                        let transport: Arc<dyn AmsTransport> = mqtt.clone();
+                        AmsTransport::run(transport.clone())
+                    } => {
+                        if let Err(e) = result {
+                            tracing::error!("AMS/MQTT transport error: {}", e);
+                        }
+                    }
+                    _ = shutdown_rx_ams.recv() => {
+                        tracing::info!("AMS transport shutdown");
+                    }
                 }
-            }
-        });
+            }),
+        };
 
         // Start dispatcher with diagnostic stats tracking
         let dispatcher = log_dispatcher.clone();
