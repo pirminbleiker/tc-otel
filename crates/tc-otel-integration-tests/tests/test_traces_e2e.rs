@@ -127,10 +127,7 @@ fn test_traces_e2e_export() {
         .get("scopeSpans")
         .expect("Missing scopeSpans");
 
-    assert!(
-        scope_spans.is_array(),
-        "scopeSpans should be an array"
-    );
+    assert!(scope_spans.is_array(), "scopeSpans should be an array");
     let scope_spans_array = scope_spans.as_array().unwrap();
 
     assert!(
@@ -256,8 +253,7 @@ fn test_traces_e2e_log_correlation() {
         std::collections::HashSet::new();
 
     for trace_record in &traces {
-        if let Some(resource_spans) = trace_record.get("resourceSpans").and_then(|v| v.as_array())
-        {
+        if let Some(resource_spans) = trace_record.get("resourceSpans").and_then(|v| v.as_array()) {
             for scope_spans in resource_spans {
                 if let Some(scopes) = scope_spans.get("scopeSpans").and_then(|v| v.as_array()) {
                     for scope in scopes {
@@ -298,14 +294,10 @@ fn test_traces_e2e_log_correlation() {
                         {
                             for log in log_records {
                                 // Check if log has traceId and spanId attributes
-                                let log_trace_id = log
-                                    .get("traceId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                let log_span_id = log
-                                    .get("spanId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let log_trace_id =
+                                    log.get("traceId").and_then(|v| v.as_str()).unwrap_or("");
+                                let log_span_id =
+                                    log.get("spanId").and_then(|v| v.as_str()).unwrap_or("");
 
                                 // Also check in attributes (body field may have them)
                                 if !log_trace_id.is_empty()
@@ -373,8 +365,7 @@ fn test_traces_e2e_span_field_validation() {
     let mut valid_spans = 0;
 
     for trace_record in &traces {
-        if let Some(resource_spans) = trace_record.get("resourceSpans").and_then(|v| v.as_array())
-        {
+        if let Some(resource_spans) = trace_record.get("resourceSpans").and_then(|v| v.as_array()) {
             for scope_spans in resource_spans {
                 if let Some(scopes) = scope_spans.get("scopeSpans").and_then(|v| v.as_array()) {
                     for scope in scopes {
