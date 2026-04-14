@@ -18,8 +18,15 @@
     "max_connections_per_ip": 10,
     "rate_limit_per_sec_per_ip": 10,
     "keepalive_interval_secs": 60,
-    "send_buffer_size": 1048576
+    "send_buffer_size": 1048576,
+    "transport": {
+      "type": "tcp",
+      "host": "0.0.0.0",
+      "port": 48898,
+      "max_connections": 100
+    }
   },
+  "_comment_transport_mqtt": "For MQTT transport, replace the transport section above with: {\"type\": \"mqtt\", \"broker\": \"localhost:1883\", \"topic_prefix\": \"AdsOverMqtt\", \"client_id\": \"tc-otel\"}",
   "export": {
     "endpoint": "http://localhost:3100/otlp/v1/logs",
     "batch_size": 2000,
