@@ -1,0 +1,11 @@
+[default.extend-words]
+mis = "mis"
+
+[default.extend-identifiers]
+ba902b7 = "ba902b7"
+
+[files]
+extend-exclude = [
+    "crates/tc-otel-ads/tests/fixtures/*.bin",
+    "Cargo.lock",
+]
