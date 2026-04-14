@@ -1,5 +1,2 @@
 [advisories]
-ignore = [
-    # opentelemetry_api merged into opentelemetry crate - we use pinned 0.20
-    "RUSTSEC-2024-0387",
-]
+ignore = []

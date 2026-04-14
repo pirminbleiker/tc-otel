@@ -24,7 +24,6 @@ bytes.workspace = true
 prost.workspace = true
 tonic.workspace = true
 http-body = "0.4"
-opentelemetry.workspace = true
 reqwest.workspace = true
 chrono.workspace = true
 regex = "1.10"
