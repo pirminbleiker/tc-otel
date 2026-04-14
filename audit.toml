@@ -2,10 +2,4 @@
 ignore = [
     # opentelemetry_api merged into opentelemetry crate - we use pinned 0.20
     "RUSTSEC-2024-0387",
-    # rustls-pemfile unmaintained; transitive via rumqttc. No functional impact.
-    "RUSTSEC-2025-0134",
-    # rustls CRL-matching bug; we do not use revocation with UnknownStatusPolicy::Allow.
-    "RUSTSEC-2026-0049",
-    # transitive unmaintained advisory; no functional impact.
-    "RUSTSEC-2026-0097",
 ]
