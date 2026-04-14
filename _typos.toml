@@ -13,6 +13,8 @@ programm = "programm"
 missin = "missin"
 # hyphenated compound that trips default rules
 mis = "mis"
+# MQTT broker name
+mosquitto = "mosquitto"
 
 [default.extend-identifiers]
 # hex span_id literal in log-trace-correlation fixture

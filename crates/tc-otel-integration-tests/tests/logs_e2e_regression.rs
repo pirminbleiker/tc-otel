@@ -61,10 +61,7 @@ fn test_logs_e2e_pipeline() {
     );
 
     let resource_logs = first.get("resourceLogs").unwrap();
-    assert!(
-        resource_logs.is_array(),
-        "resourceLogs must be an array"
-    );
+    assert!(resource_logs.is_array(), "resourceLogs must be an array");
 
     let resource_logs_arr = resource_logs.as_array().unwrap();
     assert!(
@@ -87,10 +84,7 @@ fn test_logs_e2e_pipeline() {
         .and_then(|lr| lr.as_array())
         .expect("Missing or invalid logRecords");
 
-    assert!(
-        !log_records.is_empty(),
-        "logRecords must not be empty"
-    );
+    assert!(!log_records.is_empty(), "logRecords must not be empty");
 
     let log_record = &log_records[0];
 
