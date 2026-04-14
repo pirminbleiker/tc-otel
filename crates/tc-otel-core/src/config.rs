@@ -258,6 +258,22 @@ impl Default for TcpTransportConfig {
     }
 }
 
+/// MQTT TLS configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MqttTlsConfig {
+    /// Path to CA certificate (PEM format)
+    pub ca_cert_path: PathBuf,
+    /// Path to client certificate (PEM format, optional for mTLS)
+    #[serde(default)]
+    pub client_cert_path: Option<PathBuf>,
+    /// Path to client private key (PEM format, optional for mTLS)
+    #[serde(default)]
+    pub client_key_path: Option<PathBuf>,
+    /// Skip server certificate verification (INSECURE — not recommended)
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+}
+
 /// MQTT transport configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MqttTransportConfig {
@@ -275,6 +291,9 @@ pub struct MqttTransportConfig {
     /// MQTT password (optional)
     #[serde(default)]
     pub password: Option<String>,
+    /// TLS configuration (optional)
+    #[serde(default)]
+    pub tls: Option<MqttTlsConfig>,
 }
 
 fn default_mqtt_prefix() -> String {
@@ -293,6 +312,7 @@ impl Default for MqttTransportConfig {
             client_id: default_mqtt_client_id(),
             username: None,
             password: None,
+            tls: None,
         }
     }
 }

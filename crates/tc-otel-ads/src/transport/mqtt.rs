@@ -8,8 +8,11 @@
 //! - Publish: `{prefix}/{dest_net_id}/ams/res` — send AMS response frames
 
 use async_trait::async_trait;
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS, TlsConfiguration, Transport};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
@@ -19,9 +22,22 @@ use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
 use crate::{AdsError, AmsHeader};
+use tc_otel_core::config::MqttTlsConfig;
 use tc_otel_core::{LogEntry, MetricEntry};
 
-/// MQTT AMS transport configuration
+/// Error type for certificate loading failures
+#[derive(Debug, Error)]
+pub enum CertificateError {
+    #[error("Failed to read certificate file {path}: {source}")]
+    ReadError {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("Invalid certificate format: {0}")]
+    InvalidFormat(String),
+}
+
+/// MQTT AMS transport configuration (internal wrapper)
 #[derive(Debug, Clone)]
 pub struct MqttTransportConfig {
     pub broker_host: String,
@@ -32,6 +48,46 @@ pub struct MqttTransportConfig {
     pub ads_port: u16,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub tls: Option<MqttTlsConfig>,
+}
+
+/// Helper function to load certificate bytes from file
+fn load_cert_bytes(path: &PathBuf) -> Result<Vec<u8>, CertificateError> {
+    fs::read(path).map_err(|e| CertificateError::ReadError {
+        path: path.to_string_lossy().into_owned(),
+        source: e,
+    })
+}
+
+/// Configure TLS transport for MQTT options
+fn apply_tls_config(
+    mqtt_options: &mut MqttOptions,
+    tls_config: &MqttTlsConfig,
+) -> Result<(), CertificateError> {
+    let ca_cert = load_cert_bytes(&tls_config.ca_cert_path)?;
+
+    // Build TLS configuration based on whether client certs are provided
+    let tls = if let (Some(cert_path), Some(key_path)) =
+        (&tls_config.client_cert_path, &tls_config.client_key_path)
+    {
+        let client_cert = load_cert_bytes(cert_path)?;
+        let client_key = load_cert_bytes(key_path)?;
+
+        TlsConfiguration::Simple {
+            ca: ca_cert,
+            alpn: None,
+            client_auth: Some((client_cert, client_key)),
+        }
+    } else {
+        TlsConfiguration::Simple {
+            ca: ca_cert,
+            alpn: None,
+            client_auth: None,
+        }
+    };
+
+    mqtt_options.set_transport(Transport::Tls(tls));
+    Ok(())
 }
 
 /// MQTT AMS transport
@@ -260,6 +316,12 @@ impl AmsTransport for MqttAmsTransport {
             mqtt_options.set_credentials(username.clone(), password.clone());
         }
 
+        // Apply TLS configuration if provided
+        if let Some(tls_config) = &self.config.tls {
+            apply_tls_config(&mut mqtt_options, tls_config)
+                .map_err(|e| AdsError::BufferError(format!("TLS configuration error: {}", e)))?;
+        }
+
         let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
 
         let subscribe_topic = format!(
@@ -357,16 +419,9 @@ mod tests {
 
     #[test]
     fn test_mqtt_fixture_parse() {
-        // Load the fixture file
         let fixture_data = include_bytes!("../../tests/fixtures/mqtt_ams_frame.bin");
-
-        // Fixture should be at least 32 bytes (AMS header)
         assert!(fixture_data.len() >= 32, "Fixture too small");
-
-        // Parse the AMS header
         let header = AmsHeader::parse(fixture_data).expect("Failed to parse AMS header");
-
-        // Verify the expected values
         assert_eq!(
             header.target_net_id.to_string(),
             "15.15.15.15.1.1",
@@ -379,5 +434,130 @@ mod tests {
         );
         assert_eq!(header.command_id, 2, "command_id should be READ (2)");
         assert_eq!(header.data_length, 12, "data_length should be 12");
+    }
+
+    #[test]
+    fn test_mqtt_transport_config_default() {
+        let config = MqttTransportConfig {
+            broker_host: "localhost".to_string(),
+            broker_port: 1883,
+            client_id: "tc-otel-test".to_string(),
+            topic_prefix: "AdsOverMqtt".to_string(),
+            local_net_id: "1.1.1.1.1.1".parse().unwrap(),
+            ads_port: 16150,
+            username: None,
+            password: None,
+            tls: None,
+        };
+        assert_eq!(config.broker_host, "localhost");
+        assert_eq!(config.broker_port, 1883);
+        assert!(config.username.is_none());
+        assert!(config.tls.is_none());
+    }
+
+    #[test]
+    fn test_mqtt_transport_config_with_credentials() {
+        let config = MqttTransportConfig {
+            broker_host: "broker.example.com".to_string(),
+            broker_port: 8883,
+            client_id: "tc-otel-prod".to_string(),
+            topic_prefix: "AdsOverMqtt".to_string(),
+            local_net_id: "192.168.1.100.1.1".parse().unwrap(),
+            ads_port: 16150,
+            username: Some("mqtt_user".to_string()),
+            password: Some("mqtt_pass".to_string()),
+            tls: None,
+        };
+        assert_eq!(config.username, Some("mqtt_user".to_string()));
+        assert_eq!(config.password, Some("mqtt_pass".to_string()));
+        assert!(config.tls.is_none());
+    }
+
+    #[test]
+    fn test_mqtt_tls_config_ca_only() {
+        let tls_config = MqttTlsConfig {
+            ca_cert_path: PathBuf::from("/etc/ssl/certs/ca.pem"),
+            client_cert_path: None,
+            client_key_path: None,
+            insecure_skip_verify: false,
+        };
+        assert_eq!(
+            tls_config.ca_cert_path,
+            PathBuf::from("/etc/ssl/certs/ca.pem")
+        );
+        assert!(tls_config.client_cert_path.is_none());
+        assert!(!tls_config.insecure_skip_verify);
+    }
+
+    #[test]
+    fn test_mqtt_tls_config_with_client_certs() {
+        let tls_config = MqttTlsConfig {
+            ca_cert_path: PathBuf::from("/etc/ssl/certs/ca.pem"),
+            client_cert_path: Some(PathBuf::from("/etc/ssl/certs/client.pem")),
+            client_key_path: Some(PathBuf::from("/etc/ssl/private/client.key")),
+            insecure_skip_verify: false,
+        };
+        assert!(tls_config.client_cert_path.is_some());
+        assert!(tls_config.client_key_path.is_some());
+    }
+
+    #[test]
+    fn test_mqtt_transport_config_with_tls() {
+        let tls_config = MqttTlsConfig {
+            ca_cert_path: PathBuf::from("/etc/ssl/certs/ca.pem"),
+            client_cert_path: None,
+            client_key_path: None,
+            insecure_skip_verify: false,
+        };
+        let config = MqttTransportConfig {
+            broker_host: "broker.example.com".to_string(),
+            broker_port: 8883,
+            client_id: "tc-otel-tls".to_string(),
+            topic_prefix: "AdsOverMqtt".to_string(),
+            local_net_id: "192.168.1.100.1.1".parse().unwrap(),
+            ads_port: 16150,
+            username: Some("mqtt_user".to_string()),
+            password: Some("mqtt_pass".to_string()),
+            tls: Some(tls_config),
+        };
+        assert!(config.tls.is_some());
+        assert_eq!(config.broker_port, 8883);
+    }
+
+    #[test]
+    fn test_mqtt_options_with_credentials() {
+        let mut options = MqttOptions::new("test-client", "localhost", 1883);
+        options.set_credentials("testuser", "testpass");
+        assert_eq!(options.client_id(), "test-client");
+    }
+
+    #[test]
+    fn test_mqtt_options_with_tls_config_error_handling() {
+        let mut options = MqttOptions::new("test-client", "localhost", 8883);
+        let nonexistent_tls = MqttTlsConfig {
+            ca_cert_path: PathBuf::from("/nonexistent/ca.pem"),
+            client_cert_path: None,
+            client_key_path: None,
+            insecure_skip_verify: false,
+        };
+        let result = apply_tls_config(&mut options, &nonexistent_tls);
+        assert!(result.is_err());
+        match result {
+            Err(CertificateError::ReadError { path, .. }) => {
+                assert!(path.contains("nonexistent"));
+            }
+            _ => panic!("Expected ReadError"),
+        }
+    }
+
+    #[test]
+    fn test_certificate_error_display() {
+        let err = CertificateError::ReadError {
+            path: "/etc/ssl/certs/ca.pem".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("Failed to read certificate file"));
+        assert!(msg.contains("/etc/ssl/certs/ca.pem"));
     }
 }
