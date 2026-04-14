@@ -36,6 +36,12 @@ services:
     networks: [runtime]
     expose:
       - "48898"
+      - "851"
+      - "852"
+    ports:
+      - "48898:48898"
+      - "851:851"
+      - "852:852"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/48898' 2>/dev/null || nc -z 127.0.0.1 48898"]
       interval: 5s
