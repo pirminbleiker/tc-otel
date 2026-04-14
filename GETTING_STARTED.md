@@ -109,6 +109,168 @@ The PLC needs an ADS route to the tc-otel service:
 
 Alternatively, you can add the route via `adsrouter` command line or through the PLC program.
 
+## MQTT Transport Setup
+
+### Why MQTT
+
+MQTT offers a lightweight, publish-subscribe transport that decouples the PLC from tc-otel. Instead of direct TCP connections, the PLC sends ADS frames to an MQTT broker, allowing offline buffering, message persistence, and integration with edge gateways and cloud platforms that already speak MQTT.
+
+### Broker Setup
+
+Start an MQTT broker (mosquitto):
+
+```bash
+# Create minimal mosquitto.conf
+cat > mosquitto.conf << 'EOF'
+listener 1883
+allow_anonymous true
+persistence true
+EOF
+
+# Run with Docker
+docker run -d --name mosquitto \
+  -p 1883:1883 \
+  -v $(pwd)/mosquitto.conf:/mosquitto/config/mosquitto.conf \
+  eclipse-mosquitto:2
+```
+
+Or start mosquitto directly (if installed):
+
+```bash
+mosquitto -c mosquitto.conf
+```
+
+### TwinCAT StaticRoutes.xml
+
+On the PLC or TwinCAT runtime, configure the MQTT route in `StaticRoutes.xml`:
+
+**Windows**: `C:\TwinCAT\3.1\Target\StaticRoutes.xml`  
+**Linux**: `/etc/TwinCAT/3.1/Target/StaticRoutes.xml`
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<TcConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2015/12/TcConfig">
+  <RemoteConnections>
+    <Mqtt>
+      <Address Port="1883">your-broker-host</Address>
+      <Topic>AdsOverMqtt</Topic>
+    </Mqtt>
+  </RemoteConnections>
+</TcConfig>
+```
+
+Replace `your-broker-host` with the IP or hostname of the MQTT broker (e.g., `192.168.1.100` or `mosquitto`).
+
+**After editing**, restart the TcSystemService:
+
+```bash
+# Linux
+sudo systemctl restart TcSystemService
+
+# Windows
+net stop TcSystemService
+net start TcSystemService
+```
+
+### tc-otel Configuration
+
+Configure tc-otel to subscribe to the MQTT broker and receive ADS frames. Use the `transport.type=mqtt` shape matching the foundation PR:
+
+```json
+{
+  "logging": {
+    "log_level": "info",
+    "format": "text",
+    "output_path": null
+  },
+  "receiver": {
+    "host": "0.0.0.0",
+    "http_port": 4318,
+    "grpc_port": 4317,
+    "ams_net_id": "0.0.0.0.1.1",
+    "ams_tcp_port": 48898,
+    "ads_port": 16150,
+    "transport": {
+      "type": "mqtt",
+      "broker": "localhost:1883",
+      "topic_prefix": "AdsOverMqtt",
+      "client_id": "tc-otel"
+    }
+  },
+  "export": {
+    "endpoint": "http://loki:3100/otlp/v1/logs",
+    "format": "otlp_http",
+    "batch_size": 2000,
+    "flush_interval_ms": 1000
+  },
+  "service": {
+    "name": "tc-otel",
+    "worker_threads": null,
+    "channel_capacity": 50000
+  }
+}
+```
+
+Key fields:
+
+- **`transport.type`**: Set to `"mqtt"` (default is TCP)
+- **`transport.broker`**: Host and port of the MQTT broker
+- **`transport.topic_prefix`**: Must match the `<Topic>` in `StaticRoutes.xml`
+- **`transport.client_id`**: Unique identifier for the tc-otel subscription
+
+Run tc-otel with this config:
+
+```bash
+docker run -d --name tc-otel \
+  -p 4318:4318 -p 4317:4317 \
+  -v $(pwd)/config.json:/etc/tc-otel/config.json:ro \
+  ghcr.io/pirminbleiker/tc-otel:latest
+```
+
+### Verification
+
+**Check MQTT traffic:**
+
+```bash
+# Subscribe to the ADS-over-MQTT topic and watch incoming frames
+docker exec -it mosquitto mosquitto_sub -t 'AdsOverMqtt/#' -v
+```
+
+You should see binary ADS frames arriving on the topic (e.g., `AdsOverMqtt/frames: <binary data>`).
+
+**Check tc-otel logs:**
+
+```bash
+docker logs tc-otel | grep -i mqtt
+```
+
+Look for lines like:
+
+```text
+tc-otel: MQTT subscription active on topic AdsOverMqtt
+tc-otel: Frame received from PLC via MQTT
+```
+
+### Troubleshooting
+
+**Frames not arriving on the MQTT topic:**
+
+- Verify `StaticRoutes.xml` is correctly configured and TcSystemService restarted
+- Check that the broker is reachable: `ping your-broker-host`
+- Confirm the PLC is sending ADS traffic (add a test log in the PLC program)
+
+**tc-otel not connecting to broker:**
+
+- Check `transport.broker` matches the actual broker address and port
+- Verify network connectivity: `nc -zv your-broker-host 1883`
+- Ensure broker allows anonymous access (or configure credentials in StaticRoutes.xml)
+
+**Topic prefix mismatch:**
+
+- The value in `<Topic>AdsOverMqtt</Topic>` must exactly match `"topic_prefix": "AdsOverMqtt"` in config.json
+- Note: topic is case-sensitive
+
 ## Step 4: Write Your First Log Message
 
 Create a new PLC program or add to an existing one:
