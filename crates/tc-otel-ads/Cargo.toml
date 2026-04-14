@@ -18,7 +18,8 @@ thiserror.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
-rumqttc = { version = "0.25", default-features = false }
+rumqttc = "0.24"
+parking_lot.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
