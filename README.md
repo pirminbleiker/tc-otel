@@ -12,18 +12,41 @@ tc-otel bridges TwinCAT 3 PLCs to the OpenTelemetry ecosystem. It collects telem
 ## Architecture
 
 ```
-  TwinCAT PLC                    tc-otel Service                  Backend
- +------------+    AMS/TCP     +----------------+    OTLP       +-----------------+
- | Logs       | ------------> | ADS Receiver   | ------------> | Grafana Loki    |
- | Metrics    |   port 48898  | Processor      |   HTTP/gRPC   | Prometheus      |
- | Traces     |               | OTEL Exporter  |               | Jaeger / Tempo  |
- +------------+               +----------------+               +-----------------+
+                           ┌─────────────────────────────────────────┐
+                           │      Swappable Transport Layer           │
+                           │                                           │
+  TwinCAT PLC              │ TCP (direct ADS route)   MQTT Broker     │  tc-otel Service
+ +----------+              │ +----────────────────+   +──────────+    │ +----------------+
+ |   Logs   |              │ | Point-to-point     |   | Multi-   |    │ | ADS Receiver   |
+ | Metrics  | ----[ADS]----|>| Direct IP route    |   | consumer |----+-→| Processor      |
+ |  Traces  |              │ | port 48898         |   | fan-out  |    │ | OTEL Exporter  |
+ +----------+              │ +----────────────────+   +──────────+    │ +----------------+
+                           │                                           │                    ↓
+                           └─────────────────────────────────────────┘                    OTLP
+                                                                                      HTTP/gRPC
+                                                                                          ↓
+                                                                            +-----------------+
+                                                                            | Grafana Loki    |
+                                                                            | Prometheus      |
+                                                                            | Jaeger / Tempo  |
+                                                                            +-----------------+
 ```
 
 The system has two components:
 
 1. **PLC Library** (`library/`) -- A TwinCAT 3 library providing the telemetry API
 2. **Service** (`crates/`) -- A Rust service that receives ADS data and exports via OpenTelemetry
+
+### Transport Options
+
+tc-otel supports multiple transports for ADS communication between PLC and service. Choose the one that fits your deployment:
+
+| Transport                    | When to use                                                                     | Requires                                                                                    |
+|------------------------------|---------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| **TCP (direct ADS route)**   | Point-to-point communication, low latency requirements, existing TwinCAT static routes | Direct IP connectivity between PLC and tc-otel service, ADS route configured via TwinCAT engineering |
+| **MQTT (ADS-over-MQTT)**     | Multiple consumers, NAT/firewall traversal, broker fan-out, unidirectional clients | MQTT broker (mosquitto, EMQX, HiveMQ, etc.), `RemoteConnections/Mqtt` configured in PLC `StaticRoutes.xml` |
+
+For MQTT setup details, see [MQTT Transport Setup](GETTING_STARTED.md#mqtt-transport-setup) in the Getting Started guide.
 
 ## Features
 
