@@ -2,11 +2,12 @@ name: tc-otel-runtime-tests
 
 # Runtime integration test stack (rt-1 skeleton).
 #
-# Two ads-runtime variants gated by compose profiles:
+# Three ads-runtime variants gated by compose profiles:
 #   --profile softbeckhoff  → fbarresi/softbeckhoff (public CI default)
 #   --profile tc-runtime    → user-supplied TwinCAT runtime via $TC_RUNTIME_IMAGE
+#   --profile mqtt          → tc-runtime with mosquitto + MQTT transport (requires TC_RUNTIME_IMAGE)
 #
-# Both variants register as host "ads-runtime" on the runtime network so
+# All variants register as host "ads-runtime" on the runtime network so
 # downstream services have a stable target regardless of which profile is up.
 #
 # OTLP output lands at /var/log/otlp.jsonl inside the collector, exposed on
@@ -30,7 +31,7 @@ services:
 
   ads-runtime-tc:
     image: ${TC_RUNTIME_IMAGE:-tc-otel/tc-runtime-placeholder:not-set}
-    profiles: ["tc-runtime"]
+    profiles: ["tc-runtime", "mqtt"]
     container_name: ads-runtime
     hostname: ads-runtime
     networks: [runtime]
@@ -42,6 +43,8 @@ services:
       timeout: 3s
       retries: 12
       start_period: 30s
+    volumes:
+      - ./static-routes-mqtt.xml:/etc/TwinCAT/StaticRoutes.xml:ro
 
   tc-otel:
     build:
@@ -56,6 +59,7 @@ services:
       - TC_OTEL_EXPORT__ENDPOINT=http://otel-collector:4318/v1/logs
     volumes:
       - ../../config.example.json:/etc/tc-otel/config.json:ro
+      - ./config.mqtt.json:/etc/tc-otel/config.mqtt.json:ro
     expose:
       - "48898"
       - "4317"
@@ -67,12 +71,32 @@ services:
       ads-runtime-tc:
         condition: service_healthy
         required: false
+      mosquitto:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/48898' 2>/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 15s
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    profiles: ["mqtt"]
+    container_name: mosquitto
+    hostname: mosquitto
+    networks: [runtime]
+    expose:
+      - "1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1883 -t '$SYS/broker/version' -W 1 2>/dev/null || false"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.112.0
