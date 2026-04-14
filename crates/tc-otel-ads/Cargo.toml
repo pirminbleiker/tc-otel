@@ -22,3 +22,5 @@ rumqttc = "0.24"
 
 [dev-dependencies]
 proptest.workspace = true
+testcontainers = "0.15"
+tokio.workspace = true
