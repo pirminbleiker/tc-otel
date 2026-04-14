@@ -11,6 +11,12 @@ TTO = "TTO"
 # German words used intentionally
 programm = "programm"
 missin = "missin"
+# hyphenated compound that trips default rules
+mis = "mis"
+
+[default.extend-identifiers]
+# hex span_id literal in log-trace-correlation fixture
+ba902b7 = "ba902b7"
 
 [files]
 extend-exclude = [
