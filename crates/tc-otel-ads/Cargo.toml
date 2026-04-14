@@ -22,4 +22,5 @@ rumqttc = "0.24"
 parking_lot.workspace = true
 
 [dev-dependencies]
+testcontainers = "0.15"
 proptest.workspace = true
