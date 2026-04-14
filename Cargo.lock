@@ -2211,6 +2211,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "parking_lot",
  "proptest",
  "rumqttc",
  "serde",

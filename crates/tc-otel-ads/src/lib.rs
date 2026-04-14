@@ -13,6 +13,7 @@ pub mod connection_manager;
 pub mod error;
 pub mod health_metrics;
 pub mod listener;
+pub mod mqtt_health_metrics;
 pub mod parser;
 pub mod protocol;
 pub mod registry;
@@ -33,6 +34,7 @@ pub use connection_manager::{
 pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;
+pub use mqtt_health_metrics::MqttHealthCollector;
 pub use parser::AdsParser;
 pub use protocol::{
     AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
