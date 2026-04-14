@@ -230,6 +230,89 @@ impl TlsConfig {
     }
 }
 
+/// TCP transport configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TcpTransportConfig {
+    /// Listening address (default "0.0.0.0")
+    #[serde(default = "default_tcp_host")]
+    pub host: String,
+    /// Listening port (default 48898)
+    #[serde(default = "default_ams_tcp_port")]
+    pub port: u16,
+    /// Maximum concurrent connections (default 100)
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+}
+
+fn default_tcp_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+impl Default for TcpTransportConfig {
+    fn default() -> Self {
+        Self {
+            host: default_tcp_host(),
+            port: default_ams_tcp_port(),
+            max_connections: default_max_connections(),
+        }
+    }
+}
+
+/// MQTT transport configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MqttTransportConfig {
+    /// MQTT broker host (e.g., "localhost")
+    pub broker: String,
+    /// Topic prefix for AMS frames (default "AdsOverMqtt")
+    #[serde(default = "default_mqtt_prefix")]
+    pub topic_prefix: String,
+    /// MQTT client ID (default "tc-otel")
+    #[serde(default = "default_mqtt_client_id")]
+    pub client_id: String,
+    /// MQTT username (optional)
+    #[serde(default)]
+    pub username: Option<String>,
+    /// MQTT password (optional)
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+fn default_mqtt_prefix() -> String {
+    "AdsOverMqtt".to_string()
+}
+
+fn default_mqtt_client_id() -> String {
+    "tc-otel".to_string()
+}
+
+impl Default for MqttTransportConfig {
+    fn default() -> Self {
+        Self {
+            broker: "localhost:1883".to_string(),
+            topic_prefix: default_mqtt_prefix(),
+            client_id: default_mqtt_client_id(),
+            username: None,
+            password: None,
+        }
+    }
+}
+
+/// Transport configuration (tag-based enum for pluggable transports)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TransportConfig {
+    /// TCP transport (AMS/TCP on port 48898)
+    Tcp(TcpTransportConfig),
+    /// MQTT transport (ADS-over-MQTT)
+    Mqtt(MqttTransportConfig),
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        TransportConfig::Tcp(TcpTransportConfig::default())
+    }
+}
+
 /// Receiver configuration (OTEL listener)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiverConfig {
@@ -243,16 +326,18 @@ pub struct ReceiverConfig {
     pub max_body_size: usize,
     /// Request timeout in seconds
     pub request_timeout_secs: u64,
-    /// AMS Net ID for the TCP server (e.g., "172.17.0.2.1.1")
+    /// AMS Net ID for the AMS transport (e.g., "0.0.0.0.1.1")
     #[serde(default = "default_ams_net_id")]
     pub ams_net_id: String,
-    /// AMS/TCP listening port (default 48898)
+    /// AMS/TCP listening port (deprecated, use transport.tcp.port instead)
+    /// This is kept for backward compatibility
     #[serde(default = "default_ams_tcp_port")]
     pub ams_tcp_port: u16,
-    /// ADS port for AMS/TCP server (default 16150)
+    /// ADS port for AMS transport (default 16150)
     #[serde(default = "default_ads_port")]
     pub ads_port: u16,
-    /// Maximum concurrent connections (default 100)
+    /// Maximum concurrent connections (deprecated, use transport.tcp.max_connections instead)
+    /// This is kept for backward compatibility
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
     /// Idle connection timeout in seconds (default 300)
@@ -276,6 +361,9 @@ pub struct ReceiverConfig {
     /// TLS configuration
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Transport configuration (TCP, MQTT, etc.)
+    #[serde(default)]
+    pub transport: TransportConfig,
 }
 
 fn default_ams_net_id() -> String {
@@ -333,6 +421,7 @@ impl Default for ReceiverConfig {
             send_buffer_size: default_send_buffer_size(),
             https_only: false,
             tls: TlsConfig::default(),
+            transport: TransportConfig::default(),
         }
     }
 }

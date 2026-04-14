@@ -17,6 +17,7 @@ pub mod parser;
 pub mod protocol;
 pub mod registry;
 pub mod symbol;
+pub mod transport;
 
 pub use ads_client::{
     build_read_request_frame, build_read_response_frame, AdsClient, AdsReadRequest, AdsReadResponse,
@@ -42,3 +43,4 @@ pub use symbol::{
     parse_symbol_table, AdsSymbolEntry, AdsSymbolUploadInfo, ADSIGRP_SYM_UPLOAD,
     ADSIGRP_SYM_UPLOADINFO,
 };
+pub use transport::{AmsTransport, TcpAmsTransport};

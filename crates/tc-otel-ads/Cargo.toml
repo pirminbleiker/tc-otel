@@ -17,6 +17,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
+rumqttc = "0.24"
 
 [dev-dependencies]
 proptest.workspace = true
