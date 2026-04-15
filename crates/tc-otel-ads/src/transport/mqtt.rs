@@ -311,16 +311,16 @@ impl MqttAmsTransport {
     fn build_write_response(request: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(36);
         // AMS header (32 bytes) — swap source/target
-        buf.extend_from_slice(&request[8..14]);   // target NetId <- request source
-        buf.extend_from_slice(&request[14..16]);  // target port
-        buf.extend_from_slice(&request[0..6]);    // source NetId <- request target
-        buf.extend_from_slice(&request[6..8]);    // source port
-        buf.extend_from_slice(&request[16..18]);  // command id (echo)
+        buf.extend_from_slice(&request[8..14]); // target NetId <- request source
+        buf.extend_from_slice(&request[14..16]); // target port
+        buf.extend_from_slice(&request[0..6]); // source NetId <- request target
+        buf.extend_from_slice(&request[6..8]); // source port
+        buf.extend_from_slice(&request[16..18]); // command id (echo)
         buf.extend_from_slice(&5u16.to_le_bytes()); // state flags = 0x0005 response
         buf.extend_from_slice(&4u32.to_le_bytes()); // data length = 4
         buf.extend_from_slice(&0u32.to_le_bytes()); // error code = 0
-        buf.extend_from_slice(&request[28..32]);  // invoke id (echo)
-        // Payload: Result(4) = 0 success
+        buf.extend_from_slice(&request[28..32]); // invoke id (echo)
+                                                 // Payload: Result(4) = 0 success
         buf.extend_from_slice(&0u32.to_le_bytes());
         buf
     }
@@ -408,7 +408,11 @@ impl AmsTransport for MqttAmsTransport {
                                 .publish(&topic, QoS::AtMostOnce, false, response)
                                 .await
                             {
-                                tracing::warn!("Failed to publish ADS response on '{}': {}", topic, e);
+                                tracing::warn!(
+                                    "Failed to publish ADS response on '{}': {}",
+                                    topic,
+                                    e
+                                );
                             } else {
                                 tracing::trace!("Published ADS response on '{}'", topic);
                             }
@@ -422,17 +426,28 @@ impl AmsTransport for MqttAmsTransport {
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                     tracing::info!("MQTT connected and ready");
 
-                    let info_topic =
-                        format!("{}/{}/info", self.config.topic_prefix, self.config.local_net_id);
+                    let info_topic = format!(
+                        "{}/{}/info",
+                        self.config.topic_prefix, self.config.local_net_id
+                    );
                     let info_payload = format!(
                         "<info><online name=\"{}\" osVersion=\"0.0.0\" osPlatform=\"0\">true</online></info>",
                         self.config.client_id
                     );
                     if let Err(e) = client
-                        .publish(&info_topic, QoS::AtLeastOnce, true, info_payload.into_bytes())
+                        .publish(
+                            &info_topic,
+                            QoS::AtLeastOnce,
+                            true,
+                            info_payload.into_bytes(),
+                        )
                         .await
                     {
-                        tracing::warn!("Failed to publish self-announce on '{}': {}", info_topic, e);
+                        tracing::warn!(
+                            "Failed to publish self-announce on '{}': {}",
+                            info_topic,
+                            e
+                        );
                     } else {
                         tracing::info!("MQTT: announced self on '{}' (retained)", info_topic);
                     }
