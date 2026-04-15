@@ -8,7 +8,7 @@
     <WriteProductVersion>true</WriteProductVersion>
     <GenerateTpy>false</GenerateTpy>
     <Name>log4Tc_Tester</Name>
-    <ProgramVersion>3.1.4026.20</ProgramVersion>
+    <ProgramVersion>3.1.4026.22</ProgramVersion>
     <Application>{62fec726-b61d-45f9-8f13-9593cf9fc6f8}</Application>
     <TypeSystem>{823d03dd-66e7-4e21-af06-c553d5b65b93}</TypeSystem>
     <Implicit_Task_Info>{b1ea4d1b-1959-487f-8343-2fac7b65114c}</Implicit_Task_Info>

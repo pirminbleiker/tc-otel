@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_LogBuilder" Id="{431f68a7-460e-47c3-bd71-217f559bd016}" SpecialFunc="None">
     <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
@@ -51,9 +51,11 @@ END_VAR
     </Method>
     <Method Name="Clear" Id="{b4fa87be-fbb6-485f-9775-709e6fc518bf}">
       <Declaration><![CDATA[METHOD INTERNAL Clear : I_LogBuilder
+VAR_IN_OUT
+	sMessage		: T_MaxString;
+END_VAR
 VAR_INPUT
 	eLogLevel		: E_LogLevel;
-	pMessage		: POINTER TO T_MaxString;
 	pLogger			: POINTER TO T_MaxString := 0;
 END_VAR
 ]]></Declaration>
@@ -65,7 +67,7 @@ IF NOT _IsLogLevelActive() THEN
 END_IF
 THIS^.fbLogEntry.Reset();
 THIS^.iContextBuilder := 0;
-THIS^.sMessage := pMessage^;
+THIS^.sMessage := sMessage;
 IF pLogger <> 0 THEN
 	THIS^.sLogger := pLogger^;
 ELSE

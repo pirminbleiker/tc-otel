@@ -8,7 +8,7 @@
     <WriteProductVersion>true</WriteProductVersion>
     <GenerateTpy>false</GenerateTpy>
     <Name>log4Tc_SmokeTest</Name>
-    <ProgramVersion>3.1.4026.20</ProgramVersion>
+    <ProgramVersion>3.1.4026.22</ProgramVersion>
     <Application>{405644b8-216e-4a39-84c4-1fc3c33adce5}</Application>
     <TypeSystem>{0e0fa1c1-5a81-409d-a9ea-e388aa656fef}</TypeSystem>
     <Implicit_Task_Info>{687142c7-8451-44cf-9087-d549fb23ace1}</Implicit_Task_Info>

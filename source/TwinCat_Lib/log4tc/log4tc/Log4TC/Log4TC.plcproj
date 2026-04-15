@@ -8,7 +8,7 @@
     <WriteProductVersion>true</WriteProductVersion>
     <GenerateTpy>false</GenerateTpy>
     <Name>Log4TC</Name>
-    <ProgramVersion>3.1.4026.20</ProgramVersion>
+    <ProgramVersion>3.1.4026.22</ProgramVersion>
     <Application>{27d1f106-c41a-4b9a-a7ee-188b391db3f7}</Application>
     <TypeSystem>{e596c1dd-8124-4a1a-bf40-bb2ad03cf4cb}</TypeSystem>
     <Implicit_Task_Info>{137bf246-6a75-4baf-ac45-03c4a11fd411}</Implicit_Task_Info>
