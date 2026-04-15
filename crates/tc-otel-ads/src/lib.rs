@@ -10,6 +10,8 @@ pub mod ads_client;
 pub mod ams;
 pub mod ams_server;
 pub mod connection_manager;
+pub mod diagnostics;
+pub mod diagnostics_observer;
 pub mod error;
 pub mod health_metrics;
 pub mod listener;
