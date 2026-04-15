@@ -19,6 +19,12 @@ pub const ADS_CMD_READ_WRITE: u16 = 9;
 pub const ADS_STATE_REQUEST: u16 = 0x0004;
 pub const ADS_STATE_RESPONSE: u16 = 0x0005;
 
+// ADS error codes — returned in the 4-byte result field at the start of an
+// ADS response payload. See Beckhoff ADS Return Codes.
+pub const ADSERR_NOERR: u32 = 0x0000;
+pub const ADSERR_DEVICE_SRVNOTSUPP: u32 = 0x0701;
+pub const ADSERR_DEVICE_INVALIDPARM: u32 = 0x0708;
+
 /// AMS Net ID (6 bytes: xxx.xxx.xxx.xxx.1.1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AmsNetId(pub [u8; 6]);
