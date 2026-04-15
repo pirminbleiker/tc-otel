@@ -9,44 +9,56 @@
   "panels": [
     {
       "type": "timeseries",
-      "title": "CPU Usage (%)",
+      "title": "RT CPU Usage (%)",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "id": 1,
+      "interval": "1s",
+      "maxDataPoints": 2000,
       "fieldConfig": {
-        "defaults": { "unit": "percent", "min": 0, "max": 100 }
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3 }
+        }
       },
       "targets": [
         {
           "expr": "tc_rt_cpu_usage_percent",
           "legendFormat": "{{ams_net_id}}",
-          "refId": "A"
+          "refId": "A",
+          "interval": "1s"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "System Latency (µs)",
+      "title": "System Latency (µs) — current + peak",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "id": 2,
+      "interval": "1s",
+      "maxDataPoints": 2000,
       "fieldConfig": { "defaults": { "unit": "µs" } },
       "targets": [
         {
           "expr": "tc_rt_system_latency_us",
           "legendFormat": "{{ams_net_id}} latency",
-          "refId": "A"
+          "refId": "A",
+          "interval": "1s"
         },
         {
           "expr": "tc_rt_peak_latency_us",
           "legendFormat": "{{ams_net_id}} peak",
-          "refId": "B"
+          "refId": "B",
+          "interval": "1s"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Cycle-Exceed Counter",
+      "title": "Cycle-Exceed Counter (total)",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
       "id": 3,
@@ -62,10 +74,11 @@
     },
     {
       "type": "timeseries",
-      "title": "Cycle Exceeds (rate/min)",
+      "title": "Cycle Exceeds (events/min)",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
       "id": 4,
+      "interval": "10s",
       "fieldConfig": { "defaults": { "unit": "short" } },
       "targets": [
         {
@@ -77,14 +90,15 @@
     },
     {
       "type": "timeseries",
-      "title": "Task CPU Usage (% of wall-clock)",
+      "title": "Task Cycle Rate (cycles/s) — sanity check against base-time",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "id": 5,
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 8 },
+      "id": 11,
+      "interval": "5s",
+      "fieldConfig": { "defaults": { "unit": "hertz" } },
       "targets": [
         {
-          "expr": "rate(tc_task_cpu_time_ns_total[1m]) / 1e9",
+          "expr": "rate(tc_task_cycle_count_total[30s])",
           "legendFormat": "port {{task_port}}",
           "refId": "A"
         }
@@ -92,29 +106,90 @@
     },
     {
       "type": "timeseries",
-      "title": "Task Exec Time (% of wall-clock)",
+      "title": "Task CPU-Time per Cycle (µs) — \"CPU\" blue line from XAE Task Online",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 5,
+      "interval": "5s",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
+          "legendFormat": "port {{task_port}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task Exec-Time per Cycle (µs) — \"Total\" red line from XAE Task Online",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "id": 6,
+      "interval": "5s",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(tc_task_exec_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
+          "legendFormat": "port {{task_port}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task CPU Usage (% of wall-clock)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "id": 7,
+      "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
       "targets": [
         {
-          "expr": "rate(tc_task_exec_time_ns_total[1m]) / 1e9",
+          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / 1e9",
+          "legendFormat": "port {{task_port}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU/Exec Ratio per Task (overhead indicator)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "id": 8,
+      "interval": "5s",
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 2, "min": 0 }
+      },
+      "targets": [
+        {
+          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_exec_time_ns_total[30s])",
           "legendFormat": "port {{task_port}}",
           "refId": "A"
         }
       ]
     }
   ],
-  "refresh": "5s",
+  "refresh": "1s",
   "schemaVersion": 39,
   "tags": ["tc-otel", "twincat", "diagnostics"],
   "templating": { "list": [] },
-  "time": { "from": "now-15m", "to": "now" },
+  "time": { "from": "now-2m", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "tc-otel TwinCAT Diagnostics",
   "uid": "tc-otel-diag",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

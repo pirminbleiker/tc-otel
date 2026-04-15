@@ -50,15 +50,22 @@ pub fn diag_event_to_metrics(target_net_id: AmsNetId, ev: DiagEvent) -> Vec<Metr
         ],
         DiagEvent::TaskStats {
             task_port,
+            cycle_counter,
             cpu_ticks_100ns,
             exec_ticks_100ns,
             ..
         } => {
             // CPU-time accumulators as monotonic counters in nanoseconds.
             // Prometheus rate() gives ns/s → divide by 1e9 for CPU fraction.
-            // u32 wrap is handled by counter-reset semantics in PromQL.
+            // u32 wrap (every ~7 min at full rate) is handled by PromQL's
+            // counter-reset semantics.
             let cpu_ns = cpu_ticks_100ns as f64 * 100.0;
             let exec_ns = exec_ticks_100ns as f64 * 100.0;
+            // u16 cycle counter wraps every ~65 s at 1 kHz; PromQL's
+            // rate() handles the apparent "reset" the same way. Emit raw;
+            // downstream can derive actual cycle time per cycle via
+            //   rate(tc_task_cpu_time_ns[1m]) / rate(tc_task_cycle_count[1m])
+            // → ns per cycle (÷1000 for µs).
             vec![
                 with_task(
                     net_id_str.clone(),
@@ -66,9 +73,18 @@ pub fn diag_event_to_metrics(target_net_id: AmsNetId, ev: DiagEvent) -> Vec<Metr
                     MetricEntry::sum("tc.task.cpu_time_ns".into(), cpu_ns, true),
                 ),
                 with_task(
-                    net_id_str,
+                    net_id_str.clone(),
                     task_port,
                     MetricEntry::sum("tc.task.exec_time_ns".into(), exec_ns, true),
+                ),
+                with_task(
+                    net_id_str,
+                    task_port,
+                    MetricEntry::sum(
+                        "tc.task.cycle_count".into(),
+                        cycle_counter as f64,
+                        true,
+                    ),
                 ),
             ]
         }
@@ -126,18 +142,18 @@ mod tests {
     }
 
     #[test]
-    fn task_stats_maps_to_cpu_and_exec_counters_in_ns() {
+    fn task_stats_maps_to_cpu_exec_and_cycle_counters() {
         let out = diag_event_to_metrics(
             net(),
             DiagEvent::TaskStats {
                 task_port: 350,
                 type_marker: 0,
-                cycle_counter: 0,
+                cycle_counter: 12345,
                 cpu_ticks_100ns: 10,
                 exec_ticks_100ns: 7,
             },
         );
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 3);
         let cpu = out.iter().find(|m| m.name == "tc.task.cpu_time_ns").unwrap();
         assert_eq!(cpu.value, 1000.0, "10 × 100 ns = 1000 ns");
         assert_eq!(cpu.ams_source_port, 350);
@@ -147,5 +163,11 @@ mod tests {
             .find(|m| m.name == "tc.task.exec_time_ns")
             .unwrap();
         assert_eq!(exec.value, 700.0);
+        let cycle = out
+            .iter()
+            .find(|m| m.name == "tc.task.cycle_count")
+            .unwrap();
+        assert_eq!(cycle.value, 12345.0);
+        assert!(cycle.is_monotonic);
     }
 }

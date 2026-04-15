@@ -60,7 +60,7 @@
     "targets": [
       {
         "ams_net_id": "172.28.41.37.1.1",
-        "poll_interval_ms": 1000,
+        "poll_interval_ms": 200,
         "exceed_counter": true,
         "rt_usage": true,
         "task_ports": [340, 350, 351],
