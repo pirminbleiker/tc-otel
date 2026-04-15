@@ -222,11 +222,12 @@ impl AdsRouter {
                         ams_source_port: source_port,
                         task_index: me.task_index as u8,
                     };
-                    let (tn, an, pn) = if let Some(m) = self.registry.lookup(&k) {
-                        (m.task_name, m.app_name, m.project_name)
-                    } else {
-                        (String::new(), String::new(), String::new())
-                    };
+                    let (task_name, app_name, project_name) =
+                        if let Some(m) = self.registry.lookup(&k) {
+                            (m.task_name, m.app_name, m.project_name)
+                        } else {
+                            (String::new(), String::new(), String::new())
+                        };
                     let met = MetricEntry {
                         name: me.name,
                         description: me.description,
@@ -239,10 +240,10 @@ impl AdsRouter {
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,
                         task_index: me.task_index,
-                        task_name: tn,
+                        task_name,
                         task_cycle_counter: me.task_cycle_counter,
-                        app_name: an,
-                        project_name: pn,
+                        app_name,
+                        project_name,
                         attributes: me.attributes,
                         histogram_bounds: me.histogram_bounds,
                         histogram_counts: me.histogram_counts,
