@@ -10,6 +10,7 @@ use tc_otel_core::AppSettings;
 
 mod config_watcher;
 pub mod cycle_time;
+mod diagnostics_bridge;
 mod dispatcher;
 mod service;
 pub mod system_metrics;

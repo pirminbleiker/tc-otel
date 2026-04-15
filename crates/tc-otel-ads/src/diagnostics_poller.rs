@@ -217,11 +217,11 @@ pub struct DiagnosticsPoller {
     config: PollerConfig,
     observer: Arc<Mutex<DiagnosticsObserver>>,
     invoke_counter: Arc<AtomicU32>,
-    event_tx: mpsc::Sender<DiagEvent>,
+    event_tx: mpsc::Sender<(AmsNetId, DiagEvent)>,
 }
 
 impl DiagnosticsPoller {
-    pub fn new(config: PollerConfig, event_tx: mpsc::Sender<DiagEvent>) -> Self {
+    pub fn new(config: PollerConfig, event_tx: mpsc::Sender<(AmsNetId, DiagEvent)>) -> Self {
         Self {
             config,
             observer: Arc::new(Mutex::new(DiagnosticsObserver::new())),
@@ -354,7 +354,8 @@ impl DiagnosticsPoller {
             // Non-blocking send: if the consumer is backpressured, drop the
             // sample rather than stall the poller. Tracing gives us an
             // observable symptom.
-            if let Err(e) = self.event_tx.try_send(ev) {
+            let target_net_id = header.source_net_id;
+            if let Err(e) = self.event_tx.try_send((target_net_id, ev)) {
                 tracing::warn!("DiagnosticsPoller: event channel full, dropping: {e}");
             }
         }

@@ -53,10 +53,16 @@ pub const EXCEED_COUNTER_LEN: usize = 4;
 /// read buffer (rsz=1536); the PLC returns exactly 24 bytes.
 pub const RT_USAGE_LEN: usize = 24;
 
-/// Task-stats type marker observed for standard PLC tasks.
+/// Example task-stats type marker observed for PLC tasks in one target.
+///
+/// **Target-specific, not universal.** The low byte of the `type_marker`
+/// field has been seen to vary across TwinCAT runtimes and project
+/// configurations (e.g. 0x71, 0xC0). Do not branch on these constants in
+/// decode logic — just surface the raw `type_marker` field.
 pub const TASK_MARKER_PLC: u16 = 0x0071;
 
-/// Task-stats type marker observed for the I/O idle task.
+/// Example task-stats type marker observed for an I/O-idle task. See the
+/// note on [`TASK_MARKER_PLC`] — values differ between runtimes.
 pub const TASK_MARKER_IDLE: u16 = 0x000B;
 
 /// Pending-request context the caller tracks by invoke-id.

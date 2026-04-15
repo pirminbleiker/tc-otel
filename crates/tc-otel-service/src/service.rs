@@ -243,8 +243,10 @@ impl Log4TcService {
                 );
                 match poller_config {
                     Ok(cfg) => {
-                        let (diag_tx, mut diag_rx) =
-                            mpsc::channel::<tc_otel_ads::diagnostics::DiagEvent>(256);
+                        let (diag_tx, mut diag_rx) = mpsc::channel::<(
+                            tc_otel_ads::AmsNetId,
+                            tc_otel_ads::diagnostics::DiagEvent,
+                        )>(256);
                         let poller =
                             Arc::new(tc_otel_ads::diagnostics_poller::DiagnosticsPoller::new(
                                 cfg, diag_tx,
@@ -262,10 +264,22 @@ impl Log4TcService {
                                 }
                             }
                         });
-                        // Drain events — real OTel bridge comes in a follow-up.
+                        // Bridge to the existing metric pipeline — each
+                        // DiagEvent fans out to one or more MetricEntry items.
+                        let bridge_metric_tx = metric_tx.clone();
                         tokio::spawn(async move {
-                            while let Some(ev) = diag_rx.recv().await {
-                                tracing::debug!("diagnostics event: {:?}", ev);
+                            while let Some((net_id, ev)) = diag_rx.recv().await {
+                                let metrics =
+                                    crate::diagnostics_bridge::diag_event_to_metrics(net_id, ev);
+                                if let Some(ref tx) = bridge_metric_tx {
+                                    for m in metrics {
+                                        if tx.try_send(m).is_err() {
+                                            tracing::debug!(
+                                                "diagnostics bridge: metric channel full, dropping"
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         });
                         tracing::info!(

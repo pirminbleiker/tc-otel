@@ -54,5 +54,18 @@
     "export_enabled": true,
     "export_batch_size": 100,
     "export_flush_interval_ms": 5000
+  },
+  "diagnostics": {
+    "enabled": true,
+    "targets": [
+      {
+        "ams_net_id": "172.28.41.37.1.1",
+        "poll_interval_ms": 1000,
+        "exceed_counter": true,
+        "rt_usage": true,
+        "task_ports": [340, 350, 351],
+        "rt_port": 200
+      }
+    ]
   }
 }

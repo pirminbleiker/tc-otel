@@ -1,0 +1,120 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "CPU Usage (%)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 }
+      },
+      "targets": [
+        {
+          "expr": "tc_rt_cpu_usage_percent",
+          "legendFormat": "{{ams_net_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "System Latency (µs)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "fieldConfig": { "defaults": { "unit": "µs" } },
+      "targets": [
+        {
+          "expr": "tc_rt_system_latency_us",
+          "legendFormat": "{{ams_net_id}} latency",
+          "refId": "A"
+        },
+        {
+          "expr": "tc_rt_peak_latency_us",
+          "legendFormat": "{{ams_net_id}} peak",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Cycle-Exceed Counter",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "id": 3,
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "tc_rt_exceed_counter_total",
+          "legendFormat": "{{ams_net_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cycle Exceeds (rate/min)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "id": 4,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "expr": "rate(tc_rt_exceed_counter_total[1m]) * 60",
+          "legendFormat": "{{ams_net_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task CPU Usage (% of wall-clock)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 5,
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        {
+          "expr": "rate(tc_task_cpu_time_ns_total[1m]) / 1e9",
+          "legendFormat": "port {{task_port}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task Exec Time (% of wall-clock)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 6,
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        {
+          "expr": "rate(tc_task_exec_time_ns_total[1m]) / 1e9",
+          "legendFormat": "port {{task_port}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["tc-otel", "twincat", "diagnostics"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "tc-otel TwinCAT Diagnostics",
+  "uid": "tc-otel-diag",
+  "version": 1,
+  "weekStart": ""
+}
