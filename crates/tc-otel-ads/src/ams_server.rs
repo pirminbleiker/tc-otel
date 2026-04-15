@@ -3,8 +3,10 @@
 //! This module re-exports the TCP transport implementation and provides
 //! a type alias for backward compatibility with code that uses AmsTcpServer.
 
+use crate::router::AdsRouter;
 pub use crate::transport::{AmsTransport, TcpAmsTransport};
 use std::sync::Arc;
+use tc_otel_core::LogEntry;
 
 /// Backward-compatible wrapper for AmsTcpServer
 /// Provides the old `start()` method that delegates to the AmsTransport `run()` method
@@ -23,25 +25,14 @@ impl AmsTcpServer {
         host: String,
         net_id: crate::ams::AmsNetId,
         ads_port: u16,
-        log_tx: tokio::sync::mpsc::Sender<tc_otel_core::LogEntry>,
+        log_tx: tokio::sync::mpsc::Sender<LogEntry>,
     ) -> Self {
+        // Create a local registry and router for backward compatibility
+        let registry = Arc::new(crate::registry::TaskRegistry::new());
+        let router = Arc::new(AdsRouter::new(ads_port, log_tx, None, registry));
         Self {
-            inner: TcpAmsTransport::new(host, net_id, ads_port, log_tx),
+            inner: TcpAmsTransport::new(host, net_id, router),
         }
-    }
-
-    /// Enable metrics forwarding by providing a channel sender
-    pub fn with_metric_sender(
-        mut self,
-        metric_tx: tokio::sync::mpsc::Sender<tc_otel_core::MetricEntry>,
-    ) -> Self {
-        self.inner = self.inner.with_metric_sender(metric_tx);
-        self
-    }
-
-    pub fn with_registry(mut self, registry: Arc<crate::registry::TaskRegistry>) -> Self {
-        self.inner = self.inner.with_registry(registry);
-        self
     }
 
     pub fn with_connection_config(

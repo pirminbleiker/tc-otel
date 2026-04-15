@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tc_otel_ads::router::AdsRouter;
 use tc_otel_ads::transport::{MqttAmsTransport, MqttTransportConfig};
 use tc_otel_ads::{AmsNetId, AmsTransport, ConnectionConfig, ConnectionManager, TcpAmsTransport};
 use tc_otel_core::config::TransportConfig;
@@ -113,6 +114,15 @@ impl Log4TcService {
             shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
         };
 
+        // Create the AdsRouter with channels and registry
+        let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
+        let ads_router = Arc::new(AdsRouter::new(
+            self.settings.receiver.ads_port,
+            log_tx.clone(),
+            metric_tx.clone(),
+            task_registry.clone(),
+        ));
+
         // Parse broker address (format: "host:port" or "host", default port 1883)
         let parse_broker_addr = |broker: &str| -> (String, u16) {
             let parts: Vec<&str> = broker.split(':').collect();
@@ -132,17 +142,9 @@ impl Log4TcService {
 
         let transport_variant = match &self.settings.receiver.transport {
             TransportConfig::Tcp(tcp_cfg) => {
-                let mut tcp_transport = TcpAmsTransport::new(
-                    tcp_cfg.host.clone(),
-                    net_id,
-                    self.settings.receiver.ads_port,
-                    log_tx.clone(),
-                )
-                .with_connection_config(conn_config.clone());
-
-                if let Some(ref m_tx) = metric_tx {
-                    tcp_transport = tcp_transport.with_metric_sender(m_tx.clone());
-                }
+                let tcp_transport =
+                    TcpAmsTransport::new(tcp_cfg.host.clone(), net_id, ads_router.clone())
+                        .with_connection_config(conn_config.clone());
 
                 tracing::info!("Using TCP transport on {}:{}", tcp_cfg.host, tcp_cfg.port);
                 TransportVariant::Tcp(Arc::new(tcp_transport))
@@ -156,18 +158,13 @@ impl Log4TcService {
                     client_id: mqtt_cfg.client_id.clone(),
                     topic_prefix: mqtt_cfg.topic_prefix.clone(),
                     local_net_id: net_id,
-                    ads_port: self.settings.receiver.ads_port,
                     username: mqtt_cfg.username.clone(),
                     password: mqtt_cfg.password.clone(),
                     tls: mqtt_cfg.tls.clone(),
                 };
 
-                let mut mqtt_transport =
-                    MqttAmsTransport::new(mqtt_transport_config, log_tx.clone());
-
-                if let Some(ref m_tx) = metric_tx {
-                    mqtt_transport = mqtt_transport.with_metric_sender(m_tx.clone());
-                }
+                let mqtt_transport =
+                    MqttAmsTransport::new(mqtt_transport_config, ads_router.clone());
 
                 tracing::info!(
                     "Using MQTT transport: broker={}:{}, client_id={}, topic_prefix={}",
@@ -180,16 +177,10 @@ impl Log4TcService {
             }
         };
 
-        // Extract connection manager and task registry based on transport type
-        let (conn_manager, task_registry) = match &transport_variant {
-            TransportVariant::Tcp(tcp) => (
-                tcp.connection_manager().clone(),
-                tcp.task_registry().clone(),
-            ),
-            TransportVariant::Mqtt(mqtt) => (
-                Arc::new(ConnectionManager::new(conn_config.clone())),
-                mqtt.task_registry().clone(),
-            ),
+        // Extract connection manager based on transport type
+        let conn_manager = match &transport_variant {
+            TransportVariant::Tcp(tcp) => tcp.connection_manager().clone(),
+            TransportVariant::Mqtt(_mqtt) => Arc::new(ConnectionManager::new(conn_config.clone())),
         };
 
         let diagnostic_stats = Arc::new(DiagnosticStats::new());

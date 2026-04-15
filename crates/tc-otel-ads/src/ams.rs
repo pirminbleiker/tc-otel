@@ -21,9 +21,14 @@ pub const ADS_STATE_RESPONSE: u16 = 0x0005;
 
 /// AMS Net ID (6 bytes: xxx.xxx.xxx.xxx.1.1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AmsNetId([u8; 6]);
+pub struct AmsNetId(pub [u8; 6]);
 
 impl AmsNetId {
+    /// Create AMS Net ID from 6 bytes
+    pub fn from_bytes(bytes: [u8; 6]) -> Self {
+        AmsNetId(bytes)
+    }
+
     /// Parse AMS Net ID from string format "192.168.1.100.1.1"
     pub fn from_str_ref(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split('.').collect();
