@@ -11,6 +11,8 @@ tc-otel bridges TwinCAT 3 PLCs to the OpenTelemetry ecosystem. It collects telem
 
 ## Architecture
 
+**High-level system overview:**
+
 ```
                            ┌─────────────────────────────────────────┐
                            │      Swappable Transport Layer           │
@@ -36,6 +38,8 @@ The system has two components:
 
 1. **PLC Library** (`library/`) -- A TwinCAT 3 library providing the telemetry API
 2. **Service** (`crates/`) -- A Rust service that receives ADS data and exports via OpenTelemetry
+
+For detailed architecture information including the layered design, protocol vs. transport separation, and how to extend the system with new commands or transports, see [Architecture Guide](docs/architecture.md).
 
 ### Transport Options
 
