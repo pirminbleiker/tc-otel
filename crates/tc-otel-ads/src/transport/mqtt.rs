@@ -114,6 +114,10 @@ impl AmsTransport for MqttAmsTransport {
         // Set keep-alive interval
         mqtt_options.set_keep_alive(Duration::from_secs(60));
 
+        // Raise packet-size limit — AMS WRITE frames with batched log entries
+        // can exceed rumqttc's 10KB default.
+        mqtt_options.set_max_packet_size(16 * 1024 * 1024, 16 * 1024 * 1024);
+
         // Set credentials if provided
         if let (Some(username), Some(password)) = (&self.config.username, &self.config.password) {
             mqtt_options.set_credentials(username.clone(), password.clone());
@@ -201,11 +205,18 @@ impl AmsTransport for MqttAmsTransport {
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                     tracing::info!("MQTT connected and ready");
                     // Publish info message on ConnAck
-                    let info_topic = format!("{}/+/info", self.config.topic_prefix);
-                    let info_msg = format!(
-                        "tc-otel listening on local_net_id: {}",
-                        self.config.local_net_id
+                    // MQTT forbids wildcards in publish topics — use own NetId.
+                    let info_topic = format!(
+                        "{}/{}/info",
+                        self.config.topic_prefix, self.config.local_net_id
                     );
+                    // Beckhoff ADS-over-MQTT /info XML: TwinCAT routers parse
+                    // this to populate their route table. Plain-text payload
+                    // is ignored → remote NetId never routable → adsErrId=6.
+                    let info_msg = "<info><online name=\"tc-otel\" \
+                        unidirectional=\"true\" osVersion=\"0.0.0\" \
+                        osPlatform=\"0\">true</online></info>"
+                        .to_string();
                     let _ = client
                         .publish(&info_topic, QoS::AtMostOnce, true, info_msg)
                         .await;
