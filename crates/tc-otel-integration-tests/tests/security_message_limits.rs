@@ -402,15 +402,14 @@ fn test_security_field_encoding_validation() {
     payload.push(0); // end marker
 
     let result = AdsParser::parse(&payload);
+    // Parser uses lossy UTF-8 decoding for message field to handle corrupted PLC buffers.
+    // Invalid bytes become U+FFFD replacement characters, not rejected.
+    assert!(result.is_ok(), "lossy UTF-8 decoding should accept frame");
+    let entry = result.unwrap();
     assert!(
-        result.is_err(),
-        "Invalid UTF-8 in message field must be rejected"
-    );
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("Invalid string encoding") || err_msg.contains("utf"),
-        "Error should indicate encoding problem, got: {}",
-        err_msg
+        entry.message.contains('\u{FFFD}'),
+        "invalid UTF-8 should be replaced with U+FFFD, got: {:?}",
+        entry.message
     );
 }
 
