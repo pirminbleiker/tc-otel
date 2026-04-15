@@ -93,30 +93,37 @@ impl AdsParser {
                     match Self::parse_v2_from_reader(&mut reader) {
                         Ok(entry) => entries.push(entry),
                         Err(e) => {
-                            if !entries.is_empty() || !registrations.is_empty() {
-                                // Already parsed some entries — remaining buffer is likely padding/garbage
-                                tracing::debug!(
-                                    "Partial v2 entry at buffer end ({} bytes remaining): {}",
-                                    reader.remaining(),
-                                    e
-                                );
-                                break;
-                            }
-                            tracing::debug!("Error parsing v2 entry: {}", e);
-                            // Try to skip using entry_length if available
-                            let skip_pos = reader.pos;
+                            tracing::debug!(
+                                "Error parsing v2 entry at pos {} ({} bytes remaining): {}",
+                                entry_pos,
+                                reader.remaining(),
+                                e
+                            );
+                            // Try to skip using entry_length (3-byte header: type, len_lo, len_hi).
+                            // Only continue if the next position lands on a valid message-type byte,
+                            // otherwise we'd loop through garbage for huge buffers.
+                            reader.pos = entry_pos;
+                            let mut skipped = false;
                             if reader.remaining() >= 3 {
-                                // Try to read entry_length to skip ahead
-                                reader.pos += 1; // Skip type byte
+                                reader.pos += 1;
                                 if let Ok(entry_len) = reader.read_u16() {
-                                    reader.pos = skip_pos + entry_len as usize + 3;
-                                } else {
-                                    // Can't skip, stop parsing
-                                    break;
+                                    let next_pos = entry_pos + 3 + entry_len as usize;
+                                    if next_pos < reader.data.len() && next_pos > entry_pos {
+                                        let next_type = reader.data[next_pos];
+                                        if matches!(next_type, 1..=6 | 0 | 0xFF) {
+                                            reader.pos = next_pos;
+                                            skipped = true;
+                                        }
+                                    }
                                 }
-                            } else {
-                                break;
                             }
+                            if skipped {
+                                continue;
+                            }
+                            if entries.is_empty() && registrations.is_empty() {
+                                return Err(e);
+                            }
+                            break;
                         }
                     }
                 }

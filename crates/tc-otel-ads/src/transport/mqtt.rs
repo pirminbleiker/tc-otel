@@ -123,13 +123,16 @@ impl MqttAmsTransport {
         &self.registry
     }
 
+    /// Handle an incoming AMS frame. Returns Some((response_topic, response_bytes))
+    /// when an ADS response should be published, None otherwise.
     async fn handle_frame(
         data: &[u8],
         ads_port: u16,
+        topic_prefix: &str,
         log_tx: &mpsc::Sender<LogEntry>,
         metric_tx: &Option<mpsc::Sender<MetricEntry>>,
         registry: &Arc<TaskRegistry>,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<Option<(String, Vec<u8>)>> {
         if data.len() < 32 {
             return Err(AdsError::ParseError("AMS header too short".into()));
         }
@@ -149,7 +152,7 @@ impl MqttAmsTransport {
 
         // Only process WRITE commands containing log/metric data
         if header.command_id != ADS_CMD_WRITE {
-            return Ok(());
+            return Ok(None);
         }
 
         let payload = &data[32..];
@@ -295,7 +298,31 @@ impl MqttAmsTransport {
             }
         }
 
-        Ok(())
+        // Build ADS_WRITE response (result=0 success). PLC blocks on this ACK;
+        // without it log4tc emits FATAL adsErrId=6/37 after timeout.
+        let response_topic = format!("{}/{}/ams/res", topic_prefix, source_net_id);
+        let response = Self::build_write_response(data);
+        Ok(Some((response_topic, response)))
+    }
+
+    /// Build a minimal ADS_WRITE response frame for MQTT transport.
+    /// Swaps source/target from the request, sets response flag, returns
+    /// 32-byte AMS header + 4-byte result=0 payload (no AMS/TCP 6-byte prefix).
+    fn build_write_response(request: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(36);
+        // AMS header (32 bytes) — swap source/target
+        buf.extend_from_slice(&request[8..14]); // target NetId <- request source
+        buf.extend_from_slice(&request[14..16]); // target port
+        buf.extend_from_slice(&request[0..6]); // source NetId <- request target
+        buf.extend_from_slice(&request[6..8]); // source port
+        buf.extend_from_slice(&request[16..18]); // command id (echo)
+        buf.extend_from_slice(&5u16.to_le_bytes()); // state flags = 0x0005 response
+        buf.extend_from_slice(&4u32.to_le_bytes()); // data length = 4
+        buf.extend_from_slice(&0u32.to_le_bytes()); // error code = 0
+        buf.extend_from_slice(&request[28..32]); // invoke id (echo)
+                                                 // Payload: Result(4) = 0 success
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf
     }
 }
 
@@ -310,6 +337,11 @@ impl AmsTransport for MqttAmsTransport {
 
         // Set keep-alive interval
         mqtt_options.set_keep_alive(Duration::from_secs(60));
+
+        // Allow large AMS payloads. rumqttc defaults to 10KB which trips on
+        // aggregated log batches and symbol table uploads (>800KB observed).
+        // 16 MiB matches TwinCAT AMS max packet size.
+        mqtt_options.set_max_packet_size(16 * 1024 * 1024, 16 * 1024 * 1024);
 
         // Set credentials if provided
         if let (Some(username), Some(password)) = (&self.config.username, &self.config.password) {
@@ -361,20 +393,64 @@ impl AmsTransport for MqttAmsTransport {
                     );
 
                     // Parse and process the AMS frame
-                    if let Err(e) = Self::handle_frame(
+                    match Self::handle_frame(
                         &payload,
                         self.config.ads_port,
+                        &self.config.topic_prefix,
                         &self.log_tx,
                         &self.metric_tx,
                         &self.registry,
                     )
                     .await
                     {
-                        tracing::warn!("Error processing MQTT AMS frame: {}", e);
+                        Ok(Some((topic, response))) => {
+                            if let Err(e) = client
+                                .publish(&topic, QoS::AtMostOnce, false, response)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to publish ADS response on '{}': {}",
+                                    topic,
+                                    e
+                                );
+                            } else {
+                                tracing::trace!("Published ADS response on '{}'", topic);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!("Error processing MQTT AMS frame: {}", e);
+                        }
                     }
                 }
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                     tracing::info!("MQTT connected and ready");
+
+                    let info_topic = format!(
+                        "{}/{}/info",
+                        self.config.topic_prefix, self.config.local_net_id
+                    );
+                    let info_payload = format!(
+                        "<info><online name=\"{}\" osVersion=\"0.0.0\" osPlatform=\"0\">true</online></info>",
+                        self.config.client_id
+                    );
+                    if let Err(e) = client
+                        .publish(
+                            &info_topic,
+                            QoS::AtLeastOnce,
+                            true,
+                            info_payload.into_bytes(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to publish self-announce on '{}': {}",
+                            info_topic,
+                            e
+                        );
+                    } else {
+                        tracing::info!("MQTT: announced self on '{}' (retained)", info_topic);
+                    }
                 }
                 Ok(Event::Incoming(Incoming::SubAck(_))) => {
                     tracing::debug!("MQTT subscription acknowledged");
