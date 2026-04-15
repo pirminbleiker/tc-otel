@@ -129,6 +129,22 @@ impl AmsTransport for MqttAmsTransport {
                 .map_err(|e| AdsError::BufferError(format!("TLS configuration error: {}", e)))?;
         }
 
+        // Last Will: mark tc-otel offline if connection drops ungracefully so
+        // peers remove the route instead of retrying a dead NetId.
+        let info_topic = format!(
+            "{}/{}/info",
+            self.config.topic_prefix, self.config.local_net_id
+        );
+        let offline_info = "<info><online name=\"tc-otel\" \
+            unidirectional=\"true\" osVersion=\"0.0.0\" \
+            osPlatform=\"0\">false</online></info>";
+        mqtt_options.set_last_will(rumqttc::LastWill::new(
+            &info_topic,
+            offline_info,
+            QoS::AtLeastOnce,
+            true,
+        ));
+
         let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
 
         let subscribe_topic = format!(
@@ -142,19 +158,10 @@ impl AmsTransport for MqttAmsTransport {
             self.config.broker_port
         );
 
-        // Subscribe to the AMS topic
-        client
-            .subscribe(&subscribe_topic, QoS::AtMostOnce)
-            .await
-            .map_err(|e| AdsError::BufferError(format!("Failed to subscribe to MQTT: {}", e)))?;
-
-        tracing::info!(
-            "MQTT: subscribed to topic '{}' (local Net ID: {})",
-            subscribe_topic,
-            self.config.local_net_id
-        );
-
-        // Event loop
+        // Event loop: rumqttc reconnects automatically on transport errors; we
+        // re-subscribe and re-publish the retained /info on each ConnAck so a
+        // broker that loses session state (or a broker restart clearing
+        // retained messages) still re-learns our route.
         loop {
             let notification = event_loop.poll().await;
 
@@ -204,22 +211,35 @@ impl AmsTransport for MqttAmsTransport {
                 }
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                     tracing::info!("MQTT connected and ready");
-                    // Publish info message on ConnAck
-                    // MQTT forbids wildcards in publish topics — use own NetId.
-                    let info_topic = format!(
-                        "{}/{}/info",
-                        self.config.topic_prefix, self.config.local_net_id
-                    );
+
+                    // (Re-)subscribe on every ConnAck: with clean_session the
+                    // broker drops our subscription on disconnect, so a
+                    // reconnect without this would leave us silently deaf.
+                    if let Err(e) = client.subscribe(&subscribe_topic, QoS::AtMostOnce).await {
+                        tracing::warn!("Failed to (re)subscribe to {}: {}", subscribe_topic, e);
+                    } else {
+                        tracing::info!(
+                            "MQTT: subscribed to topic '{}' (local Net ID: {})",
+                            subscribe_topic,
+                            self.config.local_net_id
+                        );
+                    }
+
                     // Beckhoff ADS-over-MQTT /info XML: TwinCAT routers parse
                     // this to populate their route table. Plain-text payload
                     // is ignored → remote NetId never routable → adsErrId=6.
+                    // QoS 1 + retained so the broker stores it even if we
+                    // disconnect moments later.
                     let info_msg = "<info><online name=\"tc-otel\" \
                         unidirectional=\"true\" osVersion=\"0.0.0\" \
                         osPlatform=\"0\">true</online></info>"
                         .to_string();
-                    let _ = client
-                        .publish(&info_topic, QoS::AtMostOnce, true, info_msg)
-                        .await;
+                    if let Err(e) = client
+                        .publish(&info_topic, QoS::AtLeastOnce, true, info_msg)
+                        .await
+                    {
+                        tracing::warn!("Failed to publish /info: {}", e);
+                    }
                 }
                 Ok(Event::Incoming(Incoming::SubAck(_))) => {
                     tracing::debug!("MQTT subscription acknowledged");
@@ -231,8 +251,13 @@ impl AmsTransport for MqttAmsTransport {
                     tracing::trace!("MQTT event: {:?}", incoming);
                 }
                 Err(e) => {
-                    tracing::error!("MQTT error: {}", e);
-                    return Err(AdsError::BufferError(format!("MQTT error: {}", e)));
+                    // rumqttc reconnects internally; keep polling so we get
+                    // the next ConnAck (which re-subscribes + re-publishes
+                    // /info). Returning here would kill the transport task
+                    // for good and the broker's retained /info would never
+                    // be refreshed after a broker restart.
+                    tracing::warn!("MQTT connection error (will retry): {}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }

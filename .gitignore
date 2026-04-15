@@ -6,6 +6,8 @@
 .vs/
 .vscode/
 .idea/
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 *.suo
 *.user
 *.userosscache
@@ -28,6 +30,10 @@ NUL
 
 # Logs
 *.log
+
+# OTLP collector test output
+tests/runtime/otlp-output/*
+!tests/runtime/otlp-output/.gitkeep
 
 # Binary artifacts
 tc-otel-*-arm64

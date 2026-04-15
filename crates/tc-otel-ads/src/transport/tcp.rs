@@ -4,7 +4,9 @@
 //! incoming AMS commands and UDP port 48899 for route discovery.
 
 use super::AmsTransport;
-use crate::ams::AmsNetId;
+use crate::ams::{
+    AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO, ADS_CMD_READ_STATE, ADS_CMD_WRITE,
+};
 use crate::connection_manager::{ConnectionConfig, ConnectionManager};
 use crate::registry::TaskRegistry;
 use crate::router::AdsRouter;
@@ -32,6 +34,11 @@ impl TcpAmsTransport {
             router,
             conn_manager: Arc::new(ConnectionManager::new(ConnectionConfig::default())),
         }
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
     }
 
     pub fn with_connection_config(mut self, config: ConnectionConfig) -> Self {
@@ -122,7 +129,10 @@ impl TcpAmsTransport {
             // Read AMS/TCP header (6 bytes)
             match stream.read_exact(&mut read_buf[..6]).await {
                 Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    tracing::debug!("AMS/TCP: peer closed ({})", _peer_addr);
+                    break;
+                }
                 Err(e) => return Err(crate::AdsError::IoError(e)),
             }
 
@@ -130,7 +140,16 @@ impl TcpAmsTransport {
             let data_len =
                 u32::from_le_bytes([read_buf[2], read_buf[3], read_buf[4], read_buf[5]]) as usize;
 
-            if reserved != 0 || data_len == 0 || data_len > 1_048_576 {
+            // 16 MB matches MQTT transport limit. Batched log WRITE frames
+            // from log4tc can exceed 1 MB; a hard break here caused the PLC
+            // to time out every ~5 s with adsErrId=6 and reconnect.
+            if reserved != 0 || data_len == 0 || data_len > 16 * 1_048_576 {
+                tracing::warn!(
+                    "AMS/TCP: dropping connection from {} — bad header (reserved={}, data_len={})",
+                    _peer_addr,
+                    reserved,
+                    data_len
+                );
                 break;
             }
 
@@ -148,24 +167,64 @@ impl TcpAmsTransport {
 
             let data = &read_buf[..data_len];
 
-            // Dispatch through router
+            // Skip malformed short frames without dropping the connection.
+            if data.len() < 32 {
+                continue;
+            }
+            let cmd = u16::from_le_bytes([data[16], data[17]]);
+            let tgt_port = u16::from_le_bytes([data[6], data[7]]);
+            tracing::trace!(
+                "AMS in: cmd={} tgt_port={} dlen={} first16={:02x?}",
+                cmd,
+                tgt_port,
+                data.len(),
+                &data[..16.min(data.len())]
+            );
+
+            // Fast path for heartbeat/system queries — inline synchronous
+            // response (same as pre-refactor bf10d124, which had no adsErrId=6).
+            if cmd == ADS_CMD_READ_STATE
+                || cmd == ADS_CMD_READ
+                || cmd == ADS_CMD_READ_DEVICE_INFO
+                || cmd != ADS_CMD_WRITE
+            {
+                match router.dispatch(data).await {
+                    Ok(Some(response)) => {
+                        let mut full = Vec::with_capacity(6 + response.len());
+                        full.extend_from_slice(&0u16.to_le_bytes());
+                        full.extend_from_slice(&(response.len() as u32).to_le_bytes());
+                        full.extend_from_slice(&response);
+                        if stream.write_all(&full).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::debug!("Router dispatch error (skipping frame): {}", e);
+                    }
+                }
+                continue;
+            }
+
+            // ADS_CMD_WRITE: full log-processing path
             match router.dispatch(data).await {
                 Ok(Some(response)) => {
-                    // Wrap response in AMS/TCP header (6 bytes: reserved + length)
                     let mut full_response = Vec::with_capacity(6 + response.len());
                     full_response.extend_from_slice(&0u16.to_le_bytes());
                     full_response.extend_from_slice(&(response.len() as u32).to_le_bytes());
                     full_response.extend_from_slice(&response);
+                    tracing::trace!(
+                        "WRITE ACK ({}B): {:02x?}",
+                        full_response.len(),
+                        &full_response[..full_response.len().min(48)]
+                    );
                     if stream.write_all(&full_response).await.is_err() {
                         break;
                     }
                 }
-                Ok(None) => {
-                    // No response needed
-                }
+                Ok(None) => {}
                 Err(e) => {
-                    tracing::debug!("Router dispatch error: {}", e);
-                    break;
+                    tracing::debug!("Router dispatch error (skipping frame): {}", e);
                 }
             }
         }
@@ -220,7 +279,7 @@ impl AmsTransport for TcpAmsTransport {
                 }
             };
 
-            tracing::trace!("AMS/TCP connection from {}", peer_addr);
+            tracing::info!("AMS/TCP connection from {}", peer_addr);
 
             let router = self.router.clone();
 

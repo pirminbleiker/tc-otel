@@ -1,8 +1,10 @@
 <?xml version="1.0"?>
-<TcSmProject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.20">
-	<Project ProjectGUID="{ADF155C1-099B-4386-BD36-DC7AED699701}" TargetNetId="15.15.15.15.1.1" Target64Bit="true" ShowHideConfigurations="#x3c7">
+<TcSmProject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.22">
+	<Project ProjectGUID="{ADF155C1-099B-4386-BD36-DC7AED699701}" TargetNetId="75.3.166.18.1.1" Target64Bit="true" ShowHideConfigurations="#x3c7">
 		<System>
-			<Settings MaxCpus="4"/>
+			<Settings MaxCpus="10" NonWinCpus="1">
+				<Cpu CpuId="9"/>
+			</Settings>
 			<Licenses>
 				<Target BkhfOrder="3242345xvcxc" CustomOrder="10010">
 					<ManualSelect>{382990C3-AE78-4CDF-8201-CD9F44FB3CAA}</ManualSelect>

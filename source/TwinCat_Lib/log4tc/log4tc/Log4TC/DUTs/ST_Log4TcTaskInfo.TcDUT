@@ -7,6 +7,8 @@ STRUCT
 	nAddLogToBufferErrorCount			: UDINT;	(* Counts error when adding log message to task buffer. *)
 	nSendLogBufferErrorCount			: UDINT;	(* Counts error when sending log task buffer to service. *)
 	nMaxUsedBufferSize					: UDINT;	(* Max. used buffer size of log task buffer. *)
+	bConnected							: BOOL;		(* TRUE when the service is reachable (last send succeeded). Logs are suppressed while FALSE. *)
+	bReconnectPending					: BOOL;		(* TRUE on FALSE->TRUE bConnected edge; consumed by the task to emit a one-shot reconnect log. *)
 END_STRUCT
 END_TYPE
 ]]></Declaration>

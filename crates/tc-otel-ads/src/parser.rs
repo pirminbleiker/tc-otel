@@ -89,11 +89,11 @@ impl AdsParser {
                     let entry_pos = reader.pos;
                     let peek_len = std::cmp::min(40, reader.remaining());
                     let peek_bytes = &reader.data[entry_pos..entry_pos + peek_len];
-                    tracing::debug!("Parsing v2 entry at offset {} (entries so far: {}), first {} bytes: {:02x?}", entry_pos, entries.len(), peek_len, peek_bytes);
+                    tracing::trace!("Parsing v2 entry at offset {} (entries so far: {}), first {} bytes: {:02x?}", entry_pos, entries.len(), peek_len, peek_bytes);
                     match Self::parse_v2_from_reader(&mut reader) {
                         Ok(entry) => entries.push(entry),
                         Err(e) => {
-                            tracing::debug!(
+                            tracing::trace!(
                                 "Error parsing v2 entry at pos {} ({} bytes remaining): {}",
                                 entry_pos,
                                 reader.remaining(),
