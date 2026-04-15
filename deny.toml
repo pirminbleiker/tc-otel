@@ -2,6 +2,13 @@
 ignore = [
     "RUSTSEC-2026-0049",
     "RUSTSEC-2025-0134",
+    # rustls-webpki 0.102.8 pulled transitively by rumqttc 0.25.1 (latest).
+    # Both advisories concern name-constraint validation and are only
+    # reachable over TLS; our MQTT client uses plaintext, so the vulnerable
+    # code path is never exercised. Remove once rumqttc upgrades to
+    # rustls 0.23+ / rustls-webpki 0.103.12+.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
 ]
 
 [licenses]
