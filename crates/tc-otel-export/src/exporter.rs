@@ -183,6 +183,13 @@ impl OtelExporter {
 
     /// Send the actual HTTP request to the collector
     async fn send_payload(&self, payload: &str) -> Result<()> {
+        // Special sink: print to stdout instead of HTTP POST.
+        // Useful for local testing / dry-run exporter.
+        if self.config.endpoint.eq_ignore_ascii_case("stdout") {
+            println!("{}", payload);
+            return Ok(());
+        }
+
         let mut request = self
             .http_client
             .post(&self.config.endpoint)

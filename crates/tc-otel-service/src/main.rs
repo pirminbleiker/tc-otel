@@ -44,9 +44,17 @@ async fn main() -> Result<()> {
         args.config.display()
     ))?;
 
+    let transport_desc = match &settings.receiver.transport {
+        tc_otel_core::config::TransportConfig::Tcp(_) => {
+            format!("AMS/TCP :{}", settings.receiver.ams_tcp_port)
+        }
+        tc_otel_core::config::TransportConfig::Mqtt(m) => {
+            format!("MQTT broker={} topic={}", m.broker, m.topic_prefix)
+        }
+    };
     tracing::info!(
-        "tc-otel starting: AMS/TCP :{} (Net ID {}), export → {}",
-        settings.receiver.ams_tcp_port,
+        "tc-otel starting: {} (Net ID {}), export → {}",
+        transport_desc,
         settings.receiver.ams_net_id,
         settings.export.endpoint,
     );

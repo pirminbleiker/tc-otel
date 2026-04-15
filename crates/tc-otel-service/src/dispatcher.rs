@@ -223,6 +223,12 @@ impl LogDispatcher {
             payload.push_str("}\n");
         }
 
+        // Special sink: print to stdout instead of HTTP POST.
+        if endpoint.eq_ignore_ascii_case("stdout") {
+            print!("{}", payload);
+            return Ok(count);
+        }
+
         let response = client
             .post(endpoint)
             .header("Content-Type", "application/stream+json")

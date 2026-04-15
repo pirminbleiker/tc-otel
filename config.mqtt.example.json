@@ -10,7 +10,7 @@
     "grpc_port": 4317,
     "max_body_size": 4194304,
     "request_timeout_secs": 30,
-    "ams_net_id": "0.0.0.0.1.1",
+    "ams_net_id": "10.10.10.10.1.1",
     "ams_tcp_port": 48898,
     "ads_port": 16150,
     "max_connections": 100,
