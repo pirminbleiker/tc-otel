@@ -17,6 +17,7 @@ pub mod mqtt_health_metrics;
 pub mod parser;
 pub mod protocol;
 pub mod registry;
+pub mod router;
 pub mod symbol;
 pub mod transport;
 
