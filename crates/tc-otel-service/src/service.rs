@@ -144,6 +144,7 @@ impl Log4TcService {
             TransportConfig::Tcp(tcp_cfg) => {
                 let tcp_transport =
                     TcpAmsTransport::new(tcp_cfg.host.clone(), net_id, ads_router.clone())
+                        .with_port(tcp_cfg.port)
                         .with_connection_config(conn_config.clone());
 
                 tracing::info!("Using TCP transport on {}:{}", tcp_cfg.host, tcp_cfg.port);

@@ -69,15 +69,19 @@ impl AdsRouter {
                 Some(Self::build_response(&header, p))
             }
             ADS_CMD_WRITE => {
+                // Build ACK response FIRST and return it before any parsing /
+                // log dispatch. PLC's ADSWRITE has a 5 s timeout; anything
+                // that delays this path (e.g. scheduler yield during parse_all)
+                // can trigger adsErrId=6. Parse/dispatch is scheduled inline
+                // after the caller has the response in hand.
+                let response = Self::build_response(&header, vec![0, 0, 0, 0]);
                 let payload = &frame[32..];
                 if let Ok(wr) = AdsWriteRequest::parse(payload) {
                     if header.target_port == self.ads_port {
-                        let _ = self
-                            .dispatch_write(&source_net_id, source_port, &wr.data)
-                            .await;
+                        self.dispatch_write_sync(&source_net_id, source_port, &wr.data);
                     }
                 }
-                Some(Self::build_response(&header, vec![0, 0, 0, 0]))
+                Some(response)
             }
             _ => Some(Self::build_response(&header, vec![0, 0, 0, 0])),
         };
@@ -93,6 +97,63 @@ impl AdsRouter {
         r
     }
 
+    fn dispatch_write_sync(&self, source_net_id: &str, source_port: u16, write_data: &[u8]) {
+        if let Ok(pr) = AdsParser::parse_all(write_data) {
+            for reg in pr.registrations {
+                let k = RegistrationKey {
+                    ams_net_id: source_net_id.to_string(),
+                    ams_source_port: source_port,
+                    task_index: reg.task_index,
+                };
+                let m = crate::protocol::TaskMetadata {
+                    task_name: reg.task_name.clone(),
+                    app_name: reg.app_name,
+                    project_name: reg.project_name,
+                    online_change_count: reg.online_change_count,
+                };
+                self.registry.register(k, m);
+            }
+            for mut e in pr.entries {
+                if e.version == crate::protocol::AdsProtocolVersion::V2 {
+                    let k = RegistrationKey {
+                        ams_net_id: source_net_id.to_string(),
+                        ams_source_port: source_port,
+                        task_index: e.task_index as u8,
+                    };
+                    if let Some(m) = self.registry.lookup(&k) {
+                        e.task_name = m.task_name;
+                        e.app_name = m.app_name;
+                        e.project_name = m.project_name;
+                        e.online_change_count = m.online_change_count;
+                    }
+                }
+                let mut le = LogEntry::new(
+                    source_net_id.to_string(),
+                    format!("plc-{}", source_net_id),
+                    e.message,
+                    e.logger,
+                    e.level,
+                );
+                le.plc_timestamp = e.plc_timestamp;
+                le.clock_timestamp = e.clock_timestamp;
+                le.task_index = e.task_index;
+                le.task_name = e.task_name;
+                le.task_cycle_counter = e.task_cycle_counter;
+                le.app_name = e.app_name;
+                le.project_name = e.project_name;
+                le.online_change_count = e.online_change_count;
+                le.arguments = e.arguments;
+                le.context = e.context;
+                le.ams_net_id = source_net_id.to_string();
+                le.ams_source_port = source_port;
+                le.trace_id = e.trace_id;
+                le.span_id = e.span_id;
+                let _ = self.log_tx.try_send(le);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     async fn dispatch_write(
         &self,
         source_net_id: &str,

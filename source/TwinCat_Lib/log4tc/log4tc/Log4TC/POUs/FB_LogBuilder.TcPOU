@@ -46,7 +46,11 @@ VAR_INPUT
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_IsLogLevelActive := eLogLevel >= Config.eMaxLogLevel;]]></ST>
+        <ST><![CDATA[// Suppress both when the log level is below the configured threshold AND when
+// the service is not reachable. Skipping unreachable logs avoids all downstream
+// MEMCPY work (message, logger name, args, context) while disconnected.
+_IsLogLevelActive := eLogLevel >= Config.eMaxLogLevel
+	AND Log4TcInfo.aTaskInfo[Tc2_System.GETCURTASKINDEXEX()].bConnected;]]></ST>
       </Implementation>
     </Method>
     <Method Name="Clear" Id="{b4fa87be-fbb6-485f-9775-709e6fc518bf}">

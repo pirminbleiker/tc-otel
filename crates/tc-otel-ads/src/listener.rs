@@ -149,7 +149,7 @@ impl AdsListener {
 
                     // Send to dispatcher
                     if let Err(e) = log_tx.try_send(log_entry) {
-                        tracing::warn!("Failed to send log entry: {}", e);
+                        tracing::trace!("Dropping log entry under backpressure: {}", e);
                     }
 
                     // Send acknowledgment

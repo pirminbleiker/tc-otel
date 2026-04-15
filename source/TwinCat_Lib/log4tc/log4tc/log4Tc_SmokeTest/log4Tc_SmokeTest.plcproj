@@ -53,11 +53,6 @@
       <SubType>Content</SubType>
     </None>
   </ItemGroup>
-  <ItemGroup>
-    <PlaceholderResolution Include="SysDir">
-      <Resolution>SysDir, 3.5.12.0 (System)</Resolution>
-    </PlaceholderResolution>
-  </ItemGroup>
   <ProjectExtensions>
     <PlcProjectOptions>
       <XmlArchive>

@@ -178,6 +178,15 @@ CASE nState OF
 	10: // Wait for log entry; add them to the send buffer
 		pWriteBuffer := WriteBuffer;
 
+		// Emit a one-shot log on the FALSE->TRUE transition of bConnected so the
+		// service receives a marker when the PLC resumes logging.
+		IF Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending THEN
+			Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending := FALSE;
+			F_Log(E_LogLevel.eInfo, 'log4tc connected, logging resumed')
+				.WithLogger('Log4Tc')
+				.CreateLog();
+		END_IF
+
 		// Check online change detection
 		IF TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt <> nLastOnlineChange THEN
 			bRegistrationDirty := TRUE;
@@ -233,6 +242,10 @@ CASE nState OF
 
 				IncUDINT(Log4TcInfo.aTaskInfo[nTaskIndex].nSendLogBufferErrorCount);
 
+				// Service unreachable: gate new log entries at the fluent-API level so
+				// callers skip all MEMCPY work until a send succeeds again.
+				Log4TcInfo.aTaskInfo[nTaskIndex].bConnected := FALSE;
+
 				// Re-register on ADS error (service might have restarted)
 				bRegistrationDirty := TRUE;
 
@@ -248,6 +261,13 @@ CASE nState OF
 					Tc2_Utilities.EMPTY_ARG_VALUE,
 					Tc2_Utilities.EMPTY_ARG_VALUE
 				);
+
+				// Rising edge of connectivity: flag a one-shot reconnect log for the
+				// next cycle and open the fluent-API gate.
+				IF NOT Log4TcInfo.aTaskInfo[nTaskIndex].bConnected THEN
+					Log4TcInfo.aTaskInfo[nTaskIndex].bConnected := TRUE;
+					Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending := TRUE;
+				END_IF
 
 				pReadBuffer := _ReadBuffer;
 				pReadBuffer^.Clear();

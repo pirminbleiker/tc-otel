@@ -1,0 +1,73 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+    command: mosquitto -c /mosquitto-no-auth.conf
+    networks:
+      - tc-otel-test
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    volumes:
+      - ./tests/runtime/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+      - ./tests/runtime/otlp-output:/var/log
+    networks:
+      tc-otel-test:
+        ipv4_address: 10.20.0.5
+    restart: unless-stopped
+
+  tc-otel:
+    image: tc-otel:local
+    container_name: tc-otel
+    ports:
+      - "48898:48898/tcp"
+      - "48899:48899/udp"
+      - "8080:8080"
+    environment:
+      - RUST_LOG=tc_otel=info
+    volumes:
+      - ./config.mqtt.docker.json:/etc/tc-otel/config.json:ro
+    networks:
+      tc-otel-test:
+        ipv4_address: 10.20.0.10
+    depends_on:
+      - mosquitto
+      - otel-collector
+    restart: unless-stopped
+
+  tc31-xar-base:
+    image: ghcr.io/pirminbleiker/tc31-xar-base:latest
+    container_name: tc31-xar-base
+    hostname: tc31-xar-base
+    privileged: true
+    volumes:
+      - ./tc31-StaticRoutes.xml:/etc/TwinCAT/3.1/Target/StaticRoutes.xml:ro
+      - tc31-boot:/etc/TwinCAT/3.1/Boot
+      - tc31-license:/etc/TwinCAT/3.1/Target/License
+    networks:
+      tc-otel-test:
+        ipv4_address: 10.20.0.20
+    depends_on:
+      - tc-otel
+      - mosquitto
+    restart: unless-stopped
+
+volumes:
+  tc31-boot:
+  tc31-license:
+
+networks:
+  tc-otel-test:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24

@@ -69,6 +69,12 @@ impl LogDispatcher {
         Ok(())
     }
 
+    /// True if the endpoint is an OTLP HTTP logs endpoint
+    /// (OTel collector / Tempo / etc., not VictoriaLogs).
+    fn is_otlp_endpoint(endpoint: &str) -> bool {
+        endpoint.contains("/v1/logs")
+    }
+
     /// Background worker that batches records and flushes to endpoint.
     /// Supports hot-reload of export config (endpoint, batch_size, flush_interval)
     /// via an optional `watch::Receiver<AppSettings>`.
@@ -90,6 +96,12 @@ impl LogDispatcher {
         let mut flush_interval = initial_flush_interval;
         let mut config_rx = config_rx;
 
+        let mut otlp_exporter: Option<OtelExporter> = if Self::is_otlp_endpoint(&endpoint) {
+            Some(OtelExporter::new(endpoint.clone(), batch_size, 3))
+        } else {
+            None
+        };
+
         let mut batch: Vec<LogRecord> = Vec::with_capacity(batch_size);
         let mut payload_buf = String::with_capacity(batch_size * 256);
         let mut interval = tokio::time::interval(flush_interval);
@@ -102,7 +114,7 @@ impl LogDispatcher {
                 Some(record) = rx.recv() => {
                     batch.push(record);
                     if batch.len() >= batch_size {
-                        match Self::flush_batch(&client, &endpoint, &batch, &mut payload_buf).await {
+                        match Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await {
                             Ok(n) => total_sent += n as u64,
                             Err(e) => {
                                 total_errors += 1;
@@ -115,7 +127,7 @@ impl LogDispatcher {
                 // Periodic flush
                 _ = interval.tick() => {
                     if !batch.is_empty() {
-                        match Self::flush_batch(&client, &endpoint, &batch, &mut payload_buf).await {
+                        match Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await {
                             Ok(n) => total_sent += n as u64,
                             Err(e) => {
                                 total_errors += 1;
@@ -146,6 +158,11 @@ impl LogDispatcher {
                     if new_endpoint != endpoint {
                         tracing::info!("Hot-reload: export endpoint changed to {}", new_endpoint);
                         endpoint = new_endpoint;
+                        otlp_exporter = if Self::is_otlp_endpoint(&endpoint) {
+                            Some(OtelExporter::new(endpoint.clone(), batch_size, 3))
+                        } else {
+                            None
+                        };
                     }
                     if new_batch_size != batch_size {
                         tracing::info!("Hot-reload: batch_size changed from {} to {}", batch_size, new_batch_size);
@@ -162,7 +179,7 @@ impl LogDispatcher {
                 else => {
                     // Flush remaining
                     if !batch.is_empty() {
-                        let _ = Self::flush_batch(&client, &endpoint, &batch, &mut payload_buf).await;
+                        let _ = Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await;
                     }
                     tracing::info!("Export worker stopped. Total sent: {}, errors: {}", total_sent, total_errors);
                     break;
@@ -171,18 +188,30 @@ impl LogDispatcher {
         }
     }
 
-    /// Flush a batch of records to the endpoint as JSONL — builds payload directly
+    /// Flush a batch of records to the endpoint.
+    /// OTLP endpoints (`/v1/logs`) → delegate to `OtelExporter` (OTLP JSON over HTTP).
+    /// Everything else → VictoriaLogs JSONL with `application/stream+json`.
     async fn flush_batch(
         client: &reqwest::Client,
         endpoint: &str,
-        batch: &[LogRecord],
+        otlp_exporter: Option<&OtelExporter>,
+        batch: &mut Vec<LogRecord>,
         payload: &mut String,
     ) -> Result<usize> {
+        if let Some(exporter) = otlp_exporter {
+            let count = batch.len();
+            let records = std::mem::take(batch);
+            exporter
+                .export_batch(records)
+                .await
+                .map_err(|e| anyhow::anyhow!("OTLP export failed: {}", e))?;
+            return Ok(count);
+        }
         let count = batch.len();
         payload.clear();
 
         // Build JSONL directly without intermediate serde_json::Map
-        for record in batch {
+        for record in batch.iter() {
             payload.push('{');
             // _msg
             payload.push_str("\"_msg\":");
