@@ -68,6 +68,7 @@ mod tests {
             service: ServiceConfig::default(),
             web: WebConfig::default(),
             metrics: MetricsConfig::default(),
+            diagnostics: DiagnosticsConfig::default(),
         }
     }
 

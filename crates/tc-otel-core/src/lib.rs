@@ -11,8 +11,9 @@ pub mod metric_mapper;
 pub mod models;
 
 pub use config::{
-    AppSettings, CustomMetricDef, ExportConfig, LogFormat, LoggingConfig, MetricKindConfig,
-    MetricsConfig, OutputConfig, ReceiverConfig, ServiceConfig, TlsConfig, WebConfig,
+    AppSettings, CustomMetricDef, DiagnosticsConfig, DiagnosticsTargetConfig, ExportConfig,
+    LogFormat, LoggingConfig, MetricKindConfig, MetricsConfig, OutputConfig, ReceiverConfig,
+    ServiceConfig, TlsConfig, WebConfig,
 };
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};

@@ -226,6 +226,64 @@ impl Log4TcService {
             }),
         };
 
+        // Optional self-polling diagnostics collector — only runs for MQTT
+        // transport (needs the same broker) and when explicitly enabled.
+        // Metrics bridge is future work; for now events are drained and logged.
+        if self.settings.diagnostics.enabled
+            && !self.settings.diagnostics.targets.is_empty()
+        {
+            if let TransportConfig::Mqtt(ref mqtt_cfg) = self.settings.receiver.transport {
+                let (broker_host, broker_port) = parse_broker_addr(&mqtt_cfg.broker);
+                let poller_config = build_poller_config(
+                    broker_host,
+                    broker_port,
+                    mqtt_cfg,
+                    net_id,
+                    &self.settings.diagnostics.targets,
+                );
+                match poller_config {
+                    Ok(cfg) => {
+                        let (diag_tx, mut diag_rx) =
+                            mpsc::channel::<tc_otel_ads::diagnostics::DiagEvent>(256);
+                        let poller =
+                            Arc::new(tc_otel_ads::diagnostics_poller::DiagnosticsPoller::new(
+                                cfg, diag_tx,
+                            ));
+                        let mut shutdown_rx_poller = shutdown_tx.subscribe();
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                result = poller.clone().run() => {
+                                    if let Err(e) = result {
+                                        tracing::error!("Diagnostics poller error: {}", e);
+                                    }
+                                }
+                                _ = shutdown_rx_poller.recv() => {
+                                    tracing::info!("Diagnostics poller shutdown");
+                                }
+                            }
+                        });
+                        // Drain events — real OTel bridge comes in a follow-up.
+                        tokio::spawn(async move {
+                            while let Some(ev) = diag_rx.recv().await {
+                                tracing::debug!("diagnostics event: {:?}", ev);
+                            }
+                        });
+                        tracing::info!(
+                            "Diagnostics self-poller started ({} targets)",
+                            self.settings.diagnostics.targets.len()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Diagnostics self-poller disabled: {}", e);
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "Diagnostics self-poller requires MQTT transport; skipping"
+                );
+            }
+        }
+
         // Start dispatcher with diagnostic stats tracking
         let dispatcher = log_dispatcher.clone();
         let stats_for_dispatcher = diagnostic_stats.clone();
@@ -413,4 +471,42 @@ impl Log4TcService {
             }
         }
     }
+}
+
+/// Translate `DiagnosticsTargetConfig` (strings, u64 ms) into the
+/// `diagnostics_poller` runtime types (parsed net IDs, `Duration`).
+fn build_poller_config(
+    broker_host: String,
+    broker_port: u16,
+    mqtt_cfg: &tc_otel_core::config::MqttTransportConfig,
+    local_net_id: AmsNetId,
+    targets: &[tc_otel_core::DiagnosticsTargetConfig],
+) -> Result<tc_otel_ads::diagnostics_poller::PollerConfig> {
+    use tc_otel_ads::diagnostics_poller::{PollerConfig, TargetConfig};
+
+    let mut parsed_targets = Vec::with_capacity(targets.len());
+    for t in targets {
+        let net_id = AmsNetId::from_str(&t.ams_net_id).map_err(|e| {
+            anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e)
+        })?;
+        parsed_targets.push(TargetConfig {
+            net_id,
+            poll_interval: Duration::from_millis(t.poll_interval_ms),
+            exceed_counter: t.exceed_counter,
+            rt_usage: t.rt_usage,
+            task_ports: t.task_ports.clone(),
+            rt_port: t.rt_port,
+        });
+    }
+
+    Ok(PollerConfig {
+        broker_host,
+        broker_port,
+        // Use a distinct client-id so we can run alongside the main MQTT
+        // transport without session conflicts on the broker.
+        client_id: format!("{}-diag", mqtt_cfg.client_id),
+        topic_prefix: mqtt_cfg.topic_prefix.clone(),
+        local_net_id,
+        targets: parsed_targets,
+    })
 }

@@ -16,6 +16,8 @@ pub struct AppSettings {
     pub web: WebConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
 }
 
 /// Logging configuration
@@ -719,6 +721,59 @@ impl Default for ServiceConfig {
     }
 }
 
+/// Self-polling diagnostics collector.
+///
+/// Disabled by default. When enabled, tc-otel runs its own ADS polling loop
+/// against each configured PLC target so runtime metrics (task cycle stats,
+/// RT usage + latency, cycle-exceed counter) are captured even when no
+/// engineering IDE is connected.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiagnosticsConfig {
+    /// Enable the self-polling diagnostics collector.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Targets to poll.
+    #[serde(default)]
+    pub targets: Vec<DiagnosticsTargetConfig>,
+}
+
+/// One PLC to poll for diagnostics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagnosticsTargetConfig {
+    /// AMS Net ID of the PLC, e.g. `172.28.41.37.1.1`.
+    pub ams_net_id: String,
+    /// Poll period in milliseconds (default: 1000).
+    #[serde(default = "default_diagnostics_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    /// Poll the system cycle-exceed counter.
+    #[serde(default = "default_true")]
+    pub exceed_counter: bool,
+    /// Poll the realtime-usage + system-latency block.
+    #[serde(default = "default_true")]
+    pub rt_usage: bool,
+    /// AMS task ports to poll for per-task cycle stats.
+    /// Default covers the I/O idle task plus the first two PLC tasks —
+    /// 340, 350, 351.
+    #[serde(default = "default_diagnostics_task_ports")]
+    pub task_ports: Vec<u16>,
+    /// AMS port of the realtime subsystem (default 200 / R0_REALTIME).
+    #[serde(default = "default_diagnostics_rt_port")]
+    pub rt_port: u16,
+}
+
+fn default_diagnostics_poll_interval_ms() -> u64 {
+    1000
+}
+fn default_true() -> bool {
+    true
+}
+fn default_diagnostics_task_ports() -> Vec<u16> {
+    vec![340, 350, 351]
+}
+fn default_diagnostics_rt_port() -> u16 {
+    200
+}
+
 impl AppSettings {
     /// Load configuration from a JSON file
     pub fn from_json_file(path: &std::path::Path) -> crate::error::Result<Self> {
@@ -917,6 +972,7 @@ mod tests {
             service: ServiceConfig::default(),
             web: WebConfig::default(),
             metrics: MetricsConfig::default(),
+            diagnostics: DiagnosticsConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");
