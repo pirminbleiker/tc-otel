@@ -759,6 +759,14 @@ pub struct DiagnosticsTargetConfig {
     /// AMS port of the realtime subsystem (default 200 / R0_REALTIME).
     #[serde(default = "default_diagnostics_rt_port")]
     pub rt_port: u16,
+    /// Optional manual task-name override, keyed by AMS port number
+    /// (as string). TwinCAT 3 runtimes return `SRVNOTSUPP` for
+    /// `AdsReadDeviceInfo` on task ports, so reliable names usually need
+    /// to come from config. Names from this map take precedence over
+    /// anything the auto-discovery turns up; unlisted ports fall back to
+    /// `port-<N>`.
+    #[serde(default)]
+    pub task_names: std::collections::HashMap<String, String>,
 }
 
 fn default_diagnostics_poll_interval_ms() -> u64 {

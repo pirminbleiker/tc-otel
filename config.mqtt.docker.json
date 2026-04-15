@@ -64,7 +64,12 @@
         "exceed_counter": true,
         "rt_usage": true,
         "task_ports": [340, 350, 351],
-        "rt_port": 200
+        "rt_port": 200,
+        "task_names": {
+          "340": "IO Idle",
+          "350": "PlcTask",
+          "351": "PlcTask1"
+        }
       }
     ]
   }

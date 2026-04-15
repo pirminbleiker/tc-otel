@@ -26,7 +26,7 @@ pub const ADSERR_DEVICE_SRVNOTSUPP: u32 = 0x0701;
 pub const ADSERR_DEVICE_INVALIDPARM: u32 = 0x0708;
 
 /// AMS Net ID (6 bytes: xxx.xxx.xxx.xxx.1.1)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AmsNetId(pub [u8; 6]);
 
 impl AmsNetId {

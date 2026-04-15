@@ -1,5 +1,21 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "datasource": "VictoriaMetrics",
+        "enable": true,
+        "iconColor": "red",
+        "name": "Cycle exceeds",
+        "target": {
+          "expr": "changes(tc_rt_exceed_counter_total[30s]) > 0",
+          "legendFormat": "exceed on {{ams_net_id}}",
+          "useValueForTime": false
+        },
+        "titleFormat": "Cycle exceed",
+        "tagKeys": "ams_net_id"
+      }
+    ]
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -99,7 +115,7 @@
       "targets": [
         {
           "expr": "rate(tc_task_cycle_count_total[30s])",
-          "legendFormat": "port {{task_port}}",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]
@@ -120,7 +136,7 @@
       "targets": [
         {
           "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
-          "legendFormat": "port {{task_port}}",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]
@@ -141,7 +157,7 @@
       "targets": [
         {
           "expr": "rate(tc_task_exec_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
-          "legendFormat": "port {{task_port}}",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]
@@ -157,7 +173,7 @@
       "targets": [
         {
           "expr": "rate(tc_task_cpu_time_ns_total[30s]) / 1e9",
-          "legendFormat": "port {{task_port}}",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]
@@ -175,7 +191,7 @@
       "targets": [
         {
           "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_exec_time_ns_total[30s])",
-          "legendFormat": "port {{task_port}}",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]

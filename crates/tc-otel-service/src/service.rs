@@ -251,6 +251,7 @@ impl Log4TcService {
                             Arc::new(tc_otel_ads::diagnostics_poller::DiagnosticsPoller::new(
                                 cfg, diag_tx,
                             ));
+                        let task_names = poller.task_names();
                         let mut shutdown_rx_poller = shutdown_tx.subscribe();
                         tokio::spawn(async move {
                             tokio::select! {
@@ -269,8 +270,10 @@ impl Log4TcService {
                         let bridge_metric_tx = metric_tx.clone();
                         tokio::spawn(async move {
                             while let Some((net_id, ev)) = diag_rx.recv().await {
-                                let metrics =
-                                    crate::diagnostics_bridge::diag_event_to_metrics(net_id, ev);
+                                let names = task_names.read().await.clone();
+                                let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                                    net_id, ev, &names,
+                                );
                                 if let Some(ref tx) = bridge_metric_tx {
                                     for m in metrics {
                                         if tx.try_send(m).is_err() {
@@ -503,6 +506,20 @@ fn build_poller_config(
         let net_id = AmsNetId::from_str(&t.ams_net_id).map_err(|e| {
             anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e)
         })?;
+        // Parse the string-keyed `task_names` map from config into
+        // `HashMap<u16, String>`, silently skipping entries with a
+        // non-numeric port.
+        let mut task_names = std::collections::HashMap::new();
+        for (port_str, name) in &t.task_names {
+            if let Ok(port) = port_str.parse::<u16>() {
+                task_names.insert(port, name.clone());
+            } else {
+                tracing::warn!(
+                    "diagnostics: ignoring task_names entry with non-numeric port '{}'",
+                    port_str
+                );
+            }
+        }
         parsed_targets.push(TargetConfig {
             net_id,
             poll_interval: Duration::from_millis(t.poll_interval_ms),
@@ -510,6 +527,7 @@ fn build_poller_config(
             rt_usage: t.rt_usage,
             task_ports: t.task_ports.clone(),
             rt_port: t.rt_port,
+            task_names,
         });
     }
 

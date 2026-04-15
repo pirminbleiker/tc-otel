@@ -13,7 +13,9 @@
 //! - Publishes requests to `{prefix}/{target_net_id}/ams`.
 //! - Subscribes to `{prefix}/{local_net_id}/ams/res` for responses.
 
-use crate::ams::{AmsHeader, AmsNetId, ADS_CMD_READ, ADS_STATE_REQUEST};
+use crate::ams::{
+    AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO, ADS_STATE_REQUEST,
+};
 use crate::diagnostics::{
     DiagEvent, IG_RT_SYSTEM, IG_RT_USAGE, IO_EXCEED_COUNTER, IO_RT_USAGE, IO_TASK_STATS,
     RT_USAGE_LEN, TASK_STATS_LEN,
@@ -21,10 +23,11 @@ use crate::diagnostics::{
 use crate::diagnostics_observer::DiagnosticsObserver;
 use crate::error::Result;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 /// Default AMS port of the TwinCAT realtime subsystem.
 pub const DEFAULT_RT_PORT: u16 = 200;
@@ -48,6 +51,12 @@ pub struct TargetConfig {
     pub task_ports: Vec<u16>,
     /// AMS port of the realtime subsystem for RT-usage reads.
     pub rt_port: u16,
+    /// Pre-populated task names keyed by port. These seed the shared
+    /// `task_names` map before discovery runs, so metrics carry the
+    /// right name from the first sample onward. TC3 task ports usually
+    /// don't answer `AdsReadDeviceInfo` — configure names here for
+    /// reliable labeling.
+    pub task_names: HashMap<u16, String>,
 }
 
 impl TargetConfig {
@@ -59,6 +68,7 @@ impl TargetConfig {
             rt_usage: true,
             task_ports: vec![340, 350, 351],
             rt_port: DEFAULT_RT_PORT,
+            task_names: HashMap::new(),
         }
     }
 }
@@ -87,6 +97,51 @@ pub struct PlannedPoll {
     pub read_size: u32,
     pub invoke_id: u32,
     pub frame: Vec<u8>,
+}
+
+/// Build a raw AMS frame for an `AdsReadDeviceInfo` request (cmd 1).
+/// Request payload is empty; the response carries the 24-byte device
+/// descriptor `result(4) + major(1) + minor(1) + version(2) + name(16)`.
+pub fn build_read_device_info_frame(
+    source_net_id: AmsNetId,
+    source_port: u16,
+    target_net_id: AmsNetId,
+    target_port: u16,
+    invoke_id: u32,
+) -> Vec<u8> {
+    let header = AmsHeader {
+        target_net_id,
+        target_port,
+        source_net_id,
+        source_port,
+        command_id: ADS_CMD_READ_DEVICE_INFO,
+        state_flags: ADS_STATE_REQUEST,
+        data_length: 0,
+        error_code: 0,
+        invoke_id,
+    };
+    header.serialize()
+}
+
+/// Extract the zero-terminated ASCII task name from a `ReadDeviceInfo`
+/// response body. Returns `None` on malformed input.
+fn parse_device_info_name(body: &[u8]) -> Option<String> {
+    // body = result(4) + major(1) + minor(1) + version(2) + name(16)
+    if body.len() < 24 {
+        return None;
+    }
+    let result = u32::from_le_bytes(body[0..4].try_into().ok()?);
+    if result != 0 {
+        return None;
+    }
+    let name_bytes = &body[8..24];
+    let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(16);
+    let name = std::str::from_utf8(&name_bytes[..end]).ok()?.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 /// Build a raw AMS frame for an ADS-Read request (header + payload, no
@@ -212,22 +267,47 @@ pub fn build_polls_for_target(
     polls
 }
 
+/// Map from `(PLC net ID, task port)` to the human-readable task name
+/// discovered via `AdsReadDeviceInfo`. Shared so the metric bridge can
+/// attach the name as a label.
+pub type TaskNameMap = Arc<RwLock<HashMap<(AmsNetId, u16), String>>>;
+
 /// Self-polling diagnostics collector.
 pub struct DiagnosticsPoller {
     config: PollerConfig,
     observer: Arc<Mutex<DiagnosticsObserver>>,
     invoke_counter: Arc<AtomicU32>,
     event_tx: mpsc::Sender<(AmsNetId, DiagEvent)>,
+    task_names: TaskNameMap,
+    /// Invoke-IDs the poller sent for `ReadDeviceInfo` requests, keyed so
+    /// the matching response can be attributed to the right (net_id, port).
+    pending_device_info: Arc<Mutex<HashMap<u32, (AmsNetId, u16)>>>,
 }
 
 impl DiagnosticsPoller {
     pub fn new(config: PollerConfig, event_tx: mpsc::Sender<(AmsNetId, DiagEvent)>) -> Self {
+        // Seed the task-name map with manual overrides from config so
+        // metrics carry the right label from the first sample onward.
+        let mut seeded = HashMap::new();
+        for target in &config.targets {
+            for (&port, name) in &target.task_names {
+                seeded.insert((target.net_id, port), name.clone());
+            }
+        }
         Self {
             config,
             observer: Arc::new(Mutex::new(DiagnosticsObserver::new())),
             invoke_counter: Arc::new(AtomicU32::new(1)),
             event_tx,
+            task_names: Arc::new(RwLock::new(seeded)),
+            pending_device_info: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Shared task-name map. Populated asynchronously after startup — empty
+    /// until the first `ReadDeviceInfo` response arrives.
+    pub fn task_names(&self) -> TaskNameMap {
+        self.task_names.clone()
     }
 
     /// Run the poller forever. Subscribes to the response topic, spawns one
@@ -272,6 +352,17 @@ impl DiagnosticsPoller {
                     );
                     if let Err(e) = client.subscribe(&res_topic, QoS::AtMostOnce).await {
                         tracing::warn!("DiagnosticsPoller: subscribe failed: {e}");
+                    }
+                    // Kick off one-shot task-name discovery for each target.
+                    // Failures just leave the name map empty; regular polls
+                    // continue to work with the port number as identifier.
+                    for target in &self.config.targets {
+                        let this = self.clone();
+                        let target = target.clone();
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            this.discover_task_names(client, target).await;
+                        });
                     }
                 }
                 Ok(Event::Incoming(Incoming::Publish(publish))) => {
@@ -346,6 +437,21 @@ impl DiagnosticsPoller {
             return;
         }
         let body = &payload[32..];
+
+        // ReadDeviceInfo responses carry the task name — resolve and store.
+        if header.command_id == ADS_CMD_READ_DEVICE_INFO {
+            let pending = self.pending_device_info.lock().await.remove(&header.invoke_id);
+            if let Some((net_id, port)) = pending {
+                if let Some(name) = parse_device_info_name(body) {
+                    tracing::info!(
+                        "DiagnosticsPoller: discovered task name '{name}' for {net_id}:{port}"
+                    );
+                    self.task_names.write().await.insert((net_id, port), name);
+                }
+            }
+            return;
+        }
+
         let event = {
             let mut obs = self.observer.lock().await;
             obs.feed(&header, body)
@@ -357,6 +463,40 @@ impl DiagnosticsPoller {
             let target_net_id = header.source_net_id;
             if let Err(e) = self.event_tx.try_send((target_net_id, ev)) {
                 tracing::warn!("DiagnosticsPoller: event channel full, dropping: {e}");
+            }
+        }
+    }
+
+    async fn discover_task_names(self: Arc<Self>, client: AsyncClient, target: TargetConfig) {
+        tracing::info!(
+            "DiagnosticsPoller: starting name discovery for {} ({} ports)",
+            target.net_id,
+            target.task_ports.len()
+        );
+        // Give the broker a moment to propagate our response subscription
+        // before the PLC's replies start flowing.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        for &port in &target.task_ports {
+            let invoke = self.invoke_counter.fetch_add(1, Ordering::Relaxed);
+            self.pending_device_info
+                .lock()
+                .await
+                .insert(invoke, (target.net_id, port));
+            let frame = build_read_device_info_frame(
+                self.config.local_net_id,
+                POLLER_SOURCE_PORT,
+                target.net_id,
+                port,
+                invoke,
+            );
+            let topic = format!("{}/{}/ams", self.config.topic_prefix, target.net_id);
+            tracing::debug!(
+                "DiagnosticsPoller: publishing ReadDeviceInfo to {topic} port={port} invoke=0x{invoke:x}"
+            );
+            if let Err(e) = client.publish(&topic, QoS::AtMostOnce, false, frame).await {
+                tracing::warn!(
+                    "DiagnosticsPoller: ReadDeviceInfo publish to {topic} port {port} failed: {e}"
+                );
             }
         }
     }
@@ -379,6 +519,7 @@ mod tests {
             rt_usage: true,
             task_ports: vec![340, 350, 351],
             rt_port: DEFAULT_RT_PORT,
+            task_names: HashMap::new(),
         }
     }
 
@@ -477,6 +618,37 @@ mod tests {
             assert_eq!(p.index_group, IG_RT_SYSTEM);
             assert_eq!(p.index_offset, IO_TASK_STATS);
         }
+    }
+
+    #[test]
+    fn device_info_frame_has_empty_payload_and_cmd1() {
+        let frame = build_read_device_info_frame(
+            net([10, 10, 10, 10, 1, 1]),
+            POLLER_SOURCE_PORT,
+            net([1, 2, 3, 4, 5, 6]),
+            350,
+            0x42,
+        );
+        assert_eq!(frame.len(), 32);
+        let header = AmsHeader::parse(&frame).unwrap();
+        assert_eq!(header.command_id, ADS_CMD_READ_DEVICE_INFO);
+        assert_eq!(header.data_length, 0);
+        assert_eq!(header.invoke_id, 0x42);
+    }
+
+    #[test]
+    fn device_info_name_parses_zero_terminated_ascii() {
+        // body = result(4)=0 + major(1) + minor(1) + version(2) + name(16)
+        let mut body = vec![0, 0, 0, 0, 3, 1, 0x0e, 0x00];
+        body.extend_from_slice(b"PlcTask\0\0\0\0\0\0\0\0\0");
+        assert_eq!(parse_device_info_name(&body), Some("PlcTask".to_string()));
+    }
+
+    #[test]
+    fn device_info_name_rejects_error_result() {
+        let mut body = vec![0x07, 0, 0, 0, 0, 0, 0, 0];
+        body.extend_from_slice(b"ShouldNotReturn\0");
+        assert_eq!(parse_device_info_name(&body), None);
     }
 
     #[test]
