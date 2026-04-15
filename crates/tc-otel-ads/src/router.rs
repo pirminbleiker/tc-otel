@@ -149,7 +149,9 @@ impl AdsRouter {
                 le.ams_source_port = source_port;
                 le.trace_id = e.trace_id;
                 le.span_id = e.span_id;
-                let _ = self.log_tx.send(le).await;
+                // Non-blocking: drop under backpressure rather than stall the
+                // AMS response path (PLC times out after 5s with adsErrId=6).
+                let _ = self.log_tx.try_send(le);
             }
             if let Some(ref m_tx) = self.metric_tx {
                 for me in pr.metrics {
@@ -187,7 +189,7 @@ impl AdsRouter {
                         histogram_sum: me.histogram_sum,
                         is_monotonic: me.is_monotonic,
                     };
-                    let _ = m_tx.send(met).await;
+                    let _ = m_tx.try_send(met);
                 }
             }
         }
