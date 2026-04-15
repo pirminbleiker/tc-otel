@@ -897,11 +897,9 @@ impl<'a> BytesReader<'a> {
 
         let str_bytes = self.read_bytes(len)?;
 
-        // Validate UTF-8 first before allocating
-        match std::str::from_utf8(str_bytes) {
-            Ok(valid_str) => Ok(valid_str.to_string()),
-            Err(e) => Err(AdsError::InvalidStringEncoding(e.to_string())),
-        }
+        // Use lossy UTF-8 decoding to handle invalid sequences gracefully
+        // Real PLC buffers may contain uninitialized or corrupted data
+        Ok(String::from_utf8_lossy(str_bytes).into_owned())
     }
 
     fn read_filetime(&mut self) -> Result<DateTime<Utc>> {
@@ -1610,13 +1608,17 @@ mod tests {
 
     #[test]
     fn test_bytes_reader_invalid_utf8() {
+        // Invalid UTF-8 sequences are now handled gracefully with lossy decoding
+        // to support real PLC buffers that may contain corrupted data
         let mut data = vec![2u8]; // 1-byte length prefix
         data.push(0xFF);
         data.push(0xFF); // Invalid UTF-8 sequence
 
         let mut reader = BytesReader::new(&data);
         let result = reader.read_string();
-        assert!(result.is_err());
+        assert!(result.is_ok(), "Invalid UTF-8 should be decoded lossily");
+        // The result will contain replacement characters
+        assert!(!result.unwrap().is_empty());
     }
 
     #[test]
@@ -2146,5 +2148,65 @@ mod tests {
         assert_eq!(result.entries.len(), 2);
         assert_eq!(result.entries[0].message, "First");
         assert_eq!(result.entries[1].message, "Second");
+    }
+
+    #[test]
+    fn test_parse_v2_real_fixture_entry_1() {
+        // Real v2 entry from PLC with complex argument types
+        // Entry 1: contains TIME, LTIME, DATE, DT, TOD, ENUM, WSTRING arguments
+        let fixture = include_bytes!("../tests/fixtures/plc_v2_real_1.bin");
+        let result = AdsParser::parse_all(fixture).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        let entry = &result.entries[0];
+
+        assert_eq!(entry.version, AdsProtocolVersion::V2);
+        assert_eq!(entry.logger, "_GLOBAL_");
+        assert_eq!(entry.level, LogLevel::Info);
+        assert_eq!(
+            entry.arguments.len(),
+            7,
+            "Should have 7 arguments (TIME, LTIME, DATE, DT, TOD, ENUM, WSTRING)"
+        );
+
+        // Verify argument types were parsed
+        assert!(entry.arguments.contains_key(&1), "Should have argument 1");
+        assert!(
+            entry.arguments.contains_key(&7),
+            "Should have argument 7 (WSTRING)"
+        );
+    }
+
+    #[test]
+    fn test_parse_v2_real_fixture_entry_2() {
+        // Real v2 entry from PLC with fewer arguments
+        // Entry 2: contains ENUM and TOD arguments
+        let fixture = include_bytes!("../tests/fixtures/plc_v2_real_2.bin");
+        let result = AdsParser::parse_all(fixture).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        let entry = &result.entries[0];
+
+        assert_eq!(entry.version, AdsProtocolVersion::V2);
+        assert_eq!(entry.logger, "PRG_TestSimpleApi");
+        assert_eq!(entry.level, LogLevel::Debug);
+        assert_eq!(
+            entry.arguments.len(),
+            2,
+            "Should have 2 arguments (ENUM, TOD)"
+        );
+    }
+
+    #[test]
+    fn test_parse_v2_real_fixture_entry_3() {
+        // Real v2 entry from PLC identical structure to entry 1
+        let fixture = include_bytes!("../tests/fixtures/plc_v2_real_3.bin");
+        let result = AdsParser::parse_all(fixture).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        let entry = &result.entries[0];
+
+        assert_eq!(entry.version, AdsProtocolVersion::V2);
+        assert_eq!(entry.arguments.len(), 7);
     }
 }
