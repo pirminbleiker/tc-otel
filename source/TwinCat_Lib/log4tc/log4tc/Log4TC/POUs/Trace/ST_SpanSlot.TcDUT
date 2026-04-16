@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_SpanSlot" Id="{c3d4e5f6-a7b8-49i0-j1k2-l3m4n5o6p7q8}">
+    <Declaration><![CDATA[(*
+:Description: Per-slot state for span allocation and parent tracking.
+
+Fixed-size structure allocated by FB_Log4TcTaskTracer for each open span.
+Tracks whether the slot is in use and the parent's local_id for implicit
+nesting via the task's span stack.
+*)
+TYPE ST_SpanSlot :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  bInUse           : BOOL;    // TRUE when slot is actively holding a span
+  parent_local_id  : USINT;   // local_id of parent span, or 0xFF for no parent
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

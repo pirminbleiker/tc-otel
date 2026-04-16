@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="E_SpanKind" Id="{a1b2c3d4-e5f6-47g8-h9i0-j1k2l3m4n5o6}">
+    <Declaration><![CDATA[(*
+:Description: Span kind enumeration for OpenTelemetry trace semantics.
+*)
+TYPE E_SpanKind :
+(
+    Internal := 0,   // Non-remote, internal-to-task operation
+    Server   := 1,   // Handling an inbound RPC / request
+    Client   := 2,   // Making an outbound RPC / request
+    Producer := 3,   // Enqueueing onto an async queue / bus
+    Consumer := 4    // Dequeueing from an async queue / bus
+) USINT;
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>
