@@ -7,7 +7,7 @@
 //!
 //! Unknown frames cost one hash-map lookup and are dropped with no allocation.
 //!
-//! Pending-request entries expire after 30 seconds to bound memory
+//! Pending-request entries expire after [`DiagnosticsObserver::PENDING_TTL`] to bound memory
 //! when a request's response is lost or dropped.
 
 use crate::ams::AmsHeader;
