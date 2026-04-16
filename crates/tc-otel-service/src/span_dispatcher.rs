@@ -307,10 +307,7 @@ impl SpanDispatcher {
         let trace_record = TraceRecord {
             trace_id: hex::encode(pending.trace_id),
             span_id: hex::encode(pending.span_id),
-            parent_span_id: pending
-                .parent_span_id
-                .map(hex::encode)
-                .unwrap_or_default(),
+            parent_span_id: pending.parent_span_id.map(hex::encode).unwrap_or_default(),
             name: pending.name,
             kind: pending.kind as i32,
             start_time: pending.start_time,
