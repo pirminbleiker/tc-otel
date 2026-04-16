@@ -460,8 +460,9 @@ pub fn dc_time_to_datetime(dc_nanos: i64) -> DateTime<Utc> {
         return Utc::now();
     }
 
-    const DC_EPOCH_OFFSET: i64 = 125_911_584_000_000_000; // Nanos between 1970-01-01 and 2000-01-01
-    let unix_nanos = dc_nanos + DC_EPOCH_OFFSET;
+    // 946_684_800 s between 1970-01-01 and 2000-01-01 UTC → nanoseconds.
+    const DC_EPOCH_OFFSET_NS: i64 = 946_684_800_000_000_000;
+    let unix_nanos = dc_nanos + DC_EPOCH_OFFSET_NS;
 
     let secs = unix_nanos / 1_000_000_000;
     let nanos = (unix_nanos % 1_000_000_000) as u32;

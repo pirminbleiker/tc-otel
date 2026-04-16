@@ -426,8 +426,14 @@ impl Log4TcService {
 
         // Start span dispatcher task (if traces export is enabled)
         let span_dispatcher_handle = if traces_export_enabled {
+            // Wire SpanDispatcher's output to TraceDispatcher's input so
+            // finalised spans actually reach the OTLP exporter.
+            let record_tx = trace_dispatcher
+                .as_ref()
+                .expect("trace_dispatcher must exist when traces enabled")
+                .sender();
             let span_disp = Arc::new(tokio::sync::Mutex::new(SpanDispatcher::new(
-                mpsc::channel::<tc_otel_core::TraceRecord>(256).0,
+                record_tx,
                 Duration::from_secs(self.settings.traces.span_ttl_secs),
                 self.settings.traces.max_pending_spans,
             )));

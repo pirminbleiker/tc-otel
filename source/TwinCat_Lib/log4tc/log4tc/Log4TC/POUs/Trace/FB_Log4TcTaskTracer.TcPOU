@@ -238,6 +238,7 @@ VAR
     pBuffer     : POINTER TO FB_LogBuffer;
     nTotalLen   : UDINT;
     nFlags      : BYTE := 0;
+    nValLint    : LINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -257,6 +258,10 @@ IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+
+(* Widen DINT → LINT so the 8-byte wire field carries the full value
+   instead of 4 bytes of stack garbage past the DINT. *)
+nValLint := DINT_TO_LINT(nVal);
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 12 + 4 + nKeyLen + 8;
@@ -284,7 +289,7 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
         pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nVal), 8);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValLint), 8);
     pBuffer^.DataAdded(8);
 
     AddInt := TRUE;

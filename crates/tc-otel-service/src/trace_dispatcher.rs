@@ -73,6 +73,12 @@ impl TraceDispatcher {
             tc_otel_core::error::Error::ConnectionError("trace channel closed".to_string())
         })
     }
+
+    /// Obtain a sender so another component (SpanDispatcher) can feed
+    /// finalised TraceRecords into this dispatcher's batch/export pipeline.
+    pub fn sender(&self) -> mpsc::Sender<TraceRecord> {
+        self.input.clone()
+    }
 }
 
 #[cfg(test)]
