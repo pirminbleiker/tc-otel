@@ -6,9 +6,9 @@
 *)
 TYPE E_SpanStatus :
 (
-    Unset := 0,
-    Ok    := 1,
-    Error := 2
+    eUnset := 0,  (* Unset status *)
+    eOk    := 1,  (* Operation succeeded *)
+    eError := 2   (* Operation failed *)
 ) USINT;
 END_TYPE
 ]]></Declaration>

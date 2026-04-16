@@ -35,7 +35,7 @@ END_VAR
     <Method Name="_GetTaskDcTime" Id="{9b32520a-c9fc-420a-8034-c0663bb4b6b9}">
       <Declaration><![CDATA[METHOD PRIVATE _GetTaskDcTime : LINT
 VAR
-    nTaskIdx : USINT;
+    nTaskIdx : DINT;
     pTaskInfo : POINTER TO PlcTaskSystemInfo;
 END_VAR
 ]]></Declaration>
@@ -54,19 +54,32 @@ END_IF;
     <Method Name="_WriteFrameHeader" Id="{5c95a435-e5f4-4be0-a30e-3e2cecf13cfe}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteFrameHeader
 VAR_INPUT
-    pWrite     : PVOID;
-    nEventType : BYTE;
-    hSpan      : USINT;
-    nTaskIdx   : USINT;
-    nDcTime    : LINT;
+    pWriteBuffer : POINTER TO FB_LogBuffer;
+    nEventType   : BYTE;
+    hSpan        : USINT;
+    nTaskIdx     : USINT;
+    nFlags       : BYTE;
+    nDcTime      : LINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-MEMCPY(pWrite + 0, ADR(nEventType), 1);
-MEMCPY(pWrite + 1, ADR(hSpan), 1);
-MEMCPY(pWrite + 2, ADR(nTaskIdx), 1);
-MEMCPY(pWrite + 4, ADR(nDcTime), 8);
+IF pWriteBuffer^.BufferFree >= 12 THEN
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nEventType), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(hSpan), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nTaskIdx), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nFlags), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nDcTime), 8);
+    pWriteBuffer^.DataAdded(8);
+END_IF
 ]]></ST>
       </Implementation>
     </Method>
@@ -78,14 +91,15 @@ VAR_INPUT
     bVal  : BOOL;
 END_VAR
 VAR
-    nKeyLen    : USINT;
+    nKeyLen    : UDINT;
+    nKeyLenUsint : USINT;
     nDcTime    : LINT;
     nTaskIdx   : USINT;
     nValueType : BYTE := 3;
     pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
     nTotalLen  : UDINT;
     byVal      : BYTE;
+    nFlags     : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -98,6 +112,7 @@ nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
 IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
+nKeyLenUsint := TO_USINT(nKeyLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -109,27 +124,34 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 1;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len for bool *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
+        pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
     byVal := BOOL_TO_BYTE(bVal);
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(byVal), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(byVal), 1);
+    pBuffer^.DataAdded(1);
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddBool := TRUE;
 END_IF;
-
-AddBool := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -140,13 +162,14 @@ VAR_INPUT
     sName : STRING(30);
 END_VAR
 VAR
-    nNameLen   : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nAttrCount : BYTE := 0;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    nNameLen    : UDINT;
+    nNameLenUsint : USINT;
+    nDcTime     : LINT;
+    nTaskIdx    : USINT;
+    nAttrCount  : BYTE := 0;
+    pBuffer     : POINTER TO FB_LogBuffer;
+    nTotalLen   : UDINT;
+    nFlags      : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -159,6 +182,7 @@ nNameLen := Tc2_Utilities.LEN2(ADR(sName));
 IF nNameLen > 31 THEN
     nNameLen := 31;
 END_IF;
+nNameLenUsint := TO_USINT(nNameLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -170,24 +194,30 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nNameLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeEvent, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeEvent, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nNameLen), 1);
-    MEMCPY(pWrite + 13, ADR(nAttrCount), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nNameLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sName), nNameLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sName), nNameLen);
+        pBuffer^.DataAdded(nNameLen);
     END_IF;
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddEvent := TRUE;
 END_IF;
-
-AddEvent := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -199,13 +229,14 @@ VAR_INPUT
     nVal  : DINT;
 END_VAR
 VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 1;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    nKeyLen     : UDINT;
+    nKeyLenUsint : USINT;
+    nDcTime     : LINT;
+    nTaskIdx    : USINT;
+    nValueType  : BYTE := 1;
+    pBuffer     : POINTER TO FB_LogBuffer;
+    nTotalLen   : UDINT;
+    nFlags      : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -218,6 +249,7 @@ nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
 IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
+nKeyLenUsint := TO_USINT(nKeyLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -229,26 +261,33 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
+        pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nVal), 8);
+    pBuffer^.DataAdded(8);
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddInt := TRUE;
 END_IF;
-
-AddInt := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -260,13 +299,14 @@ VAR_INPUT
     nVal  : LINT;
 END_VAR
 VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 1;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    nKeyLen     : UDINT;
+    nKeyLenUsint : USINT;
+    nDcTime     : LINT;
+    nTaskIdx    : USINT;
+    nValueType  : BYTE := 1;
+    pBuffer     : POINTER TO FB_LogBuffer;
+    nTotalLen   : UDINT;
+    nFlags      : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -279,6 +319,7 @@ nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
 IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
+nKeyLenUsint := TO_USINT(nKeyLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -290,26 +331,33 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
+        pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nVal), 8);
+    pBuffer^.DataAdded(8);
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddLInt := TRUE;
 END_IF;
-
-AddLInt := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -321,13 +369,14 @@ VAR_INPUT
     fVal  : LREAL;
 END_VAR
 VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 2;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    nKeyLen     : UDINT;
+    nKeyLenUsint : USINT;
+    nDcTime     : LINT;
+    nTaskIdx    : USINT;
+    nValueType  : BYTE := 2;
+    pBuffer     : POINTER TO FB_LogBuffer;
+    nTotalLen   : UDINT;
+    nFlags      : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -340,6 +389,7 @@ nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
 IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
+nKeyLenUsint := TO_USINT(nKeyLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -351,26 +401,33 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
+        pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(fVal), 8);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(fVal), 8);
+    pBuffer^.DataAdded(8);
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddReal := TRUE;
 END_IF;
-
-AddReal := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -382,14 +439,16 @@ VAR_INPUT
     sVal  : STRING(120);
 END_VAR
 VAR
-    nKeyLen    : USINT;
-    nValLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 4;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    nKeyLen      : UDINT;
+    nKeyLenUsint : USINT;
+    nValLen      : UDINT;
+    nValLenUsint : USINT;
+    nDcTime      : LINT;
+    nTaskIdx     : USINT;
+    nValueType   : BYTE := 4;
+    pBuffer      : POINTER TO FB_LogBuffer;
+    nTotalLen    : UDINT;
+    nFlags       : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -402,11 +461,13 @@ nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
 IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
+nKeyLenUsint := TO_USINT(nKeyLen);
 
 nValLen := Tc2_Utilities.LEN2(ADR(sVal));
 IF nValLen > 127 THEN
     nValLen := 127;
 END_IF;
+nValLenUsint := TO_USINT(nValLen);
 
 nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
@@ -418,29 +479,35 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + nValLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-    MEMCPY(pWrite + 14, ADR(nValLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
+        pBuffer^.DataAdded(nKeyLen);
     END_IF;
 
     IF nValLen > 0 THEN
-        MEMCPY(pWrite + 16 + nKeyLen, ADR(sVal), nValLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sVal), nValLen);
+        pBuffer^.DataAdded(nValLen);
     END_IF;
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    AddString := TRUE;
 END_IF;
-
-AddString := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -448,19 +515,21 @@ AddString := TRUE;
       <Declaration><![CDATA[METHOD PUBLIC Begin : USINT
 VAR_INPUT
     sName        : STRING(60);
-    eKind        : E_SpanKind := E_SpanKind.Internal;
+    eKind        : E_SpanKind := E_SpanKind.eInternal;
     sTraceParent : STRING(60) := '';
 END_VAR
 VAR
-    hSpan          : USINT;
-    nTaskIndex     : USINT;
-    nNameLen       : USINT;
-    nTpLen         : USINT;
-    nFlagsBegin    : BYTE;
-    nTotalLen      : UDINT;
-    nDcTime        : LINT;
-    pBuffer        : POINTER TO FB_LogBuffer;
-    pWrite         : PVOID;
+    hSpan           : USINT;
+    nTaskIndex      : USINT;
+    nNameLen        : UDINT;
+    nNameLenUsint   : USINT;
+    nTpLen          : UDINT;
+    nTpLenUsint     : USINT;
+    nFlagsBegin     : BYTE;
+    nTotalLen       : UDINT;
+    nDcTime         : LINT;
+    pBuffer         : POINTER TO FB_LogBuffer;
+    eKindByte       : BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -506,50 +575,58 @@ nNameLen := Tc2_Utilities.LEN2(ADR(sName));
 IF nNameLen > 127 THEN
     nNameLen := 127;
 END_IF;
+nNameLenUsint := TO_USINT(nNameLen);
 
 nTpLen := 0;
-IF nFlagsBegin AND 2 <> 0 THEN
+nTpLenUsint := 0;
+IF (nFlagsBegin AND 2) <> 0 THEN
     nTpLen := Tc2_Utilities.LEN2(ADR(sTraceParent));
     IF nTpLen > 127 THEN
         nTpLen := 127;
     END_IF;
+    nTpLenUsint := TO_USINT(nTpLen);
 END_IF;
 
 (* Total frame size: header(12) + parent(1) + kind(1) + name_len(1) + reserved(1) + name + [tp_len + tp] *)
 nTotalLen := 12 + 4 + nNameLen;
-IF nFlagsBegin AND 2 <> 0 THEN
+IF (nFlagsBegin AND 2) <> 0 THEN
     nTotalLen := nTotalLen + 1 + nTpLen;
 END_IF;
 
 (* Write frame *)
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    MEMCPY(pWrite + 0, ADR(nEventTypeBegin), 1);
-    MEMCPY(pWrite + 1, ADR(hSpan), 1);
-    MEMCPY(pWrite + 2, ADR(nTaskIndex), 1);
-    MEMCPY(pWrite + 3, ADR(nFlagsBegin), 1);
-    MEMCPY(pWrite + 4, ADR(nDcTime), 8);
+    _WriteFrameHeader(pBuffer, nEventTypeBegin, hSpan, nTaskIndex, nFlagsBegin, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(aSlots[hSpan].parent_local_id), 1);
-    MEMCPY(pWrite + 13, ADR(eKind), 1);
-    MEMCPY(pWrite + 14, ADR(nNameLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(aSlots[hSpan].parent_local_id), 1);
+    pBuffer^.DataAdded(1);
+
+    eKindByte := TO_BYTE(eKind);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(eKindByte), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nEventTypeBegin), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
 
     IF nNameLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sName), nNameLen);
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sName), nNameLen);
+        pBuffer^.DataAdded(nNameLen);
     END_IF;
 
-    IF nFlagsBegin AND 2 <> 0 THEN
-        MEMCPY(pWrite + 16 + nNameLen, ADR(nTpLen), 1);
+    IF (nFlagsBegin AND 2) <> 0 THEN
+        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nTpLenUsint), 1);
+        pBuffer^.DataAdded(1);
+
         IF nTpLen > 0 THEN
-            MEMCPY(pWrite + 17 + nNameLen, ADR(sTraceParent), nTpLen);
+            Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sTraceParent), nTpLen);
+            pBuffer^.DataAdded(nTpLen);
         END_IF;
     END_IF;
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
 END_IF;
 
 (* Increment for next allocation *)
@@ -595,8 +672,8 @@ VAR
     nStatus    : BYTE := 1;
     nMsgLen    : USINT := 0;
     pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
     nTotalLen  : UDINT;
+    nFlags     : BYTE := 0;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -615,17 +692,24 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nMsgLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
+IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeEnd, hSpan, nTaskIdx, nDcTime);
+    _WriteFrameHeader(pBuffer, nEventTypeEnd, hSpan, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nStatus), 1);
-    MEMCPY(pWrite + 13, ADR(nMsgLen), 1);
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);
+    pBuffer^.DataAdded(1);
 
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
+
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);  (* reserved *)
+    pBuffer^.DataAdded(1);
+
+    End := TRUE;
 END_IF;
 
 (* Pop from stack if on top *)
@@ -635,8 +719,6 @@ END_IF;
 
 (* Free the slot *)
 aSlots[hSpan].bInUse := FALSE;
-
-End := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

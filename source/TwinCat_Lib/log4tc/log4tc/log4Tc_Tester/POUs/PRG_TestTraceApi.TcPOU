@@ -29,7 +29,7 @@ END_IF
 tRecipeAccum := tRecipeAccum + T#1MS;
 IF NOT bRecipeActive AND tRecipeAccum >= T#5S THEN
     tRecipeAccum := T#0S;
-    spnRecipe.Begin('tester_recipe', eKind := E_SpanKind.Internal);
+    spnRecipe.Begin('tester_recipe', eKind := E_SpanKind.eInternal);
     spnRecipe.AddString('mode', 'nested_demo');
     bRecipeActive := TRUE;
     nRecipeStep := 0;

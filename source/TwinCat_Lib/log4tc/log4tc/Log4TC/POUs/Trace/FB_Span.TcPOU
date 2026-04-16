@@ -18,7 +18,7 @@ FUNCTION_BLOCK FB_Span
 VAR
     _hSpan   : USINT;
     _bOpen   : BOOL;
-    _eStatus : E_SpanStatus := E_SpanStatus.Ok;
+    _eStatus : E_SpanStatus := E_SpanStatus.eOk;
     _sMsg    : STRING(80);
 END_VAR
 (*
@@ -133,14 +133,14 @@ AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
       <Declaration><![CDATA[METHOD PUBLIC Begin : BOOL
 VAR_INPUT
     sName : STRING(60);
-    eKind : E_SpanKind := E_SpanKind.Internal;
+    eKind : E_SpanKind := E_SpanKind.eInternal;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
 (* If already open, close the old span with error before starting the new one *)
 IF _bOpen THEN
-    _eStatus := E_SpanStatus.Error;
+    _eStatus := E_SpanStatus.eError;
     _sMsg := 'span.begin called twice without end';
     End();
 END_IF;
@@ -150,7 +150,7 @@ _hSpan := PRG_TaskLog.Span.Begin(sName, eKind, '');
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
-_eStatus := E_SpanStatus.Ok;
+_eStatus := E_SpanStatus.eOk;
 _sMsg := '';
 
 Begin := TRUE;
@@ -167,7 +167,7 @@ IF NOT _bOpen THEN
 END_IF;
 
 (* If status is Error, pass the error message to the tracer *)
-IF _eStatus = E_SpanStatus.Error THEN
+IF _eStatus = E_SpanStatus.eError THEN
     PRG_TaskLog.Span.SetError(_hSpan, _sMsg);
 END_IF;
 
@@ -177,7 +177,7 @@ PRG_TaskLog.Span.End(_hSpan);
 (* Clear state *)
 _bOpen := FALSE;
 _hSpan := 0;
-_eStatus := E_SpanStatus.Ok;
+_eStatus := E_SpanStatus.eOk;
 _sMsg := '';
 
 End := TRUE;
@@ -196,7 +196,7 @@ END_VAR
    being destroyed), close it with an error so tc-otel doesn't wait out
    the TTL. *)
 IF _bOpen AND NOT bInCopyCode THEN
-    _eStatus := E_SpanStatus.Error;
+    _eStatus := E_SpanStatus.eError;
     _sMsg := 'FB_Span instance destroyed while open';
     End();
 END_IF;
@@ -241,7 +241,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-_eStatus := E_SpanStatus.Error;
+_eStatus := E_SpanStatus.eError;
 _sMsg := sMsg;
 
 MarkError := TRUE;
