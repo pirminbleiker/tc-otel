@@ -317,16 +317,16 @@
     <Compile Include="ITFs\I_LogEntryAdder.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Diagnostic\FB_PushDiag.TcPOU">
+    <Compile Include="POUs\Diagnostic\FB_Log4TcTaskDiag.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Diagnostic\ST_PushDiagEdge.TcDUT">
+    <Compile Include="POUs\Diagnostic\ST_PushDiagBatchHeader.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Diagnostic\ST_PushDiagHeader.TcDUT">
+    <Compile Include="POUs\Diagnostic\ST_PushDiagConfig.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Diagnostic\ST_PushDiagTaskRecord.TcDUT">
+    <Compile Include="POUs\Diagnostic\ST_PushDiagSample.TcDUT">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_ContextBuilder.TcPOU">
@@ -348,9 +348,6 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\Utils\FB_LogBuffer.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="POUs\Utils\FB_RTC_Sync.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\Utils\F_DINT_TO_UINT_MAX.TcPOU">
@@ -378,6 +375,10 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <PlaceholderReference Include="Tc2_EtherCAT">
+      <DefaultResolution>Tc2_EtherCAT, * (Beckhoff Automation GmbH)</DefaultResolution>
+      <Namespace>Tc2_EtherCAT</Namespace>
+    </PlaceholderReference>
     <PlaceholderReference Include="Tc2_Standard">
       <DefaultResolution>Tc2_Standard, * (Beckhoff Automation GmbH)</DefaultResolution>
       <Namespace>Tc2_Standard</Namespace>

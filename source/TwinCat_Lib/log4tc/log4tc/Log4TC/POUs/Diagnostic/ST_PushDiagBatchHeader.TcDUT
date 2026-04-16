@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.10">
+  <DUT Name="ST_PushDiagBatchHeader" Id="{8c9d7f2e-1a3b-4c5d-6e7f-8a9b0c1d2e3f}">
+    <Declaration><![CDATA[(*
+:Description: 80-byte header of a per-task diagnostic batch frame.
+
+Prepended to an array of ``ST_PushDiagSample`` entries before pushing via
+``ADSWRITE`` to tc-otel (IG = 16#4D424301, IO = 0). Packed tight
+(``pack_mode := 1``) so on-wire layout matches the decoder in tc-otel-ads.
+*)
+TYPE ST_PushDiagBatchHeader :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  version            : BYTE;                        // +0x00, wire version = 2
+  event_type         : BYTE;                        // +0x01, event_type = 10 (batch)
+  reserved0          : UINT;                        // +0x02, reserved = 0
+  task_obj_id        : UDINT;                       // +0x04, TwinCAT task object id
+  task_port          : UINT;                        // +0x08, AMS port of the owning task
+  window_ms          : UINT;                        // +0x0A, aggregation window used for this batch (ms)
+  sample_count       : UINT;                        // +0x0C, number of ST_PushDiagSample entries following
+  reserved1          : UINT;                        // +0x0E, reserved = 0
+  cycle_count_start  : UDINT;                       // +0x10, task cycle counter at first sample
+  cycle_count_end    : UDINT;                       // +0x14, task cycle counter at last sample
+  dc_time_start      : LINT;                        // +0x18, DC time at first sample (ns)
+  dc_time_end        : LINT;                        // +0x20, DC time at last sample (ns)
+  exec_time_min_us   : UDINT;                       // +0x28, min exec time in window (us)
+  exec_time_max_us   : UDINT;                       // +0x2C, max exec time in window (us)
+  exec_time_avg_us   : UDINT;                       // +0x30, avg exec time in window (us)
+  cycle_exceed_count : UDINT;                       // +0x34, exceed cycles in window
+  rt_violation_count : UDINT;                       // +0x38, rt-violation cycles in window
+  task_name          : ARRAY [0..19] OF BYTE;       // +0x3C, task name (null-padded)
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

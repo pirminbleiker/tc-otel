@@ -1,0 +1,504 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_Log4TcTaskDiag" Id="{4c5d6e7f-8a9b-0c1d-2e3f-4a5b6c7d8e9f}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Per-task push-diagnostic collector.
+
+One instance per task lives in ``PRG_TaskLog.aTaskDiag`` and is driven
+once per cycle by ``PRG_TaskLog.Call()``. Each cycle the FB captures a
+``ST_PushDiagSample`` (cycle_count, exec_time, dc_time, flags) into a
+1024-entry ring buffer. When the aggregation window expires it flushes
+the ring plus the window's aggregates (min/max/avg exec time,
+exceed/rtv counts) as a single batch frame via ``ADSWRITE`` to tc-otel.
+
+Operators tune the window through ``PRG_TaskLog.aTaskDiagConfig`` which
+tc-otel writes via ADS symbol access.
+*)
+{attribute 'no_explicit_call' := 'no direct call necessary'}
+{attribute 'conditionalshow'}
+FUNCTION_BLOCK FB_Log4TcTaskDiag
+VAR_INPUT
+END_VAR
+VAR
+    bInitialized        : BOOL;
+    sTcOtelNetId        : T_AmsNetId;
+    nTcOtelPort         : UINT := 16150;
+    pConfig             : POINTER TO ST_PushDiagConfig;
+
+    (* Wire-format constants — kept as VAR to avoid a separate GVL. *)
+    nWireVersion        : BYTE  := 2;
+    nEventTypeBatch     : BYTE  := 10;
+    nHeaderSize         : UDINT  := 80;
+    nSampleSize         : UDINT  := 24;
+    nMaxSamples         : UDINT  := 1024;
+    nFlagCycleExceed    : BYTE  := 1;
+    nFlagRtViolation    : BYTE  := 2;
+    nFlagFirstCycle     : BYTE  := 4;
+    nFlagOverflow       : BYTE  := 8;
+    nIdxGroupPushDiag   : UDINT := 16#4D424301;
+    nIdxOffsetBatch     : UDINT := 0;
+
+    (* Ring buffer — 1024 samples, ~24 KB per task instance. *)
+    aSampleRing         : ARRAY [0..1023] OF ST_PushDiagSample;
+    nRingHead           : DINT;      // next write slot
+    nRingCount          : DINT;      // samples currently in the ring
+    bOverflowPending    : BOOL;      // next stored sample carries the overflow flag
+
+    (* Per-window aggregates. Cleared after each flush. *)
+    nExecTimeMinUs      : UDINT;
+    nExecTimeMaxUs      : UDINT;
+    nExecTimeSumUs      : ULINT;
+    nExecTimeSamples    : UDINT;
+    nCycleExceedInWnd   : UDINT;
+    nRtViolationInWnd   : UDINT;
+    nCycleCountStart    : UDINT;
+    nCycleCountEnd      : UDINT;
+    nDcTimeStart        : LINT;
+    nDcTimeEnd          : LINT;
+    bWindowHasSample    : BOOL;
+    nWindowStartCycle   : UDINT;
+    bWindowStartSet     : BOOL;
+
+    (* Divider state for sub-sampling. *)
+    nDividerCounter     : USINT;
+
+    (* RTViolation is an edge-like event — keep rising-edge detection to
+       avoid double-counting. CycleTimeExceeded is a per-cycle condition
+       (task exec > cycle time for THAT cycle) so we count every TRUE
+       cycle, matching what XAE's Exceed Counter shows. *)
+    bPrevRtViolation      : BOOL;
+
+    (* Lifetime exceed counters — never reset per window. Visible in the
+       online view so you can compare directly against XAE's per-task
+       Exceed column and confirm the detection logic actually fires. *)
+    nLifetimeExceedCount  : UDINT;
+    nLifetimeRtvCount     : UDINT;
+    nMaxExecTimeUs        : UDINT;
+    nLastExecTimeUs       : UDINT;
+    nLastCycleTimeUs      : UDINT;
+
+    (* ADS write state. The watchdog guards against a permanently-stuck
+       ADSWRITE (e.g. tc-otel unreachable) — after nFlightWatchdogCycles
+       have elapsed since the flush was kicked, the FB force-resets
+       WRITE:=FALSE and drops the batch. Cycle-count based like the
+       window timer so the two agree on "elapsed time". *)
+    fbAdsWrite              : Tc2_System.ADSWRITE;
+    bFlushInFlight          : BOOL;
+    nFlushStartCycle        : UDINT;
+    nFlightWatchdogCycles   : UDINT := 2000;
+    nLastFlushSuccessCycle  : UDINT;
+    nFlushDropCount         : UDINT;
+    nFlushErrorCount        : UDINT;
+    nFlushOkCount           : UDINT;
+
+    (* Scratch for (de)serialization. *)
+    stHeader            : ST_PushDiagBatchHeader;
+    abySendBuffer       : ARRAY [0..24655] OF BYTE;  // 80 + 1024 * 24
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="Call" Id="{6e7f8a9b-0c1d-2e3f-4a5b-6c7d8e9f0a1b}">
+      <Declaration><![CDATA[(*
+:Description: Capture one cycle's diagnostic sample and flush on window expiry.
+
+Called once per task cycle from ``PRG_TaskLog.Call()``. Cheap — ~20 lines
+of straight-line code on the sample path. Flush only fires when the
+configured window has elapsed.
+*)
+METHOD PUBLIC Call
+VAR_INPUT
+END_VAR
+VAR
+    nTaskIdx            : DINT;
+    pTaskInfo           : POINTER TO PlcTaskSystemInfo;
+    stSample            : ST_PushDiagSample;
+    nFlags              : BYTE;
+    nExecNow            : UDINT;
+    nRequestedDivider   : USINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[(* This FB lives as an array element in PRG_TaskLog and is never invoked
+   directly — only Call() runs each cycle. Every state transition that
+   normally belongs in the FB body (ADSWRITE pumping especially) has to
+   happen here. Same pattern the logger's FB_Log4TcTask uses.
+
+   Watchdog: if ADSWRITE's BUSY stays true past nFlightWatchdogCycles the
+   current batch is abandoned (WRITE:=FALSE resets the FB), bFlushInFlight
+   is cleared, and the next window is allowed to flush normally. Without
+   this guard a transient tc-otel outage wedges the FB forever because
+   nothing else clears bFlushInFlight. *)
+IF bFlushInFlight THEN
+    fbAdsWrite();
+    IF NOT fbAdsWrite.BUSY THEN
+        IF fbAdsWrite.ERR THEN
+            nFlushErrorCount := nFlushErrorCount + 1;
+        ELSE
+            nFlushOkCount          := nFlushOkCount + 1;
+            nLastFlushSuccessCycle := TwinCAT_SystemInfoVarList._TaskInfo[
+                                         Tc2_Utilities.GETCURTASKINDEXEX()].CycleCount;
+        END_IF
+        fbAdsWrite(WRITE := FALSE);
+        bFlushInFlight := FALSE;
+    ELSIF nFlushStartCycle <> 0
+        AND (TwinCAT_SystemInfoVarList._TaskInfo[
+                 Tc2_Utilities.GETCURTASKINDEXEX()].CycleCount - nFlushStartCycle)
+             > nFlightWatchdogCycles THEN
+        (* Watchdog tripped — cut the wedged call loose so later windows
+           can still reach tc-otel when connectivity is restored. *)
+        nFlushDropCount := nFlushDropCount + 1;
+        fbAdsWrite(WRITE := FALSE);
+        bFlushInFlight := FALSE;
+    END_IF
+END_IF
+
+IF NOT bInitialized OR pConfig = 0 THEN
+    RETURN;
+END_IF
+
+IF NOT pConfig^.enabled THEN
+    RETURN;
+END_IF
+
+(* Divider: skip cycles if configured to sub-sample a very fast task. *)
+nRequestedDivider := pConfig^.divider;
+IF nRequestedDivider > 1 THEN
+    nDividerCounter := nDividerCounter + 1;
+    IF nDividerCounter < nRequestedDivider THEN
+        (* still check window expiry even on skipped cycles *)
+        THIS^.CheckFlush();
+        RETURN;
+    END_IF
+    nDividerCounter := 0;
+END_IF
+
+(* Resolve our task info. *)
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTaskIdx <= 0 THEN
+    RETURN;
+END_IF
+pTaskInfo := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
+
+(* Build the sample.
+   dc_time uses `DcTaskTime` — the DC clock stamped at the start of THIS
+   task cycle (LINT, nanoseconds). That gives cycle-granular timestamps
+   (not the ~100 ms-quantised RtcTime), so every sample lands at its true
+   cycle time on the Grafana axis and matches log correlation to the
+   nanosecond. DcTaskTime is already an int64 ns-since-epoch (DC-synced),
+   so no FILETIME conversion needed — but the wire field layout is the
+   same LINT, and tc-otel's filetime_to_datetime handles either by
+   treating the value as 100 ns ticks since 1601 for FILETIME-style and
+   directly for DC-style when the value is below the FILETIME epoch
+   offset. To keep the wire format unambiguous we ship DcTaskTime raw
+   and let the Rust side decide. *)
+stSample.cycle_count  := pTaskInfo^.CycleCount;
+nExecNow              := pTaskInfo^.LastExecTime;
+stSample.exec_time_us := nExecNow;
+stSample.dc_time      := pTaskInfo^.DcTaskTime;
+
+nFlags := 0;
+
+(* Expose a few raw TaskInfo values on the instance so the online view
+   matches exactly what we sample. Values in microseconds (TaskInfo
+   fields are 100 ns ticks). *)
+nLastCycleTimeUs := pTaskInfo^.CycleTime / 10;
+nLastExecTimeUs  := nExecNow / 10;
+IF nLastExecTimeUs > nMaxExecTimeUs THEN
+    nMaxExecTimeUs := nLastExecTimeUs;
+END_IF
+
+(* CycleTimeExceeded: count every cycle where the flag is TRUE. The
+   runtime sets it once per cycle that exceeded, so a 5-cycle exceed
+   burst contributes 5 counts — matches XAE's per-cycle semantics. *)
+IF pTaskInfo^.CycleTimeExceeded THEN
+    nCycleExceedInWnd    := nCycleExceedInWnd + 1;
+    nLifetimeExceedCount := nLifetimeExceedCount + 1;
+    nFlags               := nFlags OR nFlagCycleExceed;
+END_IF
+
+(* RT violation stays edge-triggered — it represents a discrete event
+   rather than a condition, and the runtime may latch it for a short
+   window after the fact. *)
+IF pTaskInfo^.RTViolation AND NOT bPrevRtViolation THEN
+    nRtViolationInWnd := nRtViolationInWnd + 1;
+    nLifetimeRtvCount := nLifetimeRtvCount + 1;
+    nFlags            := nFlags OR nFlagRtViolation;
+END_IF
+bPrevRtViolation := pTaskInfo^.RTViolation;
+IF pTaskInfo^.FirstCycle THEN
+    nFlags := nFlags OR nFlagFirstCycle;
+END_IF
+IF bOverflowPending THEN
+    nFlags := nFlags OR nFlagOverflow;
+    bOverflowPending := FALSE;
+END_IF
+stSample.flags := nFlags;
+
+(* Store the sample. Ring wraps; on overflow we mark the NEXT sample so
+   tc-otel sees the gap without having to infer it from cycle_count. *)
+aSampleRing[nRingHead] := stSample;
+nRingHead := nRingHead + 1;
+IF nRingHead >= nMaxSamples THEN
+    nRingHead := 0;
+END_IF
+IF nRingCount < nMaxSamples THEN
+    nRingCount := nRingCount + 1;
+ELSE
+    (* Ring was already full — oldest sample just got overwritten. *)
+    bOverflowPending := TRUE;
+END_IF
+
+(* Update aggregates. *)
+IF NOT bWindowHasSample THEN
+    nExecTimeMinUs    := nExecNow;
+    nExecTimeMaxUs    := nExecNow;
+    nCycleCountStart  := stSample.cycle_count;
+    nDcTimeStart      := stSample.dc_time;
+    bWindowHasSample  := TRUE;
+ELSE
+    IF nExecNow < nExecTimeMinUs THEN
+        nExecTimeMinUs := nExecNow;
+    END_IF
+    IF nExecNow > nExecTimeMaxUs THEN
+        nExecTimeMaxUs := nExecNow;
+    END_IF
+END_IF
+nCycleCountEnd   := stSample.cycle_count;
+nDcTimeEnd       := stSample.dc_time;
+nExecTimeSumUs   := nExecTimeSumUs + UDINT_TO_ULINT(nExecNow);
+nExecTimeSamples := nExecTimeSamples + 1;
+
+THIS^.CheckFlush();
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="CheckFlush" Id="{7f8a9b0c-1d2e-3f4a-5b6c-7d8e9f0a1b2c}">
+      <Declaration><![CDATA[(*
+:Description: Internal — flush the ring if the aggregation window elapsed.
+
+Kept on the happy-path so timer checks don't inflate Call() itself.
+*)
+METHOD PRIVATE CheckFlush
+VAR_INPUT
+END_VAR
+VAR
+    nNowCycle      : UDINT;
+    nDeltaCycles   : UDINT;
+    nTargetCycles  : UDINT;
+    nCycleTimeUs   : UDINT;
+    pTi            : POINTER TO PlcTaskSystemInfo;
+    nTi            : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF pConfig = 0 OR pConfig^.window_ms = 0 THEN
+    RETURN;
+END_IF
+
+(* Window timing is cycle-count based — CycleCount is a pure monotonic
+   task counter incremented once per cycle by the TwinCAT runtime. That
+   is the most reliable "time" source we have inside a PLC task:
+     - no jitter (unlike RtcTime / FILETIME which reset on sync)
+     - no drift (unlike accumulating delta times)
+     - cycle-exact alignment with the batched samples
+   A 100 ms window at 1 ms task cycle flushes every 100 cycles, period. *)
+nTi := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTi <= 0 THEN
+    RETURN;
+END_IF
+pTi := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTi]);
+
+(* CycleTime in PlcTaskSystemInfo is in 100 ns units; convert to µs
+   so target_cycles = window_ms * 1000 / cycle_time_us is clean. *)
+nCycleTimeUs := pTi^.CycleTime / 10;
+IF nCycleTimeUs = 0 THEN
+    nCycleTimeUs := 1000; (* safety fallback: assume 1 ms *)
+END_IF
+nTargetCycles := (pConfig^.window_ms * 1000) / nCycleTimeUs;
+IF nTargetCycles = 0 THEN
+    nTargetCycles := 1;
+END_IF
+
+nNowCycle := pTi^.CycleCount;
+IF NOT bWindowStartSet OR nNowCycle < nWindowStartCycle THEN
+    nWindowStartCycle := nNowCycle;
+    bWindowStartSet   := TRUE;
+    RETURN;
+END_IF
+nDeltaCycles := nNowCycle - nWindowStartCycle;
+IF nDeltaCycles < nTargetCycles THEN
+    RETURN;
+END_IF
+
+IF NOT bWindowHasSample OR bFlushInFlight THEN
+    nWindowStartCycle := nNowCycle;
+    RETURN;
+END_IF
+
+THIS^.Flush();
+nWindowStartCycle := nNowCycle;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Flush" Id="{8a9b0c1d-2e3f-4a5b-6c7d-8e9f0a1b2c3d}">
+      <Declaration><![CDATA[(*
+:Description: Internal — serialize the ring + aggregates and kick ADSWRITE.
+
+No-op when the ring is empty or a previous write is still in flight.
+*)
+METHOD PRIVATE Flush
+VAR_INPUT
+END_VAR
+VAR
+    nStartRead    : DINT;
+    nOffset       : DINT;
+    nLocalIdx     : DINT;
+    nRingIter     : DINT;
+    pTask         : POINTER TO PlcTaskSystemInfo;
+    nTi           : DINT;
+    nNameLen      : UDINT;
+    sTaskName     : STRING;
+    nBytesToWrite : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bFlushInFlight OR nRingCount = 0 THEN
+    RETURN;
+END_IF
+
+(* Resolve task info for task_obj_id / port / name. *)
+nTi := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTi <= 0 THEN
+    RETURN;
+END_IF
+pTask := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTi]);
+
+(* Build header. *)
+stHeader.version            := nWireVersion;
+stHeader.event_type         := nEventTypeBatch;
+stHeader.reserved0          := 0;
+stHeader.task_obj_id        := pTask^.ObjId;
+stHeader.task_port          := DWORD_TO_UINT(pTask^.AdsPort AND 16#FFFF);
+stHeader.window_ms          := UDINT_TO_UINT(pConfig^.window_ms);
+stHeader.sample_count       := DINT_TO_UINT(nRingCount);
+stHeader.reserved1          := 0;
+stHeader.cycle_count_start  := nCycleCountStart;
+stHeader.cycle_count_end    := nCycleCountEnd;
+stHeader.dc_time_start      := nDcTimeStart;
+stHeader.dc_time_end        := nDcTimeEnd;
+stHeader.exec_time_min_us   := nExecTimeMinUs;
+stHeader.exec_time_max_us   := nExecTimeMaxUs;
+IF nExecTimeSamples > 0 THEN
+    stHeader.exec_time_avg_us := ULINT_TO_UDINT(nExecTimeSumUs / UDINT_TO_ULINT(nExecTimeSamples));
+ELSE
+    stHeader.exec_time_avg_us := 0;
+END_IF
+stHeader.cycle_exceed_count := nCycleExceedInWnd;
+stHeader.rt_violation_count := nRtViolationInWnd;
+
+Tc2_System.MEMSET(ADR(stHeader.task_name), 0, 20);
+sTaskName := pTask^.TaskName;
+nNameLen := Tc2_Utilities.LEN2(ADR(sTaskName));
+IF nNameLen > 20 THEN
+    nNameLen := 20;
+END_IF
+IF nNameLen > 0 THEN
+    Tc2_System.MEMCPY(ADR(stHeader.task_name), ADR(sTaskName), nNameLen);
+END_IF
+
+(* Copy header to send buffer. *)
+Tc2_System.MEMCPY(ADR(abySendBuffer), ADR(stHeader), nHeaderSize);
+nOffset := nHeaderSize;
+
+(* Walk the ring from oldest to newest. If we overflowed we want
+   chronological order, so start `nRingCount` back from the head. *)
+IF nRingCount >= nMaxSamples THEN
+    nStartRead := nRingHead; // oldest slot is the one we're about to overwrite
+ELSE
+    nStartRead := nRingHead - nRingCount;
+    IF nStartRead < 0 THEN
+        nStartRead := nStartRead + nMaxSamples;
+    END_IF
+END_IF
+
+FOR nRingIter := 0 TO nRingCount - 1 DO
+    nLocalIdx := nStartRead + nRingIter;
+    IF nLocalIdx >= nMaxSamples THEN
+        nLocalIdx := nLocalIdx - nMaxSamples;
+    END_IF
+    Tc2_System.MEMCPY(
+        ADR(abySendBuffer) + nOffset,
+        ADR(aSampleRing[nLocalIdx]),
+        nSampleSize
+    );
+    nOffset := nOffset + nSampleSize;
+END_FOR
+
+nBytesToWrite := nOffset;
+
+(* Kick ADSWRITE using the same rising-edge idiom as FB_Log4TcTask:
+   reset with WRITE:=FALSE first, then trigger with the full parameter
+   set. Subsequent cycles pump the FB with a bare call at the top of
+   Call() until BUSY falls. *)
+fbAdsWrite(WRITE := FALSE);
+fbAdsWrite(
+    NETID   := sTcOtelNetId,
+    PORT    := nTcOtelPort,
+    IDXGRP  := nIdxGroupPushDiag,
+    IDXOFFS := nIdxOffsetBatch,
+    LEN     := DINT_TO_UDINT(nBytesToWrite),
+    SRCADDR := ADR(abySendBuffer),
+    WRITE   := TRUE,
+    TMOUT   := T#1S
+);
+bFlushInFlight   := TRUE;
+nFlushStartCycle := pTask^.CycleCount;
+
+(* Reset for next window. *)
+nRingHead         := 0;
+nRingCount        := 0;
+nExecTimeMinUs    := 0;
+nExecTimeMaxUs    := 0;
+nExecTimeSumUs    := 0;
+nExecTimeSamples  := 0;
+nCycleExceedInWnd := 0;
+nRtViolationInWnd := 0;
+nCycleCountStart  := 0;
+nCycleCountEnd    := 0;
+nDcTimeStart      := 0;
+nDcTimeEnd        := 0;
+bWindowHasSample  := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Init" Id="{5d6e7f8a-9b0c-1d2e-3f4a-5b6c7d8e9f0a}">
+      <Declaration><![CDATA[(*
+:Description: Bind this instance to a tc-otel endpoint and its config slot.
+
+Safe to call on every cycle — the first call wires the pointer, further
+calls are no-ops. Call from ``PRG_TaskLog.Init`` or during first-cycle
+of each task.
+*)
+METHOD PUBLIC Init : BOOL
+VAR_INPUT
+    sAmsNetId   : T_AmsNetId;                   // tc-otel AMS net id
+    nPort       : UINT;                         // tc-otel ADS port (default 16150)
+    pCfg        : POINTER TO ST_PushDiagConfig; // per-task config slot
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[sTcOtelNetId := sAmsNetId;
+IF nPort <> 0 THEN
+    nTcOtelPort := nPort;
+END_IF
+pConfig := pCfg;
+bInitialized := TRUE;
+bWindowStartSet := FALSE;
+Init := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

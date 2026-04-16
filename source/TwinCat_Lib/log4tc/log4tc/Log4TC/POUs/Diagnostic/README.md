@@ -1,93 +1,84 @@
-# FB_PushDiag - Diagnostics Push Function Block
+# Push-Diagnostics — Per-Task Oversampling Batches
 
 ## Overview
 
-`FB_PushDiag` is a TwinCAT 3 Function Block that pushes real-time PLC diagnostics to **tc-otel** (TwinCAT OpenTelemetry gateway) via ADS. It monitors all PLC tasks, detects cycle-time violations and real-time violations, and sends:
+Each task that calls `PRG_TaskLog.Call()` gets a per-task push-diagnostic
+collector (`FB_Log4TcTaskDiag`). Every cycle the collector captures one
+`ST_PushDiagSample` (`cycle_count`, `exec_time_us`, `dc_time`, `flags`)
+into a 1024-entry ring buffer. When the configured aggregation window
+elapses the ring plus pre-computed aggregates (`min/max/avg exec_time`,
+exceed/rtv counts) are flushed as a single batch frame via `ADSWRITE` to
+tc-otel (`IG=16#4D424301`, `IO=0`).
 
-1. **Snapshot events** (IO=0) — periodic batched task state (version 1, little-endian)
-2. **Edge events** (IO=1 or 2) — immediate per-task alerts when violations occur
-
-Data is marshalled to binary format (IG=16#4D424301) and sent via `ADSWRITE` to tc-otel's ADS endpoint.
+Aggregation and oversampling together deliver cycle-exact information
+to tc-otel without a separate FB call-site: the magic runs inside
+`PRG_TaskLog.Call()` just like the logger.
 
 ## Files
 
-- **FB_PushDiag.TcPOU** — Main function block
-- **ST_PushDiagHeader.TcDUT** — Snapshot packet header (16 bytes)
-- **ST_PushDiagTaskRecord.TcDUT** — Per-task record in snapshot (72 bytes)
-- **ST_PushDiagEdge.TcDUT** — Edge event packet (44 bytes)
+- **FB_Log4TcTaskDiag.TcPOU** — per-task collector (ring + window flush + ADSWRITE)
+- **ST_PushDiagBatchHeader.TcDUT** — 80-byte batch header
+- **ST_PushDiagSample.TcDUT** — 24-byte per-cycle sample
+- **ST_PushDiagConfig.TcDUT** — 8-byte per-task config slot (runtime-writable)
 
 ## Wire Format
 
-All data is **little-endian** (x86). Use `{attribute 'pack_mode' := '1'}` to ensure tight packing (no alignment padding).
+All data little-endian (x86). `{attribute 'pack_mode' := '1'}` on every
+struct guarantees the on-wire layout matches the Rust decoder in
+`tc-otel-ads/src/diagnostics_push.rs`.
 
-### Snapshot Packet (IO=0)
-- Header: 16 bytes
-- Per-task records: 72 bytes each (count via `num_tasks`)
-- Total: 16 + 72×N bytes
+- **Batch** (`IG=0x4D424301`, `IO=0`): 80-byte header + N × 24-byte samples
+- Maximum samples per batch: **1024** (ring depth)
+- Worst-case frame size: **24,656 bytes** (well below the 8 MB ADS limit)
+- Wire version: **2** (v1 = legacy snapshot/edge format, removed)
+- Event type in header: **10** (batch)
 
-### Edge Event Packet (IO=1 cycle-exceed, IO=2 rt-violation)
-- 44 bytes fixed size
-- Sent immediately on violation edge detection
+### Per-Cycle Flags
 
-## How to Import into TwinCAT 3 Project
+| Bit | Constant                   | Meaning                                  |
+| --- | -------------------------- | ---------------------------------------- |
+| 0   | `SAMPLE_FLAG_CYCLE_EXCEED` | `CycleTimeExceeded` observed this cycle  |
+| 1   | `SAMPLE_FLAG_RT_VIOLATION` | `RTViolation` observed this cycle        |
+| 2   | `SAMPLE_FLAG_FIRST_CYCLE`  | First cycle after task start             |
+| 3   | `SAMPLE_FLAG_OVERFLOW`     | Ring overflowed before this sample       |
 
-1. In Visual Studio, open your TwinCAT 3 PLC project.
-2. Right-click **POUs** (or target folder) → **Import**.
-3. Select `FB_PushDiag.TcPOU` and confirm import.
-4. Right-click **Data Types** → **Import**.
-5. Select all three `.TcDUT` files and confirm.
-6. Verify no compilation errors (checkAllObjects).
+Each sample carries `cycle_count` + `dc_time`, so tc-otel can correlate
+a flagged cycle 1:1 with the log entry produced on the same cycle.
 
-## Sample Usage
+## Runtime-Writable Configuration
 
-Add this to your PLC `MAIN` or equivalent:
+The per-task config slot lives at `PRG_TaskLog.aTaskDiagConfig[n]` and
+is a plain `ST_PushDiagConfig` (`window_ms`, `enabled`, `divider`).
+tc-otel reaches it via ADS SymbolByName writes — no custom PLC-side
+handler is needed. The collector reads its config every cycle, so
+changes take effect on the next flush.
+
+## Usage
+
+There's no separate FB to instantiate — the logger's init wires
+everything up. Call `InitDiag` if you need a non-default window or
+a tc-otel port other than 16150.
 
 ```structured-text
-VAR
-    fbPushDiag : FB_PushDiag;
-    stTcOtelNetId : T_AmsNetId := (
-        ipaddr := [192, 168, 1, 100],
-        netid := 1,
-        port := 1
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    PRG_TaskLog.Init('127.0.0.1.1.1');
+    // Optional: override defaults (window=100ms, enabled=TRUE, divider=1)
+    PRG_TaskLog.InitDiag(
+        sAmsNetId := '127.0.0.1.1.1',
+        nPort     := 16150,
+        nWindowMs := 250,
+        bEnabled  := TRUE,
+        nDivider  := 1
     );
-END_VAR
+END_IF
 
 // Each cycle:
-fbPushDiag(
-    sTcOtelNetId := stTcOtelNetId,
-    nTcOtelPort := 16150,       // tc-otel ADS port (adjust as needed)
-    nSnapshotIntervalMs := 1000, // Send snapshot every 1000 ms
-    bEnabled := TRUE
-);
+PRG_TaskLog.Call();
 ```
-
-## Configuration Integration
-
-Once `FB_PushDiag` is active and tc-otel receives edge events (IO=1,2), you can **disable or remove** the **poll-based diagnostics** from tc-otel's config:
-
-```yaml
-diagnostics:
-  targets:
-    - netid: "192.168.1.1.1.1"
-      poll_interval_ms: 0  # Disable polling (or remove this target entirely)
-      # tc-otel auto-detects push mode and stops polling once edge events arrive
-```
-
-Polling adds ADS load. Push-mode diagnostics are much more efficient.
-
-## Notes
-
-- **Source intent:** These files are intended as source for integration into the **mbc_log4tc** library package.
-- **Task info access:** The FB uses `VAR_EXTERNAL` to access `TwinCAT_SystemInfoVarList.PlcAppSystemInfo.TaskInfo[]` array (standard TwinCAT runtime exposure).
-- **Non-blocking ADS:** `ADSWRITE` calls are non-blocking. The FB handles `BUSY` and `ERR` states gracefully without blocking the cycle.
-- **Edge detection:** Rising-edge detection of `CycleTimeExceeded` and `RTViolation` flags ensures one edge event per violation, preventing duplicate storms.
 
 ## Dependencies
 
 - TwinCAT 3.1 PLC Runtime
-- `Tc2_System` library (for `ADSWRITE`, system time)
-- tc-otel v1+ (ADS receiver on port 16150 by default)
-
-## License & Integration
-
-Intended for inclusion in **mbc_log4tc** library distribution. Follow mbc_log4tc licensing terms.
+- `Tc2_System` (for `ADSWRITE`, `MEMCPY`)
+- `Tc2_Utilities` (for `GETCURTASKINDEXEX`)
+- tc-otel v2+ (batch wire format)

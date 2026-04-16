@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_LogEntry" Id="{fdc002f1-7166-489a-9e27-9853cb239b8c}" SpecialFunc="None">
     <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'} 
 {attribute 'conditionalshow'}
@@ -749,7 +749,14 @@ END_IF
 
 // Timestamp RTC
 IF nTimestampClock = 0 THEN
-	nTimestampClock := PRG_TaskLog.RtcTime;
+	// F_GetActualDcTime64 reads live DC time at this instruction (LINT ns
+	// since DC epoch 2000-01-01 UTC). On this runtime it advances within
+	// the cycle, so each F_Log call gets a distinct ns-precise timestamp.
+	// Falls back to DcTaskTime (cycle-start stamp) if DC isn't synchronised.
+	nTimestampClock := Tc2_EtherCAT.F_GetActualDcTime64();
+	IF nTimestampClock = 0 THEN
+		nTimestampClock := TwinCAT_SystemInfoVarList._TaskInfo[Tc2_System.GETCURTASKINDEXEX()].DcTaskTime;
+	END_IF
 END_IF
 
 // Log-Entry Version
@@ -797,20 +804,28 @@ VAR_INPUT
 	nTimeStampClock	: LINT;
 END_VAR
 VAR
-	fbSysTime		: Tc2_System.GETSYSTEMTIME;
 	nTaskIndex		: DINT;
 	stHeader		: ST_LogEntryHeaderV2;
 END_VAR]]></Declaration>
       <Implementation>
         <ST><![CDATA[// Timestamp PLC
 IF nTimestampPlc = 0 THEN
-	fbSysTime();
-	nTimeStampPlc := ULINT_TO_LINT(SHL(UDINT_TO_ULINT(fbSysTime.timeHiDW), 32) OR fbSysTime.timeLoDW);
+	nTimeStampPlc := TO_LINT(Tc2_System.F_GetSystemTime());
 END_IF
 
-// Timestamp RTC
+// Timestamp RTC: use DcTaskTime (cycle-accurate ns since DC epoch 2000-01-01
+// UTC) instead of the ~100 ms-quantised PRG_TaskLog.RtcTime so log entries
+// get the same ns-precise timestamp as push-diag samples — Grafana lines
+// log rows and exceed dots up on the time axis cycle-by-cycle.
 IF nTimestampClock = 0 THEN
-	nTimestampClock := PRG_TaskLog.RtcTime;
+	// F_GetActualDcTime64 reads live DC time at this instruction (LINT ns
+	// since DC epoch 2000-01-01 UTC). On this runtime it advances within
+	// the cycle, so each F_Log call gets a distinct ns-precise timestamp.
+	// Falls back to DcTaskTime (cycle-start stamp) if DC isn't synchronised.
+	nTimestampClock := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
+	IF nTimestampClock = 0 THEN
+		nTimestampClock := TwinCAT_SystemInfoVarList._TaskInfo[Tc2_System.GETCURTASKINDEXEX()].DcTaskTime;
+	END_IF
 END_IF
 
 // Save entry start position for backfill calculations

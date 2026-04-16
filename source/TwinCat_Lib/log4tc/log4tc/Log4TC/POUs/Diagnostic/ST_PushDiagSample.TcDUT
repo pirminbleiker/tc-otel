@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.10">
+  <DUT Name="ST_PushDiagSample" Id="{2a3b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d}">
+    <Declaration><![CDATA[(*
+:Description: Single per-cycle diagnostic sample inside a push batch.
+
+One sample is captured per PLC cycle and buffered in a 1024-entry ring inside
+``FB_Log4TcTaskDiag``. The whole ring is flushed at the end of every
+aggregation window. ``flags`` carries per-cycle markers:
+
+* bit0 : cycle-time exceeded on this cycle
+* bit1 : rt-violation on this cycle
+* bit2 : first cycle after task start
+* bit3 : ring buffer overflowed before this sample (samples lost)
+
+Each sample keeps ``cycle_count`` and ``dc_time`` so tc-otel can correlate
+flagged cycles back to the log entry produced on the same cycle.
+*)
+TYPE ST_PushDiagSample :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  cycle_count   : UDINT;                    // +0x00, task cycle counter
+  exec_time_us  : UDINT;                    // +0x04, cycle execution time (us)
+  dc_time       : LINT;                     // +0x08, distributed-clock time (ns)
+  flags         : BYTE;                     // +0x10, per-cycle flag bits
+  reserved      : ARRAY [0..6] OF BYTE;     // +0x11, padding to 24 bytes
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

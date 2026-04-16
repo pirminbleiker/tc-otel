@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_PushDiagConfig" Id="{3b4c5d6e-7f8a-9b0c-1d2e-3f4a5b6c7d8e}">
+    <Declaration><![CDATA[(*
+:Description: Per-task push-diagnostic configuration, writable from tc-otel.
+
+One instance per task lives in ``PRG_TaskLog.aTaskDiagConfig``. tc-otel can
+update these slots at runtime via ADS SymbolByName writes so operators can
+tune the aggregation window or disable push diagnostics from the UI without
+recompiling the PLC project.
+
+``divider = 0`` or ``divider = 1`` samples every cycle; ``divider = N`` keeps
+every N-th cycle (useful on sub-100 us tasks where 1024 samples would fill
+the ring too quickly).
+*)
+TYPE ST_PushDiagConfig :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  window_ms : UDINT := 100;           // +0x00, aggregation window in ms (flush interval)
+  enabled   : BOOL := TRUE;            // +0x04, TRUE = collect and push samples
+  divider   : USINT := 1;           // +0x05, 0/1 = every cycle, N = every N-th
+  reserved  : UINT := 0;            // +0x06, reserved = 0, pad to 8 bytes
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

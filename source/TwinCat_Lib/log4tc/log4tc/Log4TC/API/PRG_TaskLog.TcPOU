@@ -1,11 +1,17 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="PRG_TaskLog" Id="{d9deec54-041b-4d4a-a876-7d0487674ab5}" SpecialFunc="None">
     <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
 PROGRAM PRG_TaskLog
 VAR
 	aTaskLogger			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTask;
-	aTaskRtcTime		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_RTC_Sync;
+	aTaskDiag			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTaskDiag;
+	(* Per-task push-diagnostic config. Element-level defaults come from the
+	   ST_PushDiagConfig declaration (window_ms=100, enabled=TRUE, divider=1).
+	   Writable at runtime from tc-otel via ADS symbol access
+	   (e.g. `PRG_TaskLog.aTaskDiagConfig[2].window_ms`) so operators can
+	   tune the aggregation window from the UI. *)
+	aTaskDiagConfig		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF ST_PushDiagConfig;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -13,17 +19,17 @@ END_VAR
     </Implementation>
     <Method Name="Call" Id="{7aeb9926-c091-4a02-a0d3-9930716cb4d1}">
       <Declaration><![CDATA[(*
-:Description: Sends collected log message of a single task to the service. 
+:Description: Sends collected log message of a single task to the service.
 
 This method must be called in each task which uses logging. It should be
 called once a cycle.
 
 **Example**
 
-.. code:: 
+.. code::
 
     PRG_TaskLog.Call();
-	
+
 *)
 METHOD PUBLIC Call
 VAR
@@ -33,66 +39,110 @@ END_VAR
       <Implementation>
         <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 aTaskLogger[nIdx].Call();
-aTaskRtcTime[nIdx].Call();
+aTaskDiag[nIdx].Call();
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="Init" Id="{a5681b61-7170-465c-b800-f922f70178d3}">
       <Declaration><![CDATA[(*
-:Description: Initialise the task logger with custom parameter. 
+:Description: Initialise the task logger with custom parameter.
 
 This method must be called in each task which uses logging. As long as
-the parameter do not change a single call is sufficient.
+the parameter do not change a single call is sufficient. It also binds
+the per-task push-diagnostic collector to the same tc-otel endpoint
+using the default ADS port (16150) — override via ``InitDiag`` if
+tc-otel runs on a different port or diagnostics should be disabled.
 
 **Example**
 
-.. code:: 
+.. code::
 
 	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
 		// For Remote Log4TC Server change the AMS net ID and configure a route
 	  PRG_TaskLog.Init('127.0.0.1.1.1');
 	END_IF
-    
+
 *)
 METHOD PUBLIC Init : BOOL
 VAR_INPUT
 	sAmsNetId	: Tc2_Utilities.T_AmsNetID;	(* The ams net id of the log service. Defaults to localhost (empty string). *)
+END_VAR
+VAR
+	nIdx	: DINT;
 END_VAR]]></Declaration>
       <Implementation>
-        <ST><![CDATA[aTaskLogger[Tc2_Utilities.GETCURTASKINDEXEX()].Init(sAmsNetId);
+        <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+aTaskLogger[nIdx].Init(sAmsNetId);
+aTaskDiag[nIdx].Init(sAmsNetId, 16150, ADR(aTaskDiagConfig[nIdx]));
 ]]></ST>
       </Implementation>
     </Method>
-    <Property Name="RtcTime" Id="{3577743f-dcc4-455c-a535-d7ff2826b706}">
-      <Declaration><![CDATA[PROPERTY INTERNAL RtcTime : LINT]]></Declaration>
-      <Get Name="Get" Id="{743e0e5a-c100-4c91-84fb-00ad8ebc0e39}">
-        <Declaration><![CDATA[VAR
+    <Method Name="InitDiag" Id="{b78c3d4e-5f60-4a1b-9c2d-3e4f5a6b7c8d}">
+      <Declaration><![CDATA[(*
+:Description: Bind push-diagnostics to a custom tc-otel endpoint.
+
+Call this instead of (or after) ``Init`` when tc-otel's ADS port differs
+from 16150, when diagnostics need a different AMS net id than logs, or
+when the project wants to seed a non-default window / divider / enable
+flag on first cycle.
+
+Subsequent changes to ``aTaskDiagConfig[n]`` — whether from PLC code or
+from tc-otel via ADS symbol writes — take effect on the next cycle.
+
+**Example**
+
+.. code::
+
+	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+		PRG_TaskLog.InitDiag(
+			sAmsNetId  := '127.0.0.1.1.1',
+			nPort      := 16150,
+			nWindowMs  := 250,
+			bEnabled   := TRUE,
+			nDivider   := 1
+		);
+	END_IF
+*)
+METHOD PUBLIC InitDiag : BOOL
+VAR_INPUT
+	sAmsNetId	: Tc2_Utilities.T_AmsNetID;
+	nPort		: UINT;     (* tc-otel ADS port, 0 keeps the default 16150 *)
+	nWindowMs	: UDINT;    (* aggregation window in ms; 0 disables pushes *)
+	bEnabled	: BOOL;
+	nDivider	: USINT;    (* 0/1 every cycle, N keeps every N-th *)
 END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[RtcTime := aTaskRtcTime[Tc2_Utilities.GETCURTASKINDEXEX()].RtcTime;]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
+VAR
+	nIdx	: DINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+aTaskDiagConfig[nIdx].window_ms := nWindowMs;
+aTaskDiagConfig[nIdx].enabled   := bEnabled;
+aTaskDiagConfig[nIdx].divider   := nDivider;
+aTaskDiag[nIdx].Init(sAmsNetId, nPort, ADR(aTaskDiagConfig[nIdx]));
+InitDiag := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
     <Property Name="TaskContextBuilder" Id="{37ede606-5a7a-4581-9bfb-710648eb6050}">
       <Declaration><![CDATA[(*
 :Description: Returns the ``I_ContextBuilder`` for task specific context
-	properties. 
+	properties.
 
 Task specific properties are added to each log message which is created
-on the same task. 
+on the same task.
 
 For best performance properties should only be added or removed if the
 values have changed.
 
 **Example**
 
-.. code:: 
+.. code::
 
 	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
 		PRG_TaskLog.TaskContextBuilder.AddInt('machineNo', nMachineNumber);
 	END_IF
-    
+
 *)
 PROPERTY PUBLIC TaskContextBuilder : I_ContextBuilder]]></Declaration>
       <Get Name="Get" Id="{0565efa6-0f30-4a5a-8d01-6c8dcd2d67fb}">

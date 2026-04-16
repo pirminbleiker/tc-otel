@@ -17,9 +17,6 @@
     <LibraryReferences>{834be163-bc00-4fb7-ae1f-288fe3da580f}</LibraryReferences>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="PlcTask.TcTTO">
-      <SubType>Code</SubType>
-    </Compile>
     <Compile Include="POUs\MAIN.TcPOU">
       <SubType>Code</SubType>
     </Compile>
