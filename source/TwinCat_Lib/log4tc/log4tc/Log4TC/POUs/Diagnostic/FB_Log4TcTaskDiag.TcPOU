@@ -40,8 +40,8 @@ VAR
 
     (* Ring buffer — 1024 samples, ~24 KB per task instance. *)
     aSampleRing         : ARRAY [0..1023] OF ST_PushDiagSample;
-    nRingHead           : DINT;      // next write slot
-    nRingCount          : DINT;      // samples currently in the ring
+    nRingHead           : UDINT;     // next write slot
+    nRingCount          : UDINT;     // samples currently in the ring
     bOverflowPending    : BOOL;      // next stored sample carries the overflow flag
 
     (* Per-window aggregates. Cleared after each flush. *)
@@ -352,15 +352,15 @@ METHOD PRIVATE Flush
 VAR_INPUT
 END_VAR
 VAR
-    nStartRead    : DINT;
-    nOffset       : DINT;
-    nLocalIdx     : DINT;
-    nRingIter     : DINT;
+    nStartRead    : UDINT;
+    nOffset       : UDINT;
+    nLocalIdx     : UDINT;
+    nRingIter     : UDINT;
     pTask         : POINTER TO PlcTaskSystemInfo;
     nTi           : DINT;
     nNameLen      : UDINT;
     sTaskName     : STRING;
-    nBytesToWrite : DINT;
+    nBytesToWrite : UDINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -382,7 +382,7 @@ stHeader.reserved0          := 0;
 stHeader.task_obj_id        := pTask^.ObjId;
 stHeader.task_port          := DWORD_TO_UINT(pTask^.AdsPort AND 16#FFFF);
 stHeader.window_ms          := UDINT_TO_UINT(pConfig^.window_ms);
-stHeader.sample_count       := DINT_TO_UINT(nRingCount);
+stHeader.sample_count       := UDINT_TO_UINT(nRingCount);
 stHeader.reserved1          := 0;
 stHeader.cycle_count_start  := nCycleCountStart;
 stHeader.cycle_count_end    := nCycleCountEnd;
@@ -416,11 +416,11 @@ nOffset := nHeaderSize;
    chronological order, so start `nRingCount` back from the head. *)
 IF nRingCount >= nMaxSamples THEN
     nStartRead := nRingHead; // oldest slot is the one we're about to overwrite
+ELSIF nRingCount > nRingHead THEN
+    (* Ring wrapped: go back from head by nRingCount, wrapping modulo nMaxSamples. *)
+    nStartRead := nMaxSamples - (nRingCount - nRingHead);
 ELSE
     nStartRead := nRingHead - nRingCount;
-    IF nStartRead < 0 THEN
-        nStartRead := nStartRead + nMaxSamples;
-    END_IF
 END_IF
 
 FOR nRingIter := 0 TO nRingCount - 1 DO
@@ -448,7 +448,7 @@ fbAdsWrite(
     PORT    := nTcOtelPort,
     IDXGRP  := nIdxGroupPushDiag,
     IDXOFFS := nIdxOffsetBatch,
-    LEN     := DINT_TO_UDINT(nBytesToWrite),
+    LEN     := nBytesToWrite,
     SRCADDR := ADR(abySendBuffer),
     WRITE   := TRUE,
     TMOUT   := T#1S
