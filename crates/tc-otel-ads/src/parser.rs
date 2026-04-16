@@ -259,7 +259,7 @@ impl AdsParser {
 
         // Timestamps (8 bytes each, FILETIME format)
         let plc_timestamp = reader.read_filetime()?;
-        let clock_timestamp = reader.read_filetime()?;
+        let clock_timestamp = reader.read_dc_task_time()?;
 
         // Task metadata
         let task_index = reader.read_i32()?;
@@ -353,7 +353,7 @@ impl AdsParser {
         )))?;
 
         let plc_timestamp = reader.read_filetime()?;
-        let clock_timestamp = reader.read_filetime()?;
+        let clock_timestamp = reader.read_dc_task_time()?;
 
         let task_index = reader.read_u8()? as i32;
         let cycle_counter = reader.read_u32()?;
@@ -461,7 +461,7 @@ impl AdsParser {
         )))?;
 
         let plc_timestamp = reader.read_filetime()?;
-        let clock_timestamp = reader.read_filetime()?;
+        let clock_timestamp = reader.read_dc_task_time()?;
 
         let task_index = reader.read_u8()? as i32;
         let cycle_counter = reader.read_u32()?;
@@ -929,6 +929,29 @@ impl<'a> BytesReader<'a> {
 
         DateTime::<Utc>::from_timestamp(secs as i64, nanos)
             .ok_or(AdsError::InvalidTimestamp("Invalid timestamp".to_string()))
+    }
+
+    /// Read a DcTaskTime field (i64 nanoseconds since the TwinCAT DC epoch
+    /// 2000-01-01 UTC). The PLC uses this for `clock_timestamp` in v2 log
+    /// entries to give every log row the exact nanosecond of its task
+    /// cycle — matching the dc_time carried on push-diagnostic samples so
+    /// Grafana can line them up on the same time axis without jitter.
+    fn read_dc_task_time(&mut self) -> Result<DateTime<Utc>> {
+        let bytes = self.read_bytes(8)?;
+        let dc_ns = i64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]);
+        if dc_ns <= 0 {
+            // Pre-DC-sync logs may ship 0 — fall back to wall-clock.
+            return Ok(Utc::now());
+        }
+        // Seconds between Unix epoch (1970) and DC epoch (2000).
+        const UNIX_TO_DC_EPOCH_SECS: i64 = 946_684_800;
+        let secs = dc_ns / 1_000_000_000;
+        let nanos = (dc_ns.rem_euclid(1_000_000_000)) as u32;
+        DateTime::<Utc>::from_timestamp(UNIX_TO_DC_EPOCH_SECS + secs, nanos).ok_or(
+            AdsError::InvalidTimestamp("Invalid DC timestamp".to_string()),
+        )
     }
 
     fn read_u16(&mut self) -> Result<u16> {
