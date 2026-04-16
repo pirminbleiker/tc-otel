@@ -753,7 +753,7 @@ IF nTimestampClock = 0 THEN
 	// since DC epoch 2000-01-01 UTC). On this runtime it advances within
 	// the cycle, so each F_Log call gets a distinct ns-precise timestamp.
 	// Falls back to DcTaskTime (cycle-start stamp) if DC isn't synchronised.
-	nTimestampClock := Tc2_EtherCAT.F_GetActualDcTime64();
+	nTimestampClock := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 	IF nTimestampClock = 0 THEN
 		nTimestampClock := TwinCAT_SystemInfoVarList._TaskInfo[Tc2_System.GETCURTASKINDEXEX()].DcTaskTime;
 	END_IF

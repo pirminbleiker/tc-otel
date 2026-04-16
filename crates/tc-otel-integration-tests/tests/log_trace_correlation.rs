@@ -3,7 +3,7 @@
 //! Tests the correlation of logs within trace context:
 //! - LogEntry carries trace_id and span_id when emitted within a trace
 //! - LogRecord includes trace context in OTEL export
-//! - ADS message type 0x06 (traced log) correctly parses trace_id and span_id
+//! - ADS message type 0x09 (traced log) correctly parses trace_id and span_id
 //! - Backward compatibility: v2 logs (type 0x02) still work without trace context
 //! - Mixed buffers: traced logs + regular logs + spans in same ADS Write
 
@@ -50,7 +50,7 @@ fn build_v2_log_bytes(
     data
 }
 
-/// Build a v2 traced log entry (type 0x06) with trace context.
+/// Build a v2 traced log entry (type 0x09) with trace context.
 fn build_traced_log_bytes(
     trace_id: [u8; 16],
     span_id: [u8; 8],
@@ -86,9 +86,9 @@ fn build_traced_log_bytes(
     // logger (string)
     append_string(&mut payload, logger);
 
-    // Wrap: [type=0x06] [entry_length: u16 LE] [payload]
+    // Wrap: [type=0x09] [entry_length: u16 LE] [payload]
     let mut data = Vec::new();
-    data.push(0x06);
+    data.push(0x09);
     data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
     data.extend_from_slice(&payload);
     data
@@ -244,7 +244,7 @@ fn test_log_record_trace_context_preserved_through_serialization() {
     assert_eq!(deserialized.span_id, "aaaaaaaaaaaaaaaa");
 }
 
-// ─── ADS parser tests for type 0x06 (traced log) ─────────────────────
+// ─── ADS parser tests for type 0x09 (traced log) ─────────────────────
 
 #[test]
 fn test_parse_traced_log_basic() {

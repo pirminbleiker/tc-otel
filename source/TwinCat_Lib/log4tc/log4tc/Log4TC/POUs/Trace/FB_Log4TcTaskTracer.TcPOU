@@ -14,11 +14,12 @@ Wire format documented in docs/traces-design.md Section "Wire Format".
 {attribute 'conditionalshow'}
 FUNCTION_BLOCK FB_Log4TcTaskTracer
 VAR
-    (* Slot allocation and parent tracking *)
-    aSlots           : ARRAY[0..15] OF ST_SpanSlot;
+    (* Slot allocation and parent tracking. hSpan is USINT (0..254) per the
+       wire format; 0xFF is reserved for 'no parent'. *)
+    aSlots           : ARRAY[0..254] OF ST_SpanSlot;
     nNextLocalId     : USINT := 0;
 
-    (* Implicit parent stack for nested spans *)
+    (* Implicit parent stack for nested spans. 16 levels is plenty in practice. *)
     aStack           : ARRAY[0..15] OF USINT;
     nStackDepth      : USINT := 0;
 
@@ -629,8 +630,12 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     END_IF;
 END_IF;
 
-(* Increment for next allocation *)
-nNextLocalId := nNextLocalId + 1;
+(* Increment for next allocation; wrap at 254 because 0xFF is reserved. *)
+IF nNextLocalId >= 254 THEN
+    nNextLocalId := 0;
+ELSE
+    nNextLocalId := nNextLocalId + 1;
+END_IF;
 
 Begin := hSpan;
 ]]></ST>

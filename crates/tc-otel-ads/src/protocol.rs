@@ -17,7 +17,7 @@ pub enum AttrValue {
 /// Wire-format trace events (streaming span events)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TraceWireEvent {
-    /// SPAN_BEGIN (event_type=1): starts a new span
+    /// SPAN_BEGIN (event_type=5): starts a new span
     Begin {
         local_id: u8,
         task_index: u8,
@@ -28,7 +28,7 @@ pub enum TraceWireEvent {
         name: String,
         traceparent: Option<String>,
     },
-    /// SPAN_ATTR (event_type=2): adds an attribute to a pending span
+    /// SPAN_ATTR (event_type=6): adds an attribute to a pending span
     Attr {
         local_id: u8,
         task_index: u8,
@@ -37,7 +37,7 @@ pub enum TraceWireEvent {
         key: String,
         value: AttrValue,
     },
-    /// SPAN_EVENT (event_type=3): adds a timestamped event to a pending span
+    /// SPAN_EVENT (event_type=7): adds a timestamped event to a pending span
     Event {
         local_id: u8,
         task_index: u8,
@@ -46,7 +46,7 @@ pub enum TraceWireEvent {
         name: String,
         attrs: Vec<(String, AttrValue)>,
     },
-    /// SPAN_END (event_type=4): completes a pending span
+    /// SPAN_END (event_type=8): completes a pending span
     End {
         local_id: u8,
         task_index: u8,

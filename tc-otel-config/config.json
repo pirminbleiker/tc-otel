@@ -93,5 +93,15 @@
         }
       }
     ]
+  },
+  "traces": {
+    "enabled": true,
+    "span_ttl_secs": 10,
+    "max_pending_spans": 1024,
+    "export": {
+      "endpoint": "http://otel-collector:4318/v1/traces",
+      "batch_size": 100,
+      "flush_interval_ms": 1000
+    }
   }
 }

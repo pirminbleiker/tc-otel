@@ -160,8 +160,9 @@ impl AdsParser {
                         }
                     }
                 }
-                6 => {
-                    // v2 log entry with trace context
+                9 => {
+                    // v2 log entry with trace context (moved from 0x06 — that range
+                    // is now span event dispatch).
                     let entry_pos = reader.pos;
                     match Self::parse_v2_traced_from_reader(&mut reader) {
                         Ok(entry) => entries.push(entry),
@@ -188,9 +189,9 @@ impl AdsParser {
                         }
                     }
                 }
-                5 => {
-                    // Trace wire events (SPAN_BEGIN=5, ...) - NEW streaming format
-                    // Note: old AdsSpanEntry one-shot format (type 5) is retired in Phase 1
+                5 | 6 | 7 | 8 => {
+                    // Trace wire events: SPAN_BEGIN=5, SPAN_ATTR=6, SPAN_EVENT=7, SPAN_END=8.
+                    // The outer byte IS the event_type; the parser re-reads it.
                     match Self::parse_v2_trace_event_from_reader(&mut reader) {
                         Ok(ev) => trace_events.push(ev),
                         Err(e) => {
@@ -588,7 +589,7 @@ impl AdsParser {
         ]);
 
         match event_type {
-            1 => {
+            5 => {
                 // SPAN_BEGIN: parent_local_id, kind, name_len, reserved, name, [traceparent]
                 let parent_local_id = reader.read_u8()?;
                 let kind = reader.read_u8()?;
@@ -633,7 +634,7 @@ impl AdsParser {
                     traceparent,
                 })
             }
-            2 => {
+            6 => {
                 // SPAN_ATTR: value_type, key_len, value_len, reserved, key, value
                 let value_type = reader.read_u8()?;
                 let key_len = reader.read_u8()? as usize;
@@ -704,7 +705,7 @@ impl AdsParser {
                     value,
                 })
             }
-            3 => {
+            7 => {
                 // SPAN_EVENT: name_len, attr_count, reserved(2), name, inline-attrs
                 let name_len = reader.read_u8()? as usize;
                 let attr_count = reader.read_u8()? as usize;
@@ -778,7 +779,7 @@ impl AdsParser {
                     attrs,
                 })
             }
-            4 => {
+            8 => {
                 // SPAN_END: status, msg_len, reserved(2), status_msg
                 let status = reader.read_u8()?;
                 let msg_len = reader.read_u8()? as usize;
