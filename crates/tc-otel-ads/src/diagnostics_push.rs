@@ -45,8 +45,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Vec<DiagEvent> {
         return vec![];
     }
 
-    let plc_timestamp_ns =
-        u64::from_le_bytes(bytes[4..12].try_into().unwrap_or([0; 8]));
+    let plc_timestamp_ns = u64::from_le_bytes(bytes[4..12].try_into().unwrap_or([0; 8]));
 
     let mut events = Vec::with_capacity(num_tasks);
     for i in 0..num_tasks {
@@ -65,12 +64,10 @@ pub fn decode_snapshot(bytes: &[u8]) -> Vec<DiagEvent> {
             u32::from_le_bytes(task_bytes[12..16].try_into().unwrap_or([0; 4]));
 
         // +0x10: last_exec_time_us
-        let last_exec_time_us =
-            u32::from_le_bytes(task_bytes[16..20].try_into().unwrap_or([0; 4]));
+        let last_exec_time_us = u32::from_le_bytes(task_bytes[16..20].try_into().unwrap_or([0; 4]));
 
         // +0x18: cycle_count
-        let cycle_count =
-            u64::from_le_bytes(task_bytes[24..32].try_into().unwrap_or([0; 8]));
+        let cycle_count = u64::from_le_bytes(task_bytes[24..32].try_into().unwrap_or([0; 8]));
 
         // +0x20: cycle_exceed_count
         let cycle_exceed_count =
@@ -259,16 +256,16 @@ mod tests {
     fn decode_snapshot_with_one_task() {
         let mut frame = snapshot_header(1, 1_000_000_000);
         frame.extend_from_slice(&task_record(
-            100,           // task_obj_id
-            350,           // ads_port
-            20,            // priority
-            1000,          // cycle_time_us
-            500,           // last_exec_time_us
-            1234,          // cycle_count
-            5,             // cycle_exceed_count
-            0,             // rt_violation_count
+            100,                        // task_obj_id
+            350,                        // ads_port
+            20,                         // priority
+            1000,                       // cycle_time_us
+            500,                        // last_exec_time_us
+            1234,                       // cycle_count
+            5,                          // cycle_exceed_count
+            0,                          // rt_violation_count
             PUSH_FLAG_CYCLE_EXCEED_NOW, // flags
-            "PlcTask",     // task_name
+            "PlcTask",                  // task_name
         ));
 
         let events = decode_snapshot(&frame);
@@ -305,9 +302,24 @@ mod tests {
     #[test]
     fn decode_snapshot_with_three_tasks() {
         let mut frame = snapshot_header(3, 2_000_000_000);
-        frame.extend_from_slice(&task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask"));
-        frame.extend_from_slice(&task_record(101, 351, 10, 10000, 5000, 123, 0, 1, PUSH_FLAG_RT_VIOLATION_NOW, "PlcTask1"));
-        frame.extend_from_slice(&task_record(102, 340, 5, 1000, 100, 9999, 0, 0, 0, "IoIdle"));
+        frame.extend_from_slice(&task_record(
+            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+        ));
+        frame.extend_from_slice(&task_record(
+            101,
+            351,
+            10,
+            10000,
+            5000,
+            123,
+            0,
+            1,
+            PUSH_FLAG_RT_VIOLATION_NOW,
+            "PlcTask1",
+        ));
+        frame.extend_from_slice(&task_record(
+            102, 340, 5, 1000, 100, 9999, 0, 0, 0, "IoIdle",
+        ));
 
         let events = decode_snapshot(&frame);
         assert_eq!(events.len(), 3, "should decode all three tasks");
@@ -334,7 +346,9 @@ mod tests {
     fn decode_snapshot_rejects_wrong_version() {
         let mut frame = snapshot_header(1, 1_000_000_000);
         frame[0] = 99; // wrong version
-        frame.extend_from_slice(&task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask"));
+        frame.extend_from_slice(&task_record(
+            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+        ));
 
         let events = decode_snapshot(&frame);
         assert_eq!(events.len(), 0, "should reject wrong version");
@@ -344,7 +358,9 @@ mod tests {
     fn decode_snapshot_rejects_wrong_event_type() {
         let mut frame = snapshot_header(1, 1_000_000_000);
         frame[1] = 1; // wrong event_type (should be 0)
-        frame.extend_from_slice(&task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask"));
+        frame.extend_from_slice(&task_record(
+            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+        ));
 
         let events = decode_snapshot(&frame);
         assert_eq!(events.len(), 0, "should reject wrong event_type");
@@ -353,7 +369,9 @@ mod tests {
     #[test]
     fn decode_snapshot_rejects_truncated_payload() {
         let mut frame = snapshot_header(2, 1_000_000_000); // claims 2 tasks
-        frame.extend_from_slice(&task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask"));
+        frame.extend_from_slice(&task_record(
+            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+        ));
         // Missing second task
 
         let events = decode_snapshot(&frame);
@@ -399,7 +417,9 @@ mod tests {
     #[test]
     fn task_name_handles_null_padding() {
         let mut frame = snapshot_header(1, 1_000_000_000);
-        frame.extend_from_slice(&task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask"));
+        frame.extend_from_slice(&task_record(
+            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+        ));
 
         let events = decode_snapshot(&frame);
         if let DiagEvent::TaskSnapshot { task_name, .. } = &events[0] {
@@ -427,7 +447,10 @@ mod tests {
         if let DiagEvent::TaskSnapshot { task_name, .. } = &events[0] {
             // String::from_utf8_lossy will replace invalid sequences with U+FFFD.
             // We just check that decoding succeeded without panicking.
-            assert!(!task_name.is_empty() || task_name.contains('\u{FFFD}'), "should use lossy decoding");
+            assert!(
+                !task_name.is_empty() || task_name.contains('\u{FFFD}'),
+                "should use lossy decoding"
+            );
         } else {
             panic!("expected TaskSnapshot");
         }

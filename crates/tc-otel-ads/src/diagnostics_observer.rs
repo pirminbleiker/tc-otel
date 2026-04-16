@@ -7,7 +7,7 @@
 //!
 //! Unknown frames cost one hash-map lookup and are dropped with no allocation.
 //!
-//! Pending-request entries expire after [`Self::PENDING_TTL`] to bound memory
+//! Pending-request entries expire after `DiagnosticsObserver::PENDING_TTL` to bound memory
 //! when a request's response is lost or dropped.
 
 use crate::ams::AmsHeader;
@@ -318,7 +318,8 @@ mod tests {
 
         // Forcibly age the single entry past the TTL, then trigger GC.
         for entry in obs.pending.values_mut() {
-            entry.inserted = Instant::now() - DiagnosticsObserver::PENDING_TTL - Duration::from_secs(1);
+            entry.inserted =
+                Instant::now() - DiagnosticsObserver::PENDING_TTL - Duration::from_secs(1);
         }
         obs.gc_now();
         assert_eq!(obs.pending_len(), 0);

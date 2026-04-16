@@ -229,9 +229,7 @@ impl Log4TcService {
         // Optional self-polling diagnostics collector — only runs for MQTT
         // transport (needs the same broker) and when explicitly enabled.
         // Metrics bridge is future work; for now events are drained and logged.
-        if self.settings.diagnostics.enabled
-            && !self.settings.diagnostics.targets.is_empty()
-        {
+        if self.settings.diagnostics.enabled && !self.settings.diagnostics.targets.is_empty() {
             if let TransportConfig::Mqtt(ref mqtt_cfg) = self.settings.receiver.transport {
                 let (broker_host, broker_port) = parse_broker_addr(&mqtt_cfg.broker);
                 let poller_config = build_poller_config(
@@ -247,10 +245,9 @@ impl Log4TcService {
                             tc_otel_ads::AmsNetId,
                             tc_otel_ads::diagnostics::DiagEvent,
                         )>(256);
-                        let poller =
-                            Arc::new(tc_otel_ads::diagnostics_poller::DiagnosticsPoller::new(
-                                cfg, diag_tx,
-                            ));
+                        let poller = Arc::new(
+                            tc_otel_ads::diagnostics_poller::DiagnosticsPoller::new(cfg, diag_tx),
+                        );
                         let task_names = poller.task_names();
                         let mut shutdown_rx_poller = shutdown_tx.subscribe();
                         tokio::spawn(async move {
@@ -295,9 +292,7 @@ impl Log4TcService {
                     }
                 }
             } else {
-                tracing::warn!(
-                    "Diagnostics self-poller requires MQTT transport; skipping"
-                );
+                tracing::warn!("Diagnostics self-poller requires MQTT transport; skipping");
             }
         }
 
@@ -503,9 +498,8 @@ fn build_poller_config(
 
     let mut parsed_targets = Vec::with_capacity(targets.len());
     for t in targets {
-        let net_id = AmsNetId::from_str(&t.ams_net_id).map_err(|e| {
-            anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e)
-        })?;
+        let net_id = AmsNetId::from_str(&t.ams_net_id)
+            .map_err(|e| anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e))?;
         // Parse the string-keyed `task_names` map from config into
         // `HashMap<u16, String>`, silently skipping entries with a
         // non-numeric port.
