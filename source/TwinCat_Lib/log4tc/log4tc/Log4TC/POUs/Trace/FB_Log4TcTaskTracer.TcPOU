@@ -114,7 +114,7 @@ IF nKeyLen > 31 THEN
 END_IF;
 nKeyLenUsint := TO_USINT(nKeyLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -184,7 +184,7 @@ IF nNameLen > 31 THEN
 END_IF;
 nNameLenUsint := TO_USINT(nNameLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -251,7 +251,7 @@ IF nKeyLen > 31 THEN
 END_IF;
 nKeyLenUsint := TO_USINT(nKeyLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -321,7 +321,7 @@ IF nKeyLen > 31 THEN
 END_IF;
 nKeyLenUsint := TO_USINT(nKeyLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -391,7 +391,7 @@ IF nKeyLen > 31 THEN
 END_IF;
 nKeyLenUsint := TO_USINT(nKeyLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -469,7 +469,7 @@ IF nValLen > 127 THEN
 END_IF;
 nValLenUsint := TO_USINT(nValLen);
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -564,7 +564,7 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
 END_IF;
 
 (* Get current time and task index *)
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
@@ -682,7 +682,7 @@ IF NOT aSlots[hSpan].bInUse THEN
     RETURN;
 END_IF;
 
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
