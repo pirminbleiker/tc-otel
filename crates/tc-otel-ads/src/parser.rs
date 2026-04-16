@@ -189,7 +189,7 @@ impl AdsParser {
                         }
                     }
                 }
-                5 | 6 | 7 | 8 => {
+                5..=8 => {
                     // Trace wire events: SPAN_BEGIN=5, SPAN_ATTR=6, SPAN_EVENT=7, SPAN_END=8.
                     // The outer byte IS the event_type; the parser re-reads it.
                     match Self::parse_v2_trace_event_from_reader(&mut reader) {
