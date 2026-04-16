@@ -124,7 +124,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 1;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -194,7 +194,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nNameLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeEvent, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -261,7 +261,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -331,7 +331,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -401,7 +401,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -479,7 +479,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nKeyLen + nValLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
 
@@ -595,7 +595,7 @@ END_IF;
 
 (* Write frame *)
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeBegin, hSpan, nTaskIndex, nFlagsBegin, nDcTime);
 
@@ -692,7 +692,7 @@ nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 nTotalLen := 12 + 4 + nMsgLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND THEN pBuffer^.BufferFree >= nTotalLen THEN
+IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header *)
     _WriteFrameHeader(pBuffer, nEventTypeEnd, hSpan, nTaskIdx, nFlags, nDcTime);
 
