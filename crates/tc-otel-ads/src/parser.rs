@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_core::LogLevel;
 
+pub use crate::protocol::{AttrValue, TraceWireEvent};
 use tc_otel_core::{MetricKind, SpanKind, SpanStatusCode};
 
 // Security limits for protocol parsing
@@ -18,8 +19,10 @@ const MAX_CONTEXT_VARS: usize = 64;
 /// Maximum total message size (1 MB)
 const MAX_MESSAGE_SIZE: usize = 1_048_576;
 /// Maximum number of events per span
+#[allow(dead_code)]
 const MAX_SPAN_EVENTS: usize = 128;
 /// Maximum number of attributes per span or span event
+#[allow(dead_code)]
 const MAX_SPAN_ATTRIBUTES: usize = 64;
 /// Maximum number of attributes per metric
 const MAX_METRIC_ATTRIBUTES: usize = 32;
@@ -33,6 +36,7 @@ pub struct ParseResult {
     pub registrations: Vec<RegistrationMessage>,
     pub spans: Vec<AdsSpanEntry>,
     pub metrics: Vec<AdsMetricEntry>,
+    pub trace_events: Vec<TraceWireEvent>,
 }
 
 /// Parser for ADS binary protocol messages
@@ -52,8 +56,8 @@ impl AdsParser {
 
         let mut entries = Vec::new();
         let mut registrations = Vec::new();
-        let mut spans = Vec::new();
         let mut metrics = Vec::new();
+        let mut trace_events = Vec::new();
         let mut reader = BytesReader::new(data);
 
         while reader.remaining() > 0 {
@@ -71,7 +75,8 @@ impl AdsParser {
                     match Self::parse_v1_from_reader(&mut reader) {
                         Ok(entry) => entries.push(entry),
                         Err(e) => {
-                            if entries.is_empty() && registrations.is_empty() {
+                            if entries.is_empty() && registrations.is_empty() && metrics.is_empty()
+                            {
                                 return Err(e);
                             }
                             // Partial entry at end - ok, we got what we could
@@ -142,10 +147,7 @@ impl AdsParser {
                     match Self::parse_metric_from_reader(&mut reader) {
                         Ok(metric) => metrics.push(metric),
                         Err(e) => {
-                            if entries.is_empty()
-                                && registrations.is_empty()
-                                && spans.is_empty()
-                                && metrics.is_empty()
+                            if entries.is_empty() && registrations.is_empty() && metrics.is_empty()
                             {
                                 return Err(e);
                             }
@@ -187,19 +189,20 @@ impl AdsParser {
                     }
                 }
                 5 => {
-                    // Span entry (completed span)
-                    match Self::parse_span_from_reader(&mut reader) {
-                        Ok(span) => spans.push(span),
+                    // Trace wire events (SPAN_BEGIN=5, ...) - NEW streaming format
+                    // Note: old AdsSpanEntry one-shot format (type 5) is retired in Phase 1
+                    match Self::parse_v2_trace_event_from_reader(&mut reader) {
+                        Ok(ev) => trace_events.push(ev),
                         Err(e) => {
                             if entries.is_empty()
                                 && registrations.is_empty()
-                                && spans.is_empty()
                                 && metrics.is_empty()
+                                && trace_events.is_empty()
                             {
                                 return Err(e);
                             }
                             tracing::debug!(
-                                "Partial span at buffer end ({} bytes remaining): {}",
+                                "Error parsing trace event at buffer end ({} bytes remaining): {}",
                                 reader.remaining(),
                                 e
                             );
@@ -218,8 +221,9 @@ impl AdsParser {
         Ok(ParseResult {
             entries,
             registrations,
-            spans,
+            spans: Vec::new(),
             metrics,
+            trace_events,
         })
     }
 
@@ -553,6 +557,260 @@ impl AdsParser {
         })
     }
 
+    /// Parse a single trace wire event
+    ///
+    /// Event types (embedded in the first byte of payload after dispatch):
+    /// - 1 = SPAN_BEGIN: parent_local_id, kind, name_len, reserved, name, [traceparent]
+    /// - 2 = SPAN_ATTR: value_type, key_len, value_len, reserved, key, value
+    /// - 3 = SPAN_EVENT: name_len, attr_count, reserved(2), name, inline-attrs
+    /// - 4 = SPAN_END: status, msg_len, reserved(2), status_msg
+    ///
+    /// All frames begin with the 12-byte common header:
+    /// [event_type: u8] [local_id: u8] [task_index: u8] [flags: u8] [dc_time: i64]
+    fn parse_v2_trace_event_from_reader(reader: &mut BytesReader) -> Result<TraceWireEvent> {
+        use crate::protocol::TraceWireEvent;
+
+        // Read the common 12-byte header
+        let event_type = reader.read_u8()?;
+        let local_id = reader.read_u8()?;
+        let task_index = reader.read_u8()?;
+        let flags = reader.read_u8()?;
+        let dc_time_bytes = reader.read_bytes(8)?;
+        let dc_time = i64::from_le_bytes([
+            dc_time_bytes[0],
+            dc_time_bytes[1],
+            dc_time_bytes[2],
+            dc_time_bytes[3],
+            dc_time_bytes[4],
+            dc_time_bytes[5],
+            dc_time_bytes[6],
+            dc_time_bytes[7],
+        ]);
+
+        match event_type {
+            1 => {
+                // SPAN_BEGIN: parent_local_id, kind, name_len, reserved, name, [traceparent]
+                let parent_local_id = reader.read_u8()?;
+                let kind = reader.read_u8()?;
+                let name_len = reader.read_u8()? as usize;
+                let _reserved = reader.read_u8()?;
+
+                if name_len > 127 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_BEGIN: name length exceeds 127".to_string(),
+                    ));
+                }
+
+                let name_bytes = reader.read_bytes(name_len)?;
+                let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                    AdsError::ParseError("SPAN_BEGIN: invalid UTF-8 in name".to_string())
+                })?;
+
+                let traceparent = if (flags & 0x02) != 0 {
+                    // flag_has_external_parent is set
+                    let tp_len = reader.read_u8()? as usize;
+                    if tp_len > 127 {
+                        return Err(AdsError::ParseError(
+                            "SPAN_BEGIN: traceparent length exceeds 127".to_string(),
+                        ));
+                    }
+                    let tp_bytes = reader.read_bytes(tp_len)?;
+                    Some(String::from_utf8(tp_bytes.to_vec()).map_err(|_| {
+                        AdsError::ParseError("SPAN_BEGIN: invalid UTF-8 in traceparent".to_string())
+                    })?)
+                } else {
+                    None
+                };
+
+                Ok(TraceWireEvent::Begin {
+                    local_id,
+                    task_index,
+                    flags,
+                    dc_time,
+                    parent_local_id,
+                    kind,
+                    name,
+                    traceparent,
+                })
+            }
+            2 => {
+                // SPAN_ATTR: value_type, key_len, value_len, reserved, key, value
+                let value_type = reader.read_u8()?;
+                let key_len = reader.read_u8()? as usize;
+                let value_len = reader.read_u8()? as usize;
+                let _reserved = reader.read_u8()?;
+
+                if key_len > 31 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_ATTR: key length exceeds 31".to_string(),
+                    ));
+                }
+                if value_len > 127 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_ATTR: value length exceeds 127".to_string(),
+                    ));
+                }
+
+                let key_bytes = reader.read_bytes(key_len)?;
+                let key = String::from_utf8(key_bytes.to_vec()).map_err(|_| {
+                    AdsError::ParseError("SPAN_ATTR: invalid UTF-8 in key".to_string())
+                })?;
+
+                use crate::protocol::AttrValue;
+                let value = match value_type {
+                    1 => {
+                        let v_bytes = reader.read_bytes(8)?;
+                        let v = i64::from_le_bytes([
+                            v_bytes[0], v_bytes[1], v_bytes[2], v_bytes[3], v_bytes[4], v_bytes[5],
+                            v_bytes[6], v_bytes[7],
+                        ]);
+                        AttrValue::I64(v)
+                    }
+                    2 => {
+                        let v_bytes = reader.read_bytes(8)?;
+                        let v = f64::from_le_bytes([
+                            v_bytes[0], v_bytes[1], v_bytes[2], v_bytes[3], v_bytes[4], v_bytes[5],
+                            v_bytes[6], v_bytes[7],
+                        ]);
+                        AttrValue::F64(v)
+                    }
+                    3 => {
+                        let v_byte = reader.read_u8()?;
+                        AttrValue::Bool(v_byte != 0)
+                    }
+                    4 => {
+                        let v_bytes = reader.read_bytes(value_len)?;
+                        let v_str = String::from_utf8(v_bytes.to_vec()).map_err(|_| {
+                            AdsError::ParseError(
+                                "SPAN_ATTR: invalid UTF-8 in string value".to_string(),
+                            )
+                        })?;
+                        AttrValue::String(v_str)
+                    }
+                    _ => {
+                        return Err(AdsError::ParseError(format!(
+                            "SPAN_ATTR: unknown value_type {}",
+                            value_type
+                        )))
+                    }
+                };
+
+                Ok(TraceWireEvent::Attr {
+                    local_id,
+                    task_index,
+                    flags,
+                    dc_time,
+                    key,
+                    value,
+                })
+            }
+            3 => {
+                // SPAN_EVENT: name_len, attr_count, reserved(2), name, inline-attrs
+                let name_len = reader.read_u8()? as usize;
+                let attr_count = reader.read_u8()? as usize;
+                let _reserved = reader.read_u16()?;
+
+                if name_len > 31 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_EVENT: name length exceeds 31".to_string(),
+                    ));
+                }
+                if attr_count > 4 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_EVENT: attribute count exceeds 4".to_string(),
+                    ));
+                }
+
+                let name_bytes = reader.read_bytes(name_len)?;
+                let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                    AdsError::ParseError("SPAN_EVENT: invalid UTF-8 in name".to_string())
+                })?;
+
+                use crate::protocol::AttrValue;
+                let mut attrs = Vec::with_capacity(attr_count);
+                for _ in 0..attr_count {
+                    let value_type = reader.read_u8()?;
+                    let key_len = reader.read_u8()? as usize;
+                    let _value_len = reader.read_u8()? as usize;
+                    let _reserved = reader.read_u8()?;
+
+                    if key_len > 31 {
+                        return Err(AdsError::ParseError(
+                            "SPAN_EVENT attr: key length exceeds 31".to_string(),
+                        ));
+                    }
+
+                    let key_bytes = reader.read_bytes(key_len)?;
+                    let key = String::from_utf8(key_bytes.to_vec()).map_err(|_| {
+                        AdsError::ParseError("SPAN_EVENT attr: invalid UTF-8 in key".to_string())
+                    })?;
+
+                    let value = match value_type {
+                        1 => {
+                            let v_bytes = reader.read_bytes(8)?;
+                            let v = i64::from_le_bytes([
+                                v_bytes[0], v_bytes[1], v_bytes[2], v_bytes[3], v_bytes[4],
+                                v_bytes[5], v_bytes[6], v_bytes[7],
+                            ]);
+                            AttrValue::I64(v)
+                        }
+                        2 => {
+                            let v_byte = reader.read_u8()?;
+                            AttrValue::Bool(v_byte != 0)
+                        }
+                        _ => {
+                            return Err(AdsError::ParseError(format!(
+                                "SPAN_EVENT attr: invalid value_type {} (only 1=i64, 2=bool)",
+                                value_type
+                            )))
+                        }
+                    };
+
+                    attrs.push((key, value));
+                }
+
+                Ok(TraceWireEvent::Event {
+                    local_id,
+                    task_index,
+                    flags,
+                    dc_time,
+                    name,
+                    attrs,
+                })
+            }
+            4 => {
+                // SPAN_END: status, msg_len, reserved(2), status_msg
+                let status = reader.read_u8()?;
+                let msg_len = reader.read_u8()? as usize;
+                let _reserved = reader.read_u16()?;
+
+                if msg_len > 127 {
+                    return Err(AdsError::ParseError(
+                        "SPAN_END: message length exceeds 127".to_string(),
+                    ));
+                }
+
+                let msg_bytes = reader.read_bytes(msg_len)?;
+                let message = String::from_utf8(msg_bytes.to_vec()).map_err(|_| {
+                    AdsError::ParseError("SPAN_END: invalid UTF-8 in message".to_string())
+                })?;
+
+                Ok(TraceWireEvent::End {
+                    local_id,
+                    task_index,
+                    flags,
+                    dc_time,
+                    status,
+                    message,
+                })
+            }
+            _ => Err(AdsError::ParseError(format!(
+                "Unknown trace event type: {}",
+                event_type
+            ))),
+        }
+    }
+
     /// Parse a span entry from the reader (message type 0x05)
     ///
     /// Wire format:
@@ -564,6 +822,7 @@ impl AdsParser {
     /// [attr_count: u8] [event_count: u8]
     /// [name: string] [status_message: string]
     /// [attributes...] [events...]
+    #[allow(dead_code)]
     fn parse_span_from_reader(reader: &mut BytesReader) -> Result<AdsSpanEntry> {
         // Type byte (must be 5)
         let type_byte = reader.read_u8()?;

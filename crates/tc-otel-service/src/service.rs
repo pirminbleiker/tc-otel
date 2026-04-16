@@ -16,7 +16,9 @@ use tokio::time::timeout;
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
+use crate::span_dispatcher::SpanDispatcher;
 use crate::system_metrics::PlcSystemMetricsCollector;
+use crate::trace_dispatcher::TraceDispatcher;
 use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
 /// Main Log4TC Service
@@ -96,10 +98,21 @@ impl Log4TcService {
         };
 
         let metric_dispatcher = if metrics_export_enabled {
-            let dispatcher = MetricDispatcher::new(&self.settings, config_rx).await?;
+            let dispatcher = MetricDispatcher::new(&self.settings, config_rx.clone()).await?;
             Some(dispatcher)
         } else {
             tracing::info!("Metrics export disabled");
+            None
+        };
+
+        // Create trace dispatcher (if traces export is enabled)
+        let traces_export_enabled = self.settings.traces.enabled;
+        #[allow(unused_variables)]
+        let trace_dispatcher = if traces_export_enabled {
+            let dispatcher = TraceDispatcher::new(&self.settings).await?;
+            Some(dispatcher)
+        } else {
+            tracing::info!("Traces export disabled");
             None
         };
 
@@ -121,6 +134,8 @@ impl Log4TcService {
         let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
         let (push_tx, mut push_rx) =
             mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
+        let (trace_tx, mut trace_rx) =
+            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::TraceWireEvent)>(256);
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,
@@ -128,7 +143,8 @@ impl Log4TcService {
                 metric_tx.clone(),
                 task_registry.clone(),
             )
-            .with_push_sender(push_tx),
+            .with_push_sender(push_tx)
+            .with_trace_sender(trace_tx),
         );
 
         // Parse broker address (format: "host:port" or "host", default port 1883)
@@ -408,6 +424,55 @@ impl Log4TcService {
             None
         };
 
+        // Start span dispatcher task (if traces export is enabled)
+        let span_dispatcher_handle = if traces_export_enabled {
+            let span_disp = Arc::new(tokio::sync::Mutex::new(SpanDispatcher::new(
+                mpsc::channel::<tc_otel_core::TraceRecord>(256).0,
+                Duration::from_secs(self.settings.traces.span_ttl_secs),
+                self.settings.traces.max_pending_spans,
+            )));
+
+            let span_disp_events = span_disp.clone();
+            let mut shutdown_rx_traces = shutdown_tx.subscribe();
+            let event_handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some((net_id, ev)) = trace_rx.recv() => {
+                            let mut disp = span_disp_events.lock().await;
+                            disp.on_event(net_id, ev);
+                        }
+                        _ = shutdown_rx_traces.recv() => {
+                            tracing::info!("Trace event dispatcher stopped");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Periodic TTL sweep task
+            let span_disp_sweep = span_disp.clone();
+            let mut shutdown_rx_sweep = shutdown_tx.subscribe();
+            let sweep_handle = tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        _ = ticker.tick() => {
+                            let mut disp = span_disp_sweep.lock().await;
+                            disp.sweep_timed_out();
+                        }
+                        _ = shutdown_rx_sweep.recv() => {
+                            tracing::info!("Trace TTL sweep task stopped");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Some((event_handle, sweep_handle))
+        } else {
+            None
+        };
+
         // Start periodic PLC system metrics collector (if metrics export enabled)
         let system_metrics_handle = if metrics_export_enabled {
             if let Some(ref m_tx) = metric_tx {
@@ -484,6 +549,9 @@ impl Log4TcService {
             let _ = tokio::join!(ams_handle, dispatcher_handle, push_drain_handle);
             if let Some(handle) = metric_dispatcher_handle {
                 let _ = handle.await;
+            }
+            if let Some((event_handle, sweep_handle)) = span_dispatcher_handle {
+                let _ = tokio::join!(event_handle, sweep_handle);
             }
             if let Some(handle) = system_metrics_handle {
                 let _ = handle.await;

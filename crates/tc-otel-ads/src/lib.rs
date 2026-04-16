@@ -48,8 +48,8 @@ pub use listener::AdsListener;
 pub use mqtt_health_metrics::MqttHealthCollector;
 pub use parser::AdsParser;
 pub use protocol::{
-    AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, RegistrationKey,
-    RegistrationMessage, TaskMetadata,
+    AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, AttrValue,
+    RegistrationKey, RegistrationMessage, TaskMetadata, TraceWireEvent,
 };
 pub use registry::TaskRegistry;
 pub use symbol::{

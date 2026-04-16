@@ -19,6 +19,8 @@ pub struct AppSettings {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    #[serde(default)]
+    pub traces: TracesConfig,
 }
 
 /// Logging configuration
@@ -714,6 +716,75 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Distributed trace export configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TracesExportConfig {
+    /// OTLP traces export endpoint (e.g., "http://localhost:4318/v1/traces")
+    /// If unset, traces are not exported
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Batch size for trace export (default: 100)
+    #[serde(default = "default_traces_batch_size")]
+    pub batch_size: usize,
+    /// Flush interval for trace export in milliseconds (default: 1000)
+    #[serde(default = "default_traces_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+}
+
+fn default_traces_batch_size() -> usize {
+    100
+}
+
+fn default_traces_flush_interval_ms() -> u64 {
+    1000
+}
+
+impl Default for TracesExportConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            batch_size: default_traces_batch_size(),
+            flush_interval_ms: default_traces_flush_interval_ms(),
+        }
+    }
+}
+
+/// Distributed tracing configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct TracesConfig {
+    /// Enable distributed tracing (default: false)
+    pub enabled: bool,
+    /// Time-to-live for pending spans in seconds (default: 10)
+    #[serde(default = "default_span_ttl_secs")]
+    pub span_ttl_secs: u64,
+    /// Maximum number of pending spans across all PLCs (default: 1024)
+    #[serde(default = "default_max_pending_spans")]
+    pub max_pending_spans: usize,
+    /// Trace export configuration
+    #[serde(default)]
+    pub export: TracesExportConfig,
+}
+
+fn default_span_ttl_secs() -> u64 {
+    10
+}
+
+fn default_max_pending_spans() -> usize {
+    1024
+}
+
+impl Default for TracesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            span_ttl_secs: default_span_ttl_secs(),
+            max_pending_spans: default_max_pending_spans(),
+            export: TracesExportConfig::default(),
+        }
+    }
+}
+
 /// Service configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceConfig {
@@ -951,6 +1022,15 @@ impl AppSettings {
             errors.push("metrics.export_flush_interval_ms must be > 0".to_string());
         }
 
+        if self.traces.enabled {
+            if self.traces.span_ttl_secs == 0 {
+                errors.push("traces.span_ttl_secs must be > 0".to_string());
+            }
+            if self.traces.max_pending_spans == 0 {
+                errors.push("traces.max_pending_spans must be > 0".to_string());
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1142,6 +1222,7 @@ mod tests {
             web: WebConfig::default(),
             metrics: MetricsConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
+            traces: TracesConfig::default(),
         };
 
         assert_eq!(settings.logging.log_level, "info");
@@ -1370,6 +1451,111 @@ mod tests {
     #[test]
     fn test_validate_passes_valid_config() {
         let settings = AppSettings::default();
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn test_traces_config_defaults() {
+        let config = TracesConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.span_ttl_secs, 10);
+        assert_eq!(config.max_pending_spans, 1024);
+        assert!(config.export.endpoint.is_none());
+        assert_eq!(config.export.batch_size, 100);
+        assert_eq!(config.export.flush_interval_ms, 1000);
+    }
+
+    #[test]
+    fn test_traces_config_enabled() {
+        let config = TracesConfig {
+            enabled: true,
+            span_ttl_secs: 5,
+            max_pending_spans: 2048,
+            export: TracesExportConfig {
+                endpoint: Some("http://otel-collector:4318/v1/traces".to_string()),
+                batch_size: 50,
+                flush_interval_ms: 500,
+            },
+        };
+
+        assert!(config.enabled);
+        assert_eq!(config.span_ttl_secs, 5);
+        assert_eq!(config.max_pending_spans, 2048);
+        assert_eq!(
+            config.export.endpoint,
+            Some("http://otel-collector:4318/v1/traces".to_string())
+        );
+        assert_eq!(config.export.batch_size, 50);
+        assert_eq!(config.export.flush_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_traces_config_toml_deserialization() {
+        let toml_str = r#"
+enabled = true
+span_ttl_secs = 15
+max_pending_spans = 512
+
+[export]
+endpoint = "http://collector:4318/v1/traces"
+batch_size = 200
+flush_interval_ms = 2000
+"#;
+        let config: TracesConfig = toml::from_str(toml_str).expect("Failed to parse TOML");
+        assert!(config.enabled);
+        assert_eq!(config.span_ttl_secs, 15);
+        assert_eq!(config.max_pending_spans, 512);
+        assert_eq!(
+            config.export.endpoint,
+            Some("http://collector:4318/v1/traces".to_string())
+        );
+        assert_eq!(config.export.batch_size, 200);
+        assert_eq!(config.export.flush_interval_ms, 2000);
+    }
+
+    #[test]
+    fn test_traces_config_toml_empty_block_uses_defaults() {
+        let toml_str = r#"
+[traces]
+"#;
+        let config: TracesConfig = toml::from_str(toml_str).expect("Failed to parse TOML");
+        assert!(!config.enabled);
+        assert_eq!(config.span_ttl_secs, 10);
+        assert_eq!(config.max_pending_spans, 1024);
+        assert!(config.export.endpoint.is_none());
+    }
+
+    #[test]
+    fn test_validate_traces_enabled_with_zero_ttl() {
+        let mut settings = AppSettings::default();
+        settings.traces.enabled = true;
+        settings.traces.span_ttl_secs = 0;
+
+        let result = settings.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("span_ttl_secs")));
+    }
+
+    #[test]
+    fn test_validate_traces_enabled_with_zero_max_pending() {
+        let mut settings = AppSettings::default();
+        settings.traces.enabled = true;
+        settings.traces.max_pending_spans = 0;
+
+        let result = settings.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("max_pending_spans")));
+    }
+
+    #[test]
+    fn test_validate_traces_disabled_ignores_zero_values() {
+        let mut settings = AppSettings::default();
+        settings.traces.enabled = false;
+        settings.traces.span_ttl_secs = 0;
+        settings.traces.max_pending_spans = 0;
+
         assert!(settings.validate().is_ok());
     }
 }

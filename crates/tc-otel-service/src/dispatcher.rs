@@ -542,6 +542,7 @@ mod tests {
             web: WebConfig::default(),
             metrics: tc_otel_core::MetricsConfig::default(),
             diagnostics: tc_otel_core::DiagnosticsConfig::default(),
+            traces: tc_otel_core::TracesConfig::default(),
         }
     }
 

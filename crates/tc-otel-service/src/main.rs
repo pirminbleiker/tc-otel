@@ -13,7 +13,9 @@ pub mod cycle_time;
 mod diagnostics_bridge;
 mod dispatcher;
 mod service;
+mod span_dispatcher;
 pub mod system_metrics;
+mod trace_dispatcher;
 pub mod web;
 
 use service::Log4TcService;

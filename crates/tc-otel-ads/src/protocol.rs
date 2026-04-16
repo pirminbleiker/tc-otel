@@ -5,6 +5,58 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tc_otel_core::{LogLevel, MetricKind, SpanKind, SpanStatusCode};
 
+/// Attribute value types for spans (wire format)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AttrValue {
+    I64(i64),
+    F64(f64),
+    Bool(bool),
+    String(String),
+}
+
+/// Wire-format trace events (streaming span events)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TraceWireEvent {
+    /// SPAN_BEGIN (event_type=1): starts a new span
+    Begin {
+        local_id: u8,
+        task_index: u8,
+        flags: u8,
+        dc_time: i64,
+        parent_local_id: u8,
+        kind: u8,
+        name: String,
+        traceparent: Option<String>,
+    },
+    /// SPAN_ATTR (event_type=2): adds an attribute to a pending span
+    Attr {
+        local_id: u8,
+        task_index: u8,
+        flags: u8,
+        dc_time: i64,
+        key: String,
+        value: AttrValue,
+    },
+    /// SPAN_EVENT (event_type=3): adds a timestamped event to a pending span
+    Event {
+        local_id: u8,
+        task_index: u8,
+        flags: u8,
+        dc_time: i64,
+        name: String,
+        attrs: Vec<(String, AttrValue)>,
+    },
+    /// SPAN_END (event_type=4): completes a pending span
+    End {
+        local_id: u8,
+        task_index: u8,
+        flags: u8,
+        dc_time: i64,
+        status: u8,
+        message: String,
+    },
+}
+
 /// ADS protocol version currently supported
 pub const ADS_PROTOCOL_VERSION: u8 = 1;
 
