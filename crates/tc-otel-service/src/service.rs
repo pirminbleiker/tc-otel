@@ -116,13 +116,17 @@ impl Log4TcService {
 
         // Create the AdsRouter with channels and registry
         let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
-        let (push_tx, mut push_rx) = mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
-        let ads_router = Arc::new(AdsRouter::new(
-            self.settings.receiver.ads_port,
-            log_tx.clone(),
-            metric_tx.clone(),
-            task_registry.clone(),
-        ).with_push_sender(push_tx));
+        let (push_tx, mut push_rx) =
+            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
+        let ads_router = Arc::new(
+            AdsRouter::new(
+                self.settings.receiver.ads_port,
+                log_tx.clone(),
+                metric_tx.clone(),
+                task_registry.clone(),
+            )
+            .with_push_sender(push_tx),
+        );
 
         // Parse broker address (format: "host:port" or "host", default port 1883)
         let parse_broker_addr = |broker: &str| -> (String, u16) {
