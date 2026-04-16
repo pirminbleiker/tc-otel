@@ -1,7 +1,7 @@
 //! Configuration structures and loading
 
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Application-wide configuration
@@ -885,29 +885,47 @@ impl AppSettings {
         let valid_ports = 1..=65535u16;
 
         if !valid_ports.contains(&self.receiver.http_port) {
-            errors.push(format!("receiver.http_port {} out of range [1, 65535]", self.receiver.http_port));
+            errors.push(format!(
+                "receiver.http_port {} out of range [1, 65535]",
+                self.receiver.http_port
+            ));
         }
         if !valid_ports.contains(&self.receiver.grpc_port) {
-            errors.push(format!("receiver.grpc_port {} out of range [1, 65535]", self.receiver.grpc_port));
+            errors.push(format!(
+                "receiver.grpc_port {} out of range [1, 65535]",
+                self.receiver.grpc_port
+            ));
         }
         if !valid_ports.contains(&self.receiver.ams_tcp_port) {
-            errors.push(format!("receiver.ams_tcp_port {} out of range [1, 65535]", self.receiver.ams_tcp_port));
+            errors.push(format!(
+                "receiver.ams_tcp_port {} out of range [1, 65535]",
+                self.receiver.ams_tcp_port
+            ));
         }
         if !valid_ports.contains(&self.receiver.ads_port) {
-            errors.push(format!("receiver.ads_port {} out of range [1, 65535]", self.receiver.ads_port));
+            errors.push(format!(
+                "receiver.ads_port {} out of range [1, 65535]",
+                self.receiver.ads_port
+            ));
         }
 
         match &self.receiver.transport {
             TransportConfig::Tcp(tcp) => {
                 if !valid_ports.contains(&tcp.port) {
-                    errors.push(format!("receiver.transport.tcp.port {} out of range [1, 65535]", tcp.port));
+                    errors.push(format!(
+                        "receiver.transport.tcp.port {} out of range [1, 65535]",
+                        tcp.port
+                    ));
                 }
             }
             TransportConfig::Mqtt(_mqtt) => {}
         }
 
         if !valid_ports.contains(&self.web.port) {
-            errors.push(format!("web.port {} out of range [1, 65535]", self.web.port));
+            errors.push(format!(
+                "web.port {} out of range [1, 65535]",
+                self.web.port
+            ));
         }
 
         if self.export.batch_size == 0 {
@@ -1228,8 +1246,14 @@ mod tests {
         let masked = settings.to_masked_json();
         let transport = &masked["receiver"]["transport"];
 
-        assert_eq!(transport["password"].as_str().unwrap(), AppSettings::MASKED_SENTINEL);
-        assert_eq!(transport["username"].as_str().unwrap(), AppSettings::MASKED_SENTINEL);
+        assert_eq!(
+            transport["password"].as_str().unwrap(),
+            AppSettings::MASKED_SENTINEL
+        );
+        assert_eq!(
+            transport["username"].as_str().unwrap(),
+            AppSettings::MASKED_SENTINEL
+        );
     }
 
     #[test]
@@ -1326,7 +1350,6 @@ mod tests {
         assert!(errors.iter().any(|e: &String| e.contains("http_port")));
     }
 
-
     #[test]
     fn test_validate_catches_empty_batch_size() {
         let mut settings = AppSettings::default();
@@ -1346,7 +1369,9 @@ mod tests {
         let result = settings.validate();
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e: &String| e.contains("channel_capacity")));
+        assert!(errors
+            .iter()
+            .any(|e: &String| e.contains("channel_capacity")));
     }
 
     #[test]

@@ -272,10 +272,13 @@ mod tests {
             LogLevel::Info,
         );
 
-        let expected_ts = entry.plc_timestamp;
+        // Record time mirrors clock_timestamp (DC-time from the PLC) — it
+        // gives cycle-accurate resolution so logs line up with push-diag
+        // exceed dots on the Grafana axis. plc_timestamp is kept around
+        // only as an attribute for debugging.
+        let expected_ts = entry.clock_timestamp;
         let record = OtelMapping::log_entry_to_record(entry);
 
-        // The LogRecord timestamp should match the entry's plc_timestamp
         assert_eq!(record.timestamp, expected_ts);
 
         // The plc_timestamp should be in attributes as string

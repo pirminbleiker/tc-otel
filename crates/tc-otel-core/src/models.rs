@@ -801,8 +801,13 @@ impl LogRecord {
             log_attributes.insert(format!("arg.{}", idx), val);
         }
 
+        // clock_timestamp carries the cycle-accurate DC time from the PLC
+        // (ns-precise, same source the push-diag samples use). plc_timestamp
+        // is the ~100 ms FILETIME from GETSYSTEMTIME kept for compatibility.
+        // Using clock_timestamp as the log record time makes logs line up
+        // with push-diag exceed dots on the Grafana axis cycle-by-cycle.
         Self {
-            timestamp: entry.plc_timestamp,
+            timestamp: entry.clock_timestamp,
             body: serde_json::Value::String(entry.message),
             severity_number,
             severity_text,
