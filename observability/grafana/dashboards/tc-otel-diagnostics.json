@@ -13,6 +13,19 @@
         },
         "titleFormat": "Cycle exceed",
         "tagKeys": "ams_net_id"
+      },
+      {
+        "datasource": "VictoriaMetrics",
+        "enable": true,
+        "iconColor": "orange",
+        "name": "RT violations",
+        "target": {
+          "expr": "changes(tc_rt_rt_violation_edge_total[30s]) > 0",
+          "legendFormat": "RT violation on {{ams_net_id}}",
+          "useValueForTime": false
+        },
+        "titleFormat": "RT violation",
+        "tagKeys": "ams_net_id"
       }
     ]
   },
@@ -193,6 +206,121 @@
           "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_exec_time_ns_total[30s])",
           "legendFormat": "{{task_name}}",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Actual Last-Exec-Time per Task (µs)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "id": 12,
+      "interval": "1s",
+      "maxDataPoints": 2000,
+      "fieldConfig": { "defaults": { "unit": "µs" } },
+      "targets": [
+        {
+          "expr": "tc_task_last_exec_time_us",
+          "legendFormat": "{{task_name}}",
+          "refId": "A",
+          "interval": "1s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-Task Cycle-Exceed Counter (lifetime)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "id": 13,
+      "interval": "1s",
+      "maxDataPoints": 2000,
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "targets": [
+        {
+          "expr": "tc_task_cycle_exceed_counter_total",
+          "legendFormat": "{{task_name}}",
+          "refId": "A",
+          "interval": "1s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cycle-Exceed Events Rate (events/min)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
+      "id": 14,
+      "interval": "5s",
+      "maxDataPoints": 2000,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "expr": "rate(tc_task_cycle_exceed_edge_total[1m]) * 60",
+          "legendFormat": "{{task_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "RT Violations (lifetime)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 34 },
+      "id": 15,
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "tc_rt_rt_violation_counter_total",
+          "legendFormat": "{{ams_net_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RT Violations Rate (events/min)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 34 },
+      "id": 16,
+      "interval": "5s",
+      "maxDataPoints": 2000,
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "expr": "rate(tc_rt_rt_violation_edge_total[1m]) * 60",
+          "legendFormat": "{{ams_net_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Configured vs Actual Cycle Time (µs)",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 42 },
+      "id": 17,
+      "interval": "1s",
+      "maxDataPoints": 2000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "tc_task_cycle_time_configured_us",
+          "legendFormat": "{{task_name}} (configured)",
+          "refId": "A",
+          "interval": "1s"
+        },
+        {
+          "expr": "tc_task_last_exec_time_us",
+          "legendFormat": "{{task_name}} (actual)",
+          "refId": "B",
+          "interval": "1s"
         }
       ]
     }

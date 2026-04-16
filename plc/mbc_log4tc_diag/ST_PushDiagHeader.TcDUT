@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.10">
+  <DUT Name="ST_PushDiagHeader" Id="{8c9d7f2e-1a3b-4c5d-6e7f-8a9b0c1d2e3f}">
+    <Declaration><![CDATA[TYPE ST_PushDiagHeader :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  version          : BYTE;        // +0x00, version = 1
+  event_type       : BYTE;        // +0x01, event_type = 0 (snapshot)
+  num_tasks        : UINT;        // +0x02, number of task records following
+  plc_timestamp_ns : ULINT;       // +0x04, PLC timestamp in nanoseconds
+  reserved         : UDINT;       // +0x0C, reserved = 0
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>
