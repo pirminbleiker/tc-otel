@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <DUT Name="E_SpanStatus" Id="{b2c3d4e5-f6a7-48h9-i0j1-k2l3m4n5o6p7}">
+  <DUT Name="E_SpanStatus" Id="{0b7d35f6-4ca9-4690-a3c2-317ac1a71837}">
     <Declaration><![CDATA[(*
 :Description: Span completion status for OpenTelemetry traces.
 *)

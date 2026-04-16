@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="FB_Span" Id="{e7f8a9b0-c1d2-43w4-x5y6-z7a8b9c0d1e2}" SpecialFunc="None">
+  <POU Name="FB_Span" Id="{d4dc3c52-ea23-461f-8f60-dd1c2fb8afd3}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: User-facing OOP trace span object.
 
@@ -28,7 +28,108 @@ Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
-    <Method Name="Begin" Id="{f8a9b0c1-d2e3-44x5-y6z7-a8b9c0d1e2f3}">
+    <Method Name="AddBool" Id="{7047bbb4-5514-432f-96ef-1c5e7401f9b0}">
+      <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
+VAR_INPUT
+    sKey : STRING(30);
+    bVal : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddBool := PRG_TaskLog.Span.AddBool(_hSpan, sKey, bVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddEvent" Id="{5961eda2-89a9-4de6-a2cd-1b100a56d448}">
+      <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
+VAR_INPUT
+    sName : STRING(30);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddEvent := PRG_TaskLog.Span.AddEvent(_hSpan, sName);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddInt" Id="{f0df946a-c020-44fb-9633-ae731bdcc31e}">
+      <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
+VAR_INPUT
+    sKey : STRING(30);
+    nVal : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddInt := PRG_TaskLog.Span.AddInt(_hSpan, sKey, nVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLInt" Id="{2614a491-051f-464e-ac59-f521c4e3bb3f}">
+      <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
+VAR_INPUT
+    sKey : STRING(30);
+    nVal : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddLInt := PRG_TaskLog.Span.AddLInt(_hSpan, sKey, nVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddReal" Id="{a24a3b0f-f308-4262-9e57-bd89b35d3e2f}">
+      <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
+VAR_INPUT
+    sKey : STRING(30);
+    fVal : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddReal := PRG_TaskLog.Span.AddReal(_hSpan, sKey, fVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddString" Id="{e5a80632-e29a-400a-9af6-015872718f9c}">
+      <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
+VAR_INPUT
+    sKey : STRING(30);
+    sVal : STRING(120);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Begin" Id="{2e739ce8-316c-49f6-966f-716f08f6881f}">
       <Declaration><![CDATA[METHOD PUBLIC Begin : BOOL
 VAR_INPUT
     sName : STRING(60);
@@ -56,7 +157,7 @@ Begin := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="End" Id="{a9b0c1d2-e3f4-45y6-z7a8-b9c0d1e2f3g4}">
+    <Method Name="End" Id="{5c4766aa-b8e0-4102-b1bb-60c9dbdaddcd}">
       <Declaration><![CDATA[METHOD PUBLIC End : BOOL
 ]]></Declaration>
       <Implementation>
@@ -83,163 +184,7 @@ End := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="AddInt" Id="{b0c1d2e3-f4a5-46z7-a8b9-c0d1e2f3g4h5}">
-      <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
-VAR_INPUT
-    sKey : STRING(30);
-    nVal : DINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddInt := PRG_TaskLog.Span.AddInt(_hSpan, sKey, nVal);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddLInt" Id="{c1d2e3f4-a5b6-47a8-b9c0-d1e2f3g4h5i6}">
-      <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
-VAR_INPUT
-    sKey : STRING(30);
-    nVal : LINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddLInt := PRG_TaskLog.Span.AddLInt(_hSpan, sKey, nVal);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddReal" Id="{d2e3f4a5-b6c7-48b9-c0d1-e2f3g4h5i6j7}">
-      <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
-VAR_INPUT
-    sKey : STRING(30);
-    fVal : LREAL;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddReal := PRG_TaskLog.Span.AddReal(_hSpan, sKey, fVal);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddBool" Id="{e3f4a5b6-c7d8-49c0-d1e2-f3g4h5i6j7k8}">
-      <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
-VAR_INPUT
-    sKey : STRING(30);
-    bVal : BOOL;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddBool := PRG_TaskLog.Span.AddBool(_hSpan, sKey, bVal);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddString" Id="{f4a5b6c7-d8e9-40d1-e2f3-g4h5i6j7k8l9}">
-      <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
-VAR_INPUT
-    sKey : STRING(30);
-    sVal : STRING(120);
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddEvent" Id="{a5b6c7d8-e9f0-41e2-f3g4-h5i6j7k8l9m0}">
-      <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
-VAR_INPUT
-    sName : STRING(30);
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddEvent := PRG_TaskLog.Span.AddEvent(_hSpan, sName);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="MarkError" Id="{b6c7d8e9-f0a1-42f3-g4h5-i6j7k8l9m0n1}">
-      <Declaration><![CDATA[METHOD PUBLIC MarkError : BOOL
-VAR_INPUT
-    sMsg : STRING(80);
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-_eStatus := E_SpanStatus.Error;
-_sMsg := sMsg;
-
-MarkError := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Property Name="IsOpen" Id="{c7d8e9f0-a1b2-43g4-h5i6-j7k8l9m0n1o2}">
-      <Declaration><![CDATA[PROPERTY PUBLIC IsOpen : BOOL]]></Declaration>
-      <Get Name="Get" Id="{d8e9f0a1-b2c3-44h5-i6j7-k8l9m0n1o2p3}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[IsOpen := _bOpen;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Property Name="Handle" Id="{e9f0a1b2-c3d4-45i6-j7k8-l9m0n1o2p3q4}">
-      <Declaration><![CDATA[PROPERTY PUBLIC Handle : USINT]]></Declaration>
-      <Get Name="Get" Id="{f0a1b2c3-d4e5-46j7-k8l9-m0n1o2p3q4r5}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[Handle := _hSpan;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Property Name="Status" Id="{a1b2c3d4-e5f6-47k8-l9m0-n1o2p3q4r5s6}">
-      <Declaration><![CDATA[PROPERTY PUBLIC Status : E_SpanStatus]]></Declaration>
-      <Get Name="Get" Id="{b2c3d4e5-f6a7-48l9-m0n1-o2p3q4r5s6t7}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[Status := _eStatus;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Method Name="FB_exit" Id="{c3d4e5f6-a7b8-49m0-n1o2-p3q4r5s6t7u8}">
+    <Method Name="FB_exit" Id="{c5f30d75-e9bd-4c36-a9ef-80d3cbbac98f}">
       <Declaration><![CDATA[METHOD FB_exit : BOOL
 VAR_INPUT
     bInCopyCode : BOOL;
@@ -260,5 +205,60 @@ FB_exit := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Property Name="Handle" Id="{56f68b38-eaef-45f0-9c31-34dc46c965b8}">
+      <Declaration><![CDATA[PROPERTY PUBLIC Handle : USINT]]></Declaration>
+      <Get Name="Get" Id="{fee58c78-ec10-452f-9c15-5fc5863251c7}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Handle := _hSpan;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="IsOpen" Id="{d47454d0-966d-4ff4-9068-ccbe2c845e9f}">
+      <Declaration><![CDATA[PROPERTY PUBLIC IsOpen : BOOL]]></Declaration>
+      <Get Name="Get" Id="{313caace-5095-4944-9c48-f70f3e3d5d5b}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsOpen := _bOpen;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="MarkError" Id="{b332727a-e81d-4487-b536-326bafc3658f}">
+      <Declaration><![CDATA[METHOD PUBLIC MarkError : BOOL
+VAR_INPUT
+    sMsg : STRING(80);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+_eStatus := E_SpanStatus.Error;
+_sMsg := sMsg;
+
+MarkError := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Status" Id="{654e2be9-7d52-4f77-b4d9-4454dea8c37a}">
+      <Declaration><![CDATA[PROPERTY PUBLIC Status : E_SpanStatus]]></Declaration>
+      <Get Name="Get" Id="{b0dd4378-a58c-424b-b99b-92ed5e77b1a1}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Status := _eStatus;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
   </POU>
 </TcPlcObject>

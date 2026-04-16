@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="FB_Log4TcTaskTracer" Id="{d4e5f6a7-b8c9-40j1-k2l3-m4n5o6p7q8r9}" SpecialFunc="None">
+  <POU Name="FB_Log4TcTaskTracer" Id="{294f80cd-71bb-4a49-ab79-358e75196d66}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: Per-task low-level OpenTelemetry trace emitter.
 
@@ -32,15 +32,419 @@ END_VAR
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
-    <Method Name="Call" Id="{e5f6a7b8-c9d0-41k2-l3m4-n5o6p7q8r9s0}">
-      <Declaration><![CDATA[METHOD PUBLIC Call
-(* No-op in Phase-1: wire events flushed on emission. *)
+    <Method Name="_GetTaskDcTime" Id="{9b32520a-c9fc-420a-8034-c0663bb4b6b9}">
+      <Declaration><![CDATA[METHOD PRIVATE _GetTaskDcTime : LINT
+VAR
+    nTaskIdx : USINT;
+    pTaskInfo : POINTER TO PlcTaskSystemInfo;
+END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[]]></ST>
+        <ST><![CDATA[
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTaskIdx > 0 AND nTaskIdx <= SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo) / SIZEOF(PlcTaskSystemInfo) THEN
+    pTaskInfo := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
+    _GetTaskDcTime := pTaskInfo^.DcTaskTime;
+ELSE
+    _GetTaskDcTime := 0;
+END_IF;
+]]></ST>
       </Implementation>
     </Method>
-    <Method Name="Begin" Id="{f6a7b8c9-d0e1-42l3-m4n5-o6p7q8r9s0t1}">
+    <Method Name="_WriteFrameHeader" Id="{5c95a435-e5f4-4be0-a30e-3e2cecf13cfe}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteFrameHeader
+VAR_INPUT
+    pWrite     : PVOID;
+    nEventType : BYTE;
+    hSpan      : USINT;
+    nTaskIdx   : USINT;
+    nDcTime    : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+MEMCPY(pWrite + 0, ADR(nEventType), 1);
+MEMCPY(pWrite + 1, ADR(hSpan), 1);
+MEMCPY(pWrite + 2, ADR(nTaskIdx), 1);
+MEMCPY(pWrite + 4, ADR(nDcTime), 8);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
+      <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sKey  : STRING(30);
+    bVal  : BOOL;
+END_VAR
+VAR
+    nKeyLen    : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nValueType : BYTE := 3;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+    byVal      : BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
+nTotalLen := 12 + 4 + nKeyLen + 1;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nValueType), 1);
+    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+
+    IF nKeyLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+    END_IF;
+
+    byVal := BOOL_TO_BYTE(bVal);
+    MEMCPY(pWrite + 16 + nKeyLen, ADR(byVal), 1);
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddBool := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddEvent" Id="{731c0681-f28c-468d-9a22-08d93456bc4b}">
+      <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sName : STRING(30);
+END_VAR
+VAR
+    nNameLen   : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nAttrCount : BYTE := 0;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nNameLen := Tc2_Utilities.LEN2(ADR(sName));
+IF nNameLen > 31 THEN
+    nNameLen := 31;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + name_len(1) + attr_count(1) + reserved(2) + name *)
+nTotalLen := 12 + 4 + nNameLen;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeEvent, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nNameLen), 1);
+    MEMCPY(pWrite + 13, ADR(nAttrCount), 1);
+
+    IF nNameLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sName), nNameLen);
+    END_IF;
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddEvent := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddInt" Id="{cebf7902-798a-47a4-b3e5-37d8ad80e0e0}">
+      <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sKey  : STRING(30);
+    nVal  : DINT;
+END_VAR
+VAR
+    nKeyLen    : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nValueType : BYTE := 1;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
+nTotalLen := 12 + 4 + nKeyLen + 8;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nValueType), 1);
+    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+
+    IF nKeyLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+    END_IF;
+
+    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddInt := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLInt" Id="{40a748f6-c411-43f0-994d-38e870c92549}">
+      <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sKey  : STRING(30);
+    nVal  : LINT;
+END_VAR
+VAR
+    nKeyLen    : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nValueType : BYTE := 1;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
+nTotalLen := 12 + 4 + nKeyLen + 8;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nValueType), 1);
+    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+
+    IF nKeyLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+    END_IF;
+
+    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddLInt := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddReal" Id="{6a9dc70f-5325-45d1-8be5-172af842881e}">
+      <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sKey  : STRING(30);
+    fVal  : LREAL;
+END_VAR
+VAR
+    nKeyLen    : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nValueType : BYTE := 2;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
+nTotalLen := 12 + 4 + nKeyLen + 8;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nValueType), 1);
+    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+
+    IF nKeyLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+    END_IF;
+
+    MEMCPY(pWrite + 16 + nKeyLen, ADR(fVal), 8);
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddReal := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddString" Id="{59a3fb41-a2f5-4bd0-ad49-dd002f212acc}">
+      <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
+VAR_INPUT
+    hSpan : USINT;
+    sKey  : STRING(30);
+    sVal  : STRING(120);
+END_VAR
+VAR
+    nKeyLen    : USINT;
+    nValLen    : USINT;
+    nDcTime    : LINT;
+    nTaskIdx   : USINT;
+    nValueType : BYTE := 4;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pWrite     : PVOID;
+    nTotalLen  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+nValLen := Tc2_Utilities.LEN2(ADR(sVal));
+IF nValLen > 127 THEN
+    nValLen := 127;
+END_IF;
+
+nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+
+(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
+nTotalLen := 12 + 4 + nKeyLen + nValLen;
+
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer <> 0 THEN
+    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
+
+    (* Header *)
+    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
+
+    (* Payload *)
+    MEMCPY(pWrite + 12, ADR(nValueType), 1);
+    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
+    MEMCPY(pWrite + 14, ADR(nValLen), 1);
+
+    IF nKeyLen > 0 THEN
+        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
+    END_IF;
+
+    IF nValLen > 0 THEN
+        MEMCPY(pWrite + 16 + nKeyLen, ADR(sVal), nValLen);
+    END_IF;
+
+    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
+END_IF;
+
+AddString := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Begin" Id="{832e89db-497a-4d07-b3b1-c6e95e2f7e46}">
       <Declaration><![CDATA[METHOD PUBLIC Begin : USINT
 VAR_INPUT
     sName        : STRING(60);
@@ -155,399 +559,32 @@ Begin := hSpan;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="AddInt" Id="{a7b8c9d0-e1f2-43m4-n5o6-p7q8r9s0t1u2}">
-      <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sKey  : STRING(30);
-    nVal  : DINT;
-END_VAR
+    <Method Name="Call" Id="{b918082d-1f06-4f72-b609-d97e60f0a088}">
+      <Declaration><![CDATA[METHOD PUBLIC Call
+(* No-op in Phase-1: wire events flushed on emission. *)
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="CurrentTraceParent" Id="{703b7f93-e680-4a9f-a268-bebc44b81a3d}">
+      <Declaration><![CDATA[METHOD PUBLIC CurrentTraceParent : STRING(60)
 VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 1;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
+    sResult : STRING(60) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
+(* Phase-1: Return empty string with TODO comment.
+   Rust side mints trace_id and span_id; PLC side doesn't have them.
+   Phase-5 (cross-PLC propagation) will implement this.
+   For now, callers pass traceparent explicitly via Begin(). *)
 
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-
-    IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
-    END_IF;
-
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddInt := TRUE;
+CurrentTraceParent := sResult;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="AddLInt" Id="{b8c9d0e1-f2a3-44n5-o6p7-q8r9s0t1u2v3}">
-      <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sKey  : STRING(30);
-    nVal  : LINT;
-END_VAR
-VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 1;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-
-    IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
-    END_IF;
-
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(nVal), 8);
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddLInt := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddReal" Id="{c9d0e1f2-a3b4-45o6-p7q8-r9s0t1u2v3w4}">
-      <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sKey  : STRING(30);
-    fVal  : LREAL;
-END_VAR
-VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 2;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-
-    IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
-    END_IF;
-
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(fVal), 8);
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddReal := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddBool" Id="{d0e1f2a3-b4c5-46p7-q8r9-s0t1u2v3w4x5}">
-      <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sKey  : STRING(30);
-    bVal  : BOOL;
-END_VAR
-VAR
-    nKeyLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 3;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
-    byVal      : BYTE;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
-nTotalLen := 12 + 4 + nKeyLen + 1;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-
-    IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
-    END_IF;
-
-    byVal := BOOL_TO_BYTE(bVal);
-    MEMCPY(pWrite + 16 + nKeyLen, ADR(byVal), 1);
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddBool := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddString" Id="{e1f2a3b4-c5d6-47q8-r9s0-t1u2v3w4x5y6}">
-      <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sKey  : STRING(30);
-    sVal  : STRING(120);
-END_VAR
-VAR
-    nKeyLen    : USINT;
-    nValLen    : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 4;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-
-nValLen := Tc2_Utilities.LEN2(ADR(sVal));
-IF nValLen > 127 THEN
-    nValLen := 127;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
-nTotalLen := 12 + 4 + nKeyLen + nValLen;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeAttr, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nValueType), 1);
-    MEMCPY(pWrite + 13, ADR(nKeyLen), 1);
-    MEMCPY(pWrite + 14, ADR(nValLen), 1);
-
-    IF nKeyLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sKey), nKeyLen);
-    END_IF;
-
-    IF nValLen > 0 THEN
-        MEMCPY(pWrite + 16 + nKeyLen, ADR(sVal), nValLen);
-    END_IF;
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddString := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddEvent" Id="{f2a3b4c5-d6e7-48r9-s0t1-u2v3w4x5y6z7}">
-      <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sName : STRING(30);
-END_VAR
-VAR
-    nNameLen   : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nAttrCount : BYTE := 0;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    pWrite     : PVOID;
-    nTotalLen  : UDINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-nNameLen := Tc2_Utilities.LEN2(ADR(sName));
-IF nNameLen > 31 THEN
-    nNameLen := 31;
-END_IF;
-
-nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-
-(* Frame: header(12) + name_len(1) + attr_count(1) + reserved(2) + name *)
-nTotalLen := 12 + 4 + nNameLen;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 THEN
-    pWrite := pBuffer^.BufferPtr + pBuffer^.BufferCount;
-
-    (* Header *)
-    _WriteFrameHeader(pWrite, nEventTypeEvent, hSpan, nTaskIdx, nDcTime);
-
-    (* Payload *)
-    MEMCPY(pWrite + 12, ADR(nNameLen), 1);
-    MEMCPY(pWrite + 13, ADR(nAttrCount), 1);
-
-    IF nNameLen > 0 THEN
-        MEMCPY(pWrite + 16, ADR(sName), nNameLen);
-    END_IF;
-
-    pBuffer^.BufferCount := pBuffer^.BufferCount + nTotalLen;
-END_IF;
-
-AddEvent := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="SetError" Id="{a3b4c5d6-e7f8-49s0-t1u2-v3w4x5y6z7a8}">
-      <Declaration><![CDATA[METHOD PUBLIC SetError : BOOL
-VAR_INPUT
-    hSpan : USINT;
-    sMsg  : STRING(120) := '';
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-
-(* Phase-1: Store error state. FB_Span will pass error status to End(). *)
-SetError := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="End" Id="{b4c5d6e7-f8a9-40t1-u2v3-w4x5y6z7a8b9}">
+    <Method Name="End" Id="{82740a99-7e02-4458-aaa7-fef1872d30eb}">
       <Declaration><![CDATA[METHOD PUBLIC End : BOOL
 VAR_INPUT
     hSpan : USINT;
@@ -603,58 +640,21 @@ End := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="CurrentTraceParent" Id="{c5d6e7f8-a9b0-41u2-v3w4-x5y6z7a8b9c0}">
-      <Declaration><![CDATA[METHOD PUBLIC CurrentTraceParent : STRING(60)
-VAR
-    sResult : STRING(60) := '';
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-(* Phase-1: Return empty string with TODO comment.
-   Rust side mints trace_id and span_id; PLC side doesn't have them.
-   Phase-5 (cross-PLC propagation) will implement this.
-   For now, callers pass traceparent explicitly via Begin(). *)
-
-CurrentTraceParent := sResult;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_WriteFrameHeader" Id="{d6e7f8a9-b0c1-42v3-w4x5-y6z7a8b9c0d1}">
-      <Declaration><![CDATA[METHOD PRIVATE _WriteFrameHeader
+    <Method Name="SetError" Id="{1323314a-5f82-499e-a923-f4a110bbfa07}">
+      <Declaration><![CDATA[METHOD PUBLIC SetError : BOOL
 VAR_INPUT
-    pWrite     : PVOID;
-    nEventType : BYTE;
-    hSpan      : USINT;
-    nTaskIdx   : USINT;
-    nDcTime    : LINT;
+    hSpan : USINT;
+    sMsg  : STRING(120) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-MEMCPY(pWrite + 0, ADR(nEventType), 1);
-MEMCPY(pWrite + 1, ADR(hSpan), 1);
-MEMCPY(pWrite + 2, ADR(nTaskIdx), 1);
-MEMCPY(pWrite + 4, ADR(nDcTime), 8);
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_GetTaskDcTime" Id="{e7f8a9b0-c1d2-43w4-x5y6-z7a8b9c0d1e2}">
-      <Declaration><![CDATA[METHOD PRIVATE _GetTaskDcTime : LINT
-VAR
-    nTaskIdx : USINT;
-    pTaskInfo : POINTER TO PlcTaskSystemInfo;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
-IF nTaskIdx > 0 AND nTaskIdx <= SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo) / SIZEOF(PlcTaskSystemInfo) THEN
-    pTaskInfo := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
-    _GetTaskDcTime := pTaskInfo^.DcTaskTime;
-ELSE
-    _GetTaskDcTime := 0;
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
 END_IF;
+
+(* Phase-1: Store error state. FB_Span will pass error status to End(). *)
+SetError := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

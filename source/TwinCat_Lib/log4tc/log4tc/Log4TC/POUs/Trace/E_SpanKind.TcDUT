@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <DUT Name="E_SpanKind" Id="{a1b2c3d4-e5f6-47g8-h9i0-j1k2l3m4n5o6}">
+  <DUT Name="E_SpanKind" Id="{e2742091-6093-4718-9350-9636b405c56e}">
     <Declaration><![CDATA[(*
 :Description: Span kind enumeration for OpenTelemetry trace semantics.
 *)
