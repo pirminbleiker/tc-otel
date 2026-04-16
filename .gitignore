@@ -35,6 +35,11 @@ NUL
 tests/runtime/otlp-output/*
 !tests/runtime/otlp-output/.gitkeep
 
+# Playwright MCP artefacts + ad-hoc dashboard screenshots (session-local)
+.playwright-mcp/
+grafana-*.png
+tc-otel-dashboard.png
+
 # Binary artifacts
 tc-otel-*-arm64
 *.exe
