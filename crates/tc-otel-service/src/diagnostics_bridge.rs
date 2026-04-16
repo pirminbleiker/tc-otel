@@ -46,10 +46,7 @@ pub fn diag_event_to_metrics(
             ),
             with_ams(
                 net_id_str.clone(),
-                MetricEntry::gauge(
-                    "tc.rt.system_latency_us".into(),
-                    system_latency_us as f64,
-                ),
+                MetricEntry::gauge("tc.rt.system_latency_us".into(), system_latency_us as f64),
             ),
             with_ams(
                 net_id_str,
@@ -95,13 +92,22 @@ pub fn diag_event_to_metrics(
                     net_id_str,
                     task_port,
                     &task_name,
-                    MetricEntry::sum(
-                        "tc.task.cycle_count".into(),
-                        cycle_counter as f64,
-                        true,
-                    ),
+                    MetricEntry::sum("tc.task.cycle_count".into(), cycle_counter as f64, true),
                 ),
             ]
+        }
+        // Push-diagnostic events. Unit 4 will implement the actual metric conversion.
+        DiagEvent::TaskSnapshot { .. } => {
+            // TODO: Unit 4 will implement metric emission for TaskSnapshot.
+            Vec::new()
+        }
+        DiagEvent::CycleExceedEdge { .. } => {
+            // TODO: Unit 4 will implement metric emission for CycleExceedEdge.
+            Vec::new()
+        }
+        DiagEvent::RtViolationEdge { .. } => {
+            // TODO: Unit 4 will implement metric emission for RtViolationEdge.
+            Vec::new()
         }
     }
 }
@@ -119,8 +125,10 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
         "task_port".into(),
         serde_json::Value::Number(task_port.into()),
     );
-    m.attributes
-        .insert("task_name".into(), serde_json::Value::String(task_name.to_string()));
+    m.attributes.insert(
+        "task_name".into(),
+        serde_json::Value::String(task_name.to_string()),
+    );
     m
 }
 
@@ -180,7 +188,10 @@ mod tests {
             &names,
         );
         assert_eq!(out.len(), 3);
-        let cpu = out.iter().find(|m| m.name == "tc.task.cpu_time_ns").unwrap();
+        let cpu = out
+            .iter()
+            .find(|m| m.name == "tc.task.cpu_time_ns")
+            .unwrap();
         assert_eq!(cpu.value, 1000.0, "10 × 100 ns = 1000 ns");
         assert_eq!(cpu.ams_source_port, 350);
         assert_eq!(cpu.task_name, "PlcTask");
