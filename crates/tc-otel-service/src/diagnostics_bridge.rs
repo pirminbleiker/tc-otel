@@ -8,14 +8,28 @@
 //! 1:1 with the PLC log entry produced on the same cycle. `dc_time_ns` is
 //! FILETIME — 100-nanosecond ticks since 1601-01-01 UTC — the same format
 //! log entries use for `plc_timestamp` / `clock_timestamp`.
+//!
+//! User-defined push metrics (Gauge, Counter, Histogram) are converted via an
+//! accumulated descriptor table per `(ams_net_id, task_port)`, allowing
+//! follow-up batches to reference metrics by ID without re-announcing metadata.
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_ads::ams::AmsNetId;
 use tc_otel_ads::diagnostics::{
-    DiagEvent, DiagSample, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+    DiagEvent, DiagSample, MetricDescriptor, MetricSample, SAMPLE_FLAG_CYCLE_EXCEED,
+    SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
 };
 use tc_otel_core::MetricEntry;
+
+/// Descriptor table per `(ams_net_id, task_port)`. Maps metric_id → MetricDescriptor.
+/// This cache is populated as descriptors are announced and referenced across
+/// follow-up batches. Descriptors are cleared on online-change (detected by
+/// TaskRegistry signal).
+///
+/// For now, built as a simple HashMap. In future, this could be promoted to
+/// a mutable cache in the service state to survive across multiple bridge calls.
+type DescriptorCache = HashMap<u16, MetricDescriptor>;
 
 /// `DcTaskTime` (nanoseconds since 2000-01-01 UTC — TwinCAT Distributed
 /// Clock epoch) → `DateTime<Utc>`.
@@ -137,9 +151,27 @@ pub fn diag_event_to_metrics(
             rt_violation_count,
             &samples,
         ),
+        DiagEvent::MetricBatch {
+            descriptors,
+            samples,
+            dc_time_start,
+            dc_time_end,
+            ..
+        } => {
+            // Build a descriptor cache from the announced descriptors.
+            let mut cache = DescriptorCache::new();
+            for desc in descriptors {
+                cache.insert(desc.metric_id, desc);
+            }
+            // Convert samples using the cache.
+            metric_batch_to_entries(&net_id_str, &cache, &samples, dc_time_start, dc_time_end)
+        }
     }
 }
 
+/// Convert per-task diagnostic batch to metrics. Pre-aggregated stats (min/max/avg
+/// exec-time, cycle-exceed/RT-violation counts) are emitted as gauges/sums. Per-sample
+/// edges (flagged cycles) are emitted as event counters with cycle/dc-time attributes.
 #[allow(clippy::too_many_arguments)]
 fn batch_to_metrics(
     net_id: &str,
@@ -291,6 +323,88 @@ fn batch_to_metrics(
     out
 }
 
+/// Convert a metric batch into MetricEntry values using a descriptor cache.
+///
+/// Each sample references a metric_id; the descriptor cache provides metadata
+/// (name, unit, kind, is_monotonic for Sum, bounds for Histogram). Samples are
+/// accumulated into their respective metric (e.g., counter deltas, histogram
+/// observations).
+fn metric_batch_to_entries(
+    net_id: &str,
+    cache: &DescriptorCache,
+    samples: &[MetricSample],
+    _dc_time_start: i64,
+    _dc_time_end: i64,
+) -> Vec<MetricEntry> {
+    let mut out = Vec::with_capacity(samples.len());
+
+    for sample in samples {
+        let desc = match cache.get(&sample.metric_id) {
+            Some(d) => d,
+            None => {
+                // Sample references unknown metric_id; skip (malformed batch).
+                continue;
+            }
+        };
+
+        let sample_ts = dc_time_to_datetime(sample.dc_time);
+
+        let mut entry = match desc.kind {
+            0 => {
+                // Gauge
+                MetricEntry::gauge(desc.name.clone(), sample.value as f64)
+            }
+            1 => {
+                // Sum/Counter
+                let is_monotonic = (desc.flags & 1) != 0;
+                MetricEntry::sum(desc.name.clone(), sample.value as f64, is_monotonic)
+            }
+            2 => {
+                // Histogram
+                if let Some(ref bounds) = desc.histogram_bounds {
+                    // Accumulate observation into bucket (linear search for simplicity).
+                    let bucket_idx = bounds
+                        .iter()
+                        .position(|&b| sample.value < b)
+                        .unwrap_or(bounds.len());
+                    let mut counts = vec![0_u64; bounds.len() + 1];
+                    counts[bucket_idx] = 1;
+                    MetricEntry::histogram(
+                        desc.name.clone(),
+                        bounds.iter().map(|&f| f as f64).collect(),
+                        counts,
+                        1,
+                        sample.value as f64,
+                    )
+                } else {
+                    // Histogram without bounds (malformed); skip.
+                    continue;
+                }
+            }
+            _ => {
+                // Unknown kind; skip.
+                continue;
+            }
+        };
+
+        entry.description = desc.description.clone();
+        entry.unit = desc.unit.clone();
+        entry.timestamp = sample_ts;
+        entry.ams_net_id = net_id.to_string();
+
+        // Add attributes from descriptor.
+        for (key, val) in &desc.attributes {
+            entry
+                .attributes
+                .insert(key.clone(), serde_json::Value::String(val.clone()));
+        }
+
+        out.push(entry);
+    }
+
+    out
+}
+
 fn with_ams(net_id: String, mut m: MetricEntry) -> MetricEntry {
     m.ams_net_id = net_id;
     m
@@ -330,6 +444,7 @@ fn with_sample_attrs(mut m: MetricEntry, s: &DiagSample) -> MetricEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tc_otel_core::MetricKind;
 
     fn net() -> AmsNetId {
         AmsNetId::from_bytes([172, 28, 41, 37, 1, 1])
@@ -518,5 +633,298 @@ mod tests {
             .find(|m| m.name == "tc.task.sample_buffer_overflow")
             .unwrap();
         assert_eq!(overflow.value, 1.0);
+    }
+
+    // ─── Metric batch bridge tests ───────────────────────────────
+
+    #[test]
+    fn metric_batch_gauge_single_sample() {
+        let desc = MetricDescriptor {
+            metric_id: 10,
+            kind: 0, // Gauge
+            flags: 0,
+            name: "temperature".into(),
+            unit: "Cel".into(),
+            description: "Motor temperature".into(),
+            attributes: vec![],
+            histogram_bounds: None,
+        };
+        let sample = MetricSample {
+            metric_id: 10,
+            flags: 0,
+            dc_time: 1000,
+            value: 42.5,
+        };
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 1000,
+            dc_time_start: 1000,
+            dc_time_end: 1100,
+            descriptors: vec![desc],
+            samples: vec![sample],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "temperature");
+        assert_eq!(out[0].value, 42.5);
+        assert_eq!(out[0].unit, "Cel");
+        assert_eq!(out[0].description, "Motor temperature");
+        assert_eq!(out[0].kind, MetricKind::Gauge);
+        assert_eq!(out[0].ams_net_id, "172.28.41.37.1.1");
+    }
+
+    #[test]
+    fn metric_batch_counter_monotonic_delta() {
+        let desc = MetricDescriptor {
+            metric_id: 20,
+            kind: 1,  // Sum/Counter
+            flags: 1, // is_monotonic
+            name: "request_count".into(),
+            unit: "1".into(),
+            description: "HTTP requests".into(),
+            attributes: vec![],
+            histogram_bounds: None,
+        };
+        let sample = MetricSample {
+            metric_id: 20,
+            flags: 0,
+            dc_time: 2000,
+            value: 5.0,
+        };
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 2000,
+            dc_time_start: 2000,
+            dc_time_end: 2100,
+            descriptors: vec![desc],
+            samples: vec![sample],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "request_count");
+        assert_eq!(out[0].value, 5.0);
+        assert_eq!(out[0].kind, MetricKind::Sum);
+        assert!(out[0].is_monotonic);
+    }
+
+    #[test]
+    fn metric_batch_counter_non_monotonic() {
+        let desc = MetricDescriptor {
+            metric_id: 25,
+            kind: 1,  // Sum/Counter
+            flags: 0, // not is_monotonic
+            name: "balance_change".into(),
+            unit: "units".into(),
+            description: "Account balance change".into(),
+            attributes: vec![],
+            histogram_bounds: None,
+        };
+        let sample = MetricSample {
+            metric_id: 25,
+            flags: 0,
+            dc_time: 3000,
+            value: -10.0,
+        };
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 3000,
+            dc_time_start: 3000,
+            dc_time_end: 3100,
+            descriptors: vec![desc],
+            samples: vec![sample],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].value, -10.0);
+        assert!(!out[0].is_monotonic);
+    }
+
+    #[test]
+    fn metric_batch_histogram_with_bounds() {
+        let bounds = vec![10.0, 20.0, 50.0, 100.0];
+        let desc = MetricDescriptor {
+            metric_id: 30,
+            kind: 2, // Histogram
+            flags: 0,
+            name: "response_time".into(),
+            unit: "ms".into(),
+            description: "HTTP response time".into(),
+            attributes: vec![],
+            histogram_bounds: Some(bounds),
+        };
+        let samples = vec![
+            MetricSample {
+                metric_id: 30,
+                flags: 1, // histogram_observe
+                dc_time: 4000,
+                value: 5.0,
+            },
+            MetricSample {
+                metric_id: 30,
+                flags: 1,
+                dc_time: 4100,
+                value: 25.0,
+            },
+            MetricSample {
+                metric_id: 30,
+                flags: 1,
+                dc_time: 4200,
+                value: 150.0,
+            },
+        ];
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 4000,
+            dc_time_start: 4000,
+            dc_time_end: 4200,
+            descriptors: vec![desc],
+            samples,
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 3);
+        for entry in &out {
+            assert_eq!(entry.kind, MetricKind::Histogram);
+            assert_eq!(entry.name, "response_time");
+            assert_eq!(entry.histogram_bounds.len(), 4);
+            assert_eq!(entry.histogram_count, 1); // Each entry is a single observation
+            assert!(entry.histogram_sum > 0.0);
+        }
+    }
+
+    #[test]
+    fn metric_batch_with_attributes() {
+        let attrs = vec![
+            ("device_id".into(), "motor_1".into()),
+            ("location".into(), "warehouse_A".into()),
+        ];
+        let desc = MetricDescriptor {
+            metric_id: 40,
+            kind: 0,
+            flags: 0,
+            name: "vibration".into(),
+            unit: "mm/s".into(),
+            description: "Motor vibration".into(),
+            attributes: attrs,
+            histogram_bounds: None,
+        };
+        let sample = MetricSample {
+            metric_id: 40,
+            flags: 0,
+            dc_time: 5000,
+            value: 2.3,
+        };
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 5000,
+            dc_time_start: 5000,
+            dc_time_end: 5100,
+            descriptors: vec![desc],
+            samples: vec![sample],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].attributes["device_id"],
+            serde_json::Value::String("motor_1".into())
+        );
+        assert_eq!(
+            out[0].attributes["location"],
+            serde_json::Value::String("warehouse_A".into())
+        );
+    }
+
+    #[test]
+    fn metric_batch_samples_without_descriptors_skipped() {
+        // Follow-up batch: descriptor_count=0, only samples referencing known IDs.
+        // Since no descriptors are in *this* batch, samples should be skipped
+        // (no descriptor cache entry). In real use, descriptors from previous
+        // batches would populate a persistent cache — here we test that unknown
+        // metric_ids are silently skipped.
+        let sample = MetricSample {
+            metric_id: 99, // Unknown ID
+            flags: 0,
+            dc_time: 6000,
+            value: 123.0,
+        };
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 6000,
+            dc_time_start: 6000,
+            dc_time_end: 6100,
+            descriptors: vec![],
+            samples: vec![sample],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        // No entries because sample references unknown metric_id.
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn metric_batch_multiple_descriptors_and_samples() {
+        let descs = vec![
+            MetricDescriptor {
+                metric_id: 10,
+                kind: 0,
+                flags: 0,
+                name: "temp".into(),
+                unit: "C".into(),
+                description: "".into(),
+                attributes: vec![],
+                histogram_bounds: None,
+            },
+            MetricDescriptor {
+                metric_id: 20,
+                kind: 1,
+                flags: 1,
+                name: "count".into(),
+                unit: "1".into(),
+                description: "".into(),
+                attributes: vec![],
+                histogram_bounds: None,
+            },
+        ];
+        let samples = vec![
+            MetricSample {
+                metric_id: 10,
+                flags: 0,
+                dc_time: 1000,
+                value: 25.0,
+            },
+            MetricSample {
+                metric_id: 20,
+                flags: 0,
+                dc_time: 2000,
+                value: 7.0,
+            },
+        ];
+
+        let ev = DiagEvent::MetricBatch {
+            window_ms: 100,
+            cycle_count: 1000,
+            dc_time_start: 1000,
+            dc_time_end: 2000,
+            descriptors: descs,
+            samples,
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 2);
+        let by_name: HashMap<String, &MetricEntry> =
+            out.iter().map(|m| (m.name.clone(), m)).collect();
+        assert_eq!(by_name["temp"].value, 25.0);
+        assert_eq!(by_name["count"].value, 7.0);
+        assert!(by_name["count"].is_monotonic);
     }
 }

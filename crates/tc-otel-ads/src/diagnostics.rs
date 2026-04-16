@@ -56,12 +56,22 @@ pub const IG_PUSH_CONFIG: u32 = 0x4D42_4302;
 /// (min/max/avg exec_time, exceed/rtv counts) are in the header.
 pub const IO_PUSH_BATCH: u32 = 0;
 
+/// Index offset for push-metric batches within `IG_PUSH_DIAG`.
+///
+/// A batch = 32-byte header + N × descriptor blocks + M × 16-byte samples.
+/// Descriptors announce metric metadata (name, unit, kind, bounds); samples
+/// reference metric IDs and carry values.
+pub const IO_PUSH_METRIC_BATCH: u32 = 1;
+
 /// Wire-format version for push-diagnostic events. Bumped from v1 (legacy
 /// snapshot + edge frames) to v2 (batch frame with per-cycle samples).
 pub const PUSH_WIRE_VERSION: u8 = 2;
 
-/// Batch event-type discriminator in the batch header.
+/// Batch event-type discriminator for per-task diagnostics in the batch header.
 pub const PUSH_BATCH_EVENT_TYPE: u8 = 10;
+
+/// Event-type discriminator for metric batches in the batch header.
+pub const PUSH_METRIC_EVENT_TYPE: u8 = 20;
 
 /// Fixed batch-header size in bytes.
 pub const PUSH_BATCH_HEADER_SIZE: usize = 80;
@@ -125,7 +135,7 @@ pub struct PendingRequest {
 }
 
 /// A decoded diagnostic event ready for metric emission.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DiagEvent {
     /// Current value of the TwinCAT cycle-exceed counter.
     ExceedCounter { value: u32 },
@@ -202,6 +212,62 @@ pub enum DiagEvent {
         /// Per-cycle samples, ordered from oldest to newest.
         samples: Vec<DiagSample>,
     },
+    /// Push-metric: user-defined metrics (gauges, counters, histograms).
+    ///
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_METRIC_BATCH`. A batch
+    /// announces metric metadata (name, unit, kind, histogram bounds) once per
+    /// session, then subsequent batches reference those descriptors and ship
+    /// only samples.
+    MetricBatch {
+        /// Aggregation window or sample interval, in milliseconds.
+        window_ms: u16,
+        /// Base cycle counter or PLC cycle counter.
+        cycle_count: u32,
+        /// Wall-clock time at first sample, FILETIME ticks (100 ns since 1601).
+        dc_time_start: i64,
+        /// Wall-clock time at last sample, FILETIME ticks.
+        dc_time_end: i64,
+        /// Metric metadata descriptors announced in this batch.
+        descriptors: Vec<MetricDescriptor>,
+        /// Metric value samples with metric ID references.
+        samples: Vec<MetricSample>,
+    },
+}
+
+/// Metric descriptor — static metadata for a metric announced in a batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricDescriptor {
+    /// Stable metric ID within session; assigned by PLC.
+    pub metric_id: u16,
+    /// Metric kind: Gauge, Sum/Counter, or Histogram.
+    pub kind: u8, // 0=Gauge, 1=Sum, 2=Histogram; directly matches MetricKind
+    /// For Sum: bit 0 = is_monotonic.
+    pub flags: u8,
+    /// Human-readable metric name (UTF-8).
+    pub name: String,
+    /// Unit of measurement (UTF-8, e.g., "ms", "rpm", "percent").
+    pub unit: String,
+    /// Human-readable description (UTF-8).
+    pub description: String,
+    /// Key-value attributes (e.g., device ID, serial number).
+    pub attributes: Vec<(String, String)>,
+    /// For Histogram kind: bucket boundaries (f32). Empty for other kinds.
+    pub histogram_bounds: Option<Vec<f32>>,
+}
+
+/// Metric sample — a single value point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetricSample {
+    /// References a metric_id in the descriptor table.
+    pub metric_id: u16,
+    /// Bit 0: histogram_observe (only for Histogram kind).
+    /// Bit 1: counter_delta_i64 (reserved; always u32 for now).
+    pub flags: u8,
+    /// Wall-clock time of this sample, FILETIME ticks.
+    pub dc_time: i64,
+    /// Sample value (32-bit float). For Counter/Sum: delta amount.
+    /// For Histogram: observation to accumulate.
+    pub value: f32,
 }
 
 /// Single PLC-cycle sample inside a [`DiagEvent::TaskDiagBatch`].
