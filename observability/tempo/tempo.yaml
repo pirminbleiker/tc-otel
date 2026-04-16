@@ -1,0 +1,26 @@
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 3201
+
+distributor:
+  ring:
+    kvstore:
+      store: inmemory
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+memberlist:
+  node_name: tempo
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

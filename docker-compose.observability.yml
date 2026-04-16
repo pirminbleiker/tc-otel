@@ -37,6 +37,19 @@ services:
       - tc-otel-obs
     restart: unless-stopped
 
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    ports:
+      - "3200:3200"
+    command: [ "-config.file=/etc/tempo/tempo.yaml" ]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - tc-otel-obs
+    restart: unless-stopped
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
@@ -52,6 +65,7 @@ services:
       - tc-otel-obs
     depends_on:
       - victoria-metrics
+      - tempo
     restart: unless-stopped
 
   grafana:
@@ -116,6 +130,7 @@ services:
 volumes:
   vm-data:
   vl-data:
+  tempo-data:
   grafana-data:
   tc31-boot:
   tc31-license:
