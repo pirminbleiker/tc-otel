@@ -318,7 +318,8 @@ mod tests {
 
         // Forcibly age the single entry past the TTL, then trigger GC.
         for entry in obs.pending.values_mut() {
-            entry.inserted = Instant::now() - DiagnosticsObserver::PENDING_TTL - Duration::from_secs(1);
+            entry.inserted =
+                Instant::now() - DiagnosticsObserver::PENDING_TTL - Duration::from_secs(1);
         }
         obs.gc_now();
         assert_eq!(obs.pending_len(), 0);

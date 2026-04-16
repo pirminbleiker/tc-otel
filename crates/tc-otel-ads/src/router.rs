@@ -4,7 +4,9 @@ use crate::ams::{
     ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
     ADS_CMD_READ_STATE, ADS_CMD_READ_WRITE, ADS_CMD_WRITE, ADS_CMD_WRITE_CONTROL,
 };
-use crate::diagnostics::{DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE, IO_PUSH_SNAPSHOT};
+use crate::diagnostics::{
+    DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE, IO_PUSH_SNAPSHOT,
+};
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
@@ -94,16 +96,18 @@ impl AdsRouter {
                                 IO_PUSH_SNAPSHOT => {
                                     crate::diagnostics_push::decode_snapshot(&wr.data)
                                 }
-                                IO_PUSH_CYCLE_EXCEED_EDGE => {
-                                    crate::diagnostics_push::decode_edge(&wr.data, crate::diagnostics_push::EdgeKind::CycleExceed)
-                                        .into_iter()
-                                        .collect::<Vec<_>>()
-                                }
-                                IO_PUSH_RT_VIOLATION_EDGE => {
-                                    crate::diagnostics_push::decode_edge(&wr.data, crate::diagnostics_push::EdgeKind::RtViolation)
-                                        .into_iter()
-                                        .collect::<Vec<_>>()
-                                }
+                                IO_PUSH_CYCLE_EXCEED_EDGE => crate::diagnostics_push::decode_edge(
+                                    &wr.data,
+                                    crate::diagnostics_push::EdgeKind::CycleExceed,
+                                )
+                                .into_iter()
+                                .collect::<Vec<_>>(),
+                                IO_PUSH_RT_VIOLATION_EDGE => crate::diagnostics_push::decode_edge(
+                                    &wr.data,
+                                    crate::diagnostics_push::EdgeKind::RtViolation,
+                                )
+                                .into_iter()
+                                .collect::<Vec<_>>(),
                                 _ => Vec::new(),
                             };
                             // Send each event to the push channel

@@ -13,9 +13,7 @@
 //! - Publishes requests to `{prefix}/{target_net_id}/ams`.
 //! - Subscribes to `{prefix}/{local_net_id}/ams/res` for responses.
 
-use crate::ams::{
-    AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO, ADS_STATE_REQUEST,
-};
+use crate::ams::{AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO, ADS_STATE_REQUEST};
 use crate::diagnostics::{
     DiagEvent, IG_RT_SYSTEM, IG_RT_USAGE, IO_EXCEED_COUNTER, IO_RT_USAGE, IO_TASK_STATS,
     RT_USAGE_LEN, TASK_STATS_LEN,
@@ -359,10 +357,7 @@ impl DiagnosticsPoller {
         loop {
             match event_loop.poll().await {
                 Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                    tracing::info!(
-                        "DiagnosticsPoller: connected, subscribing to {}",
-                        res_topic
-                    );
+                    tracing::info!("DiagnosticsPoller: connected, subscribing to {}", res_topic);
                     if let Err(e) = client.subscribe(&res_topic, QoS::AtMostOnce).await {
                         tracing::warn!("DiagnosticsPoller: subscribe failed: {e}");
                     }
@@ -410,17 +405,11 @@ impl DiagnosticsPoller {
                     }
                 }
             }
-            let polls = build_polls_for_target(
-                &target,
-                self.config.local_net_id,
-                &self.invoke_counter,
-            );
+            let polls =
+                build_polls_for_target(&target, self.config.local_net_id, &self.invoke_counter);
 
             for poll in polls {
-                let topic = format!(
-                    "{}/{}/ams",
-                    self.config.topic_prefix, poll.target_net_id
-                );
+                let topic = format!("{}/{}/ams", self.config.topic_prefix, poll.target_net_id);
 
                 // Track the request in the observer before publishing so a
                 // very fast response can't arrive before we're watching for
@@ -467,7 +456,11 @@ impl DiagnosticsPoller {
 
         // ReadDeviceInfo responses carry the task name — resolve and store.
         if header.command_id == ADS_CMD_READ_DEVICE_INFO {
-            let pending = self.pending_device_info.lock().await.remove(&header.invoke_id);
+            let pending = self
+                .pending_device_info
+                .lock()
+                .await
+                .remove(&header.invoke_id);
             if let Some((net_id, port)) = pending {
                 if let Some(name) = parse_device_info_name(body) {
                     tracing::info!(

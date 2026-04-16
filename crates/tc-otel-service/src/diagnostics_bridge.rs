@@ -46,10 +46,7 @@ pub fn diag_event_to_metrics(
             ),
             with_ams(
                 net_id_str.clone(),
-                MetricEntry::gauge(
-                    "tc.rt.system_latency_us".into(),
-                    system_latency_us as f64,
-                ),
+                MetricEntry::gauge("tc.rt.system_latency_us".into(), system_latency_us as f64),
             ),
             with_ams(
                 net_id_str,
@@ -95,11 +92,7 @@ pub fn diag_event_to_metrics(
                     net_id_str,
                     task_port,
                     &task_name,
-                    MetricEntry::sum(
-                        "tc.task.cycle_count".into(),
-                        cycle_counter as f64,
-                        true,
-                    ),
+                    MetricEntry::sum("tc.task.cycle_count".into(), cycle_counter as f64, true),
                 ),
             ]
         }
@@ -119,13 +112,19 @@ pub fn diag_event_to_metrics(
                     net_id_str.clone(),
                     task_port,
                     &task_name,
-                    MetricEntry::gauge("tc.task.last_exec_time_us".into(), last_exec_time_us as f64),
+                    MetricEntry::gauge(
+                        "tc.task.last_exec_time_us".into(),
+                        last_exec_time_us as f64,
+                    ),
                 ),
                 with_task(
                     net_id_str.clone(),
                     task_port,
                     &task_name,
-                    MetricEntry::gauge("tc.task.cycle_time_configured_us".into(), cycle_time_configured_us as f64),
+                    MetricEntry::gauge(
+                        "tc.task.cycle_time_configured_us".into(),
+                        cycle_time_configured_us as f64,
+                    ),
                 ),
                 with_task(
                     net_id_str.clone(),
@@ -143,13 +142,21 @@ pub fn diag_event_to_metrics(
                     net_id_str.clone(),
                     task_port,
                     &task_name,
-                    MetricEntry::sum("tc.task.cycle_exceed_counter".into(), cycle_exceed_count as f64, true),
+                    MetricEntry::sum(
+                        "tc.task.cycle_exceed_counter".into(),
+                        cycle_exceed_count as f64,
+                        true,
+                    ),
                 ),
                 with_task(
                     net_id_str,
                     task_port,
                     &task_name,
-                    MetricEntry::sum("tc.rt.rt_violation_counter".into(), rt_violation_count as f64, true),
+                    MetricEntry::sum(
+                        "tc.rt.rt_violation_counter".into(),
+                        rt_violation_count as f64,
+                        true,
+                    ),
                 ),
             ]
         }
@@ -170,7 +177,10 @@ pub fn diag_event_to_metrics(
                     net_id_str.clone(),
                     task_port,
                     &task_name,
-                    MetricEntry::gauge("tc.task.last_exec_time_us".into(), last_exec_time_us as f64),
+                    MetricEntry::gauge(
+                        "tc.task.last_exec_time_us".into(),
+                        last_exec_time_us as f64,
+                    ),
                 ),
                 with_task(
                     net_id_str,
@@ -197,7 +207,10 @@ pub fn diag_event_to_metrics(
                     net_id_str,
                     task_port,
                     &task_name,
-                    MetricEntry::gauge("tc.task.last_exec_time_us".into(), last_exec_time_us as f64),
+                    MetricEntry::gauge(
+                        "tc.task.last_exec_time_us".into(),
+                        last_exec_time_us as f64,
+                    ),
                 ),
             ]
         }
@@ -217,8 +230,10 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
         "task_port".into(),
         serde_json::Value::Number(task_port.into()),
     );
-    m.attributes
-        .insert("task_name".into(), serde_json::Value::String(task_name.to_string()));
+    m.attributes.insert(
+        "task_name".into(),
+        serde_json::Value::String(task_name.to_string()),
+    );
     m
 }
 
@@ -278,7 +293,10 @@ mod tests {
             &names,
         );
         assert_eq!(out.len(), 3);
-        let cpu = out.iter().find(|m| m.name == "tc.task.cpu_time_ns").unwrap();
+        let cpu = out
+            .iter()
+            .find(|m| m.name == "tc.task.cpu_time_ns")
+            .unwrap();
         assert_eq!(cpu.value, 1000.0, "10 × 100 ns = 1000 ns");
         assert_eq!(cpu.ams_source_port, 350);
         assert_eq!(cpu.task_name, "PlcTask");
@@ -352,12 +370,21 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(out.len(), 3);
-        let counter = out.iter().find(|m| m.name == "tc.task.cycle_exceed_edge_total").unwrap();
+        let counter = out
+            .iter()
+            .find(|m| m.name == "tc.task.cycle_exceed_edge_total")
+            .unwrap();
         assert_eq!(counter.value, 1.0);
         assert!(counter.is_monotonic);
-        let exec_gauge = out.iter().find(|m| m.name == "tc.task.last_exec_time_us" && m.value == 1200.0).unwrap();
+        let exec_gauge = out
+            .iter()
+            .find(|m| m.name == "tc.task.last_exec_time_us" && m.value == 1200.0)
+            .unwrap();
         assert_eq!(exec_gauge.value, 1200.0);
-        let cycle_sum = out.iter().find(|m| m.name == "tc.task.cycle_count").unwrap();
+        let cycle_sum = out
+            .iter()
+            .find(|m| m.name == "tc.task.cycle_count")
+            .unwrap();
         assert_eq!(cycle_sum.value, 100050.0);
         assert!(cycle_sum.is_monotonic);
     }
@@ -375,10 +402,16 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(out.len(), 2);
-        let counter = out.iter().find(|m| m.name == "tc.rt.rt_violation_edge_total").unwrap();
+        let counter = out
+            .iter()
+            .find(|m| m.name == "tc.rt.rt_violation_edge_total")
+            .unwrap();
         assert_eq!(counter.value, 1.0);
         assert!(counter.is_monotonic);
-        let exec_gauge = out.iter().find(|m| m.name == "tc.task.last_exec_time_us").unwrap();
+        let exec_gauge = out
+            .iter()
+            .find(|m| m.name == "tc.task.last_exec_time_us")
+            .unwrap();
         assert_eq!(exec_gauge.value, 1500.0);
     }
 }
