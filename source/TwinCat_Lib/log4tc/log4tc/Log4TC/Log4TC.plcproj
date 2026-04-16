@@ -241,6 +241,7 @@
     <Folder Include="GVLs" />
     <Folder Include="ITFs" />
     <Folder Include="DUTs" />
+    <Folder Include="POUs\Diagnostic" />
     <Folder Include="Test" />
     <Folder Include="POUs" />
     <Folder Include="POUs\Utils" />
@@ -314,6 +315,18 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="ITFs\I_LogEntryAdder.TcIO">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Diagnostic\FB_PushDiag.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Diagnostic\ST_PushDiagEdge.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Diagnostic\ST_PushDiagHeader.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Diagnostic\ST_PushDiagTaskRecord.TcDUT">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_ContextBuilder.TcPOU">
@@ -413,6 +426,11 @@
     <PlaceholderResolution Include="SysDir">
       <Resolution>SysDir, 3.5.12.0 (System)</Resolution>
     </PlaceholderResolution>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="POUs\Diagnostic\README.md">
+      <SubType>Content</SubType>
+    </Content>
   </ItemGroup>
   <ProjectExtensions>
     <PlcProjectOptions>

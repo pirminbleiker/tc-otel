@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <TcSmProject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.22">
-	<Project ProjectGUID="{ADF155C1-099B-4386-BD36-DC7AED699701}" TargetNetId="75.3.166.18.1.1" Target64Bit="true" ShowHideConfigurations="#x3c7">
+	<Project ProjectGUID="{ADF155C1-099B-4386-BD36-DC7AED699701}" TargetNetId="240.23.169.55.1.1" Target64Bit="true" ShowHideConfigurations="#x3c7">
 		<System>
 			<Settings MaxCpus="20"/>
 			<Licenses>
