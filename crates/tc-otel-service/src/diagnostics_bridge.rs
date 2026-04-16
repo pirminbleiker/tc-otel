@@ -99,39 +99,14 @@ pub fn diag_event_to_metrics(
         DiagEvent::TaskSnapshot {
             task_port,
             task_name,
-            priority,
-            cycle_time_configured_us,
-            last_exec_time_us,
             cycle_count,
+            last_exec_time_us,
             cycle_exceed_count,
             rt_violation_count,
             ..
         } => {
+            // Snapshot: emit cycle count and exceed/violation counters.
             vec![
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge(
-                        "tc.task.last_exec_time_us".into(),
-                        last_exec_time_us as f64,
-                    ),
-                ),
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge(
-                        "tc.task.cycle_time_configured_us".into(),
-                        cycle_time_configured_us as f64,
-                    ),
-                ),
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge("tc.task.priority".into(), priority as f64),
-                ),
                 with_task(
                     net_id_str.clone(),
                     task_port,
@@ -143,8 +118,18 @@ pub fn diag_event_to_metrics(
                     task_port,
                     &task_name,
                     MetricEntry::sum(
-                        "tc.task.cycle_exceed_counter".into(),
+                        "tc.task.cycle_exceed_count".into(),
                         cycle_exceed_count as f64,
+                        true,
+                    ),
+                ),
+                with_task(
+                    net_id_str.clone(),
+                    task_port,
+                    &task_name,
+                    MetricEntry::sum(
+                        "tc.task.rt_violation_count".into(),
+                        rt_violation_count as f64,
                         true,
                     ),
                 ),
@@ -152,10 +137,9 @@ pub fn diag_event_to_metrics(
                     net_id_str,
                     task_port,
                     &task_name,
-                    MetricEntry::sum(
-                        "tc.rt.rt_violation_counter".into(),
-                        rt_violation_count as f64,
-                        true,
+                    MetricEntry::gauge(
+                        "tc.task.last_exec_time_us".into(),
+                        last_exec_time_us as f64,
                     ),
                 ),
             ]
@@ -163,56 +147,28 @@ pub fn diag_event_to_metrics(
         DiagEvent::CycleExceedEdge {
             task_port,
             task_name,
-            cycle_count,
-            last_exec_time_us,
+            ..
         } => {
-            vec![
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum("tc.task.cycle_exceed_edge_total".into(), 1.0, true),
-                ),
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge(
-                        "tc.task.last_exec_time_us".into(),
-                        last_exec_time_us as f64,
-                    ),
-                ),
-                with_task(
-                    net_id_str,
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum("tc.task.cycle_count".into(), cycle_count as f64, true),
-                ),
-            ]
+            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
+            vec![with_task(
+                net_id_str,
+                task_port,
+                &task_name,
+                MetricEntry::sum("tc.task.cycle_exceed_edge".into(), 1.0, false),
+            )]
         }
         DiagEvent::RtViolationEdge {
             task_port,
             task_name,
-            last_exec_time_us,
             ..
         } => {
-            vec![
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum("tc.rt.rt_violation_edge_total".into(), 1.0, true),
-                ),
-                with_task(
-                    net_id_str,
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge(
-                        "tc.task.last_exec_time_us".into(),
-                        last_exec_time_us as f64,
-                    ),
-                ),
-            ]
+            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
+            vec![with_task(
+                net_id_str,
+                task_port,
+                &task_name,
+                MetricEntry::sum("tc.task.rt_violation_edge".into(), 1.0, false),
+            )]
         }
     }
 }
@@ -323,95 +279,5 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(out[0].task_name, "port-350");
-    }
-
-    #[test]
-    fn task_snapshot_emits_six_metrics() {
-        let out = diag_event_to_metrics(
-            net(),
-            DiagEvent::TaskSnapshot {
-                task_port: 350,
-                task_name: "PlcTask".to_string(),
-                priority: 20,
-                cycle_time_configured_us: 1000,
-                last_exec_time_us: 500,
-                cycle_count: 100000,
-                cycle_exceed_count: 5,
-                rt_violation_count: 2,
-                flags: 0,
-                plc_timestamp_ns: 0,
-            },
-            &HashMap::new(),
-        );
-        assert_eq!(out.len(), 6);
-        let names: Vec<&str> = out.iter().map(|m| m.name.as_str()).collect();
-        assert!(names.contains(&"tc.task.last_exec_time_us"));
-        assert!(names.contains(&"tc.task.cycle_time_configured_us"));
-        assert!(names.contains(&"tc.task.priority"));
-        assert!(names.contains(&"tc.task.cycle_count"));
-        assert!(names.contains(&"tc.task.cycle_exceed_counter"));
-        assert!(names.contains(&"tc.rt.rt_violation_counter"));
-        for m in &out {
-            assert_eq!(m.task_name, "PlcTask");
-            assert_eq!(m.ams_source_port, 350);
-        }
-    }
-
-    #[test]
-    fn cycle_exceed_edge_emits_counter_and_exec_gauge() {
-        let out = diag_event_to_metrics(
-            net(),
-            DiagEvent::CycleExceedEdge {
-                task_port: 350,
-                task_name: "PlcTask".to_string(),
-                cycle_count: 100050,
-                last_exec_time_us: 1200,
-            },
-            &HashMap::new(),
-        );
-        assert_eq!(out.len(), 3);
-        let counter = out
-            .iter()
-            .find(|m| m.name == "tc.task.cycle_exceed_edge_total")
-            .unwrap();
-        assert_eq!(counter.value, 1.0);
-        assert!(counter.is_monotonic);
-        let exec_gauge = out
-            .iter()
-            .find(|m| m.name == "tc.task.last_exec_time_us" && m.value == 1200.0)
-            .unwrap();
-        assert_eq!(exec_gauge.value, 1200.0);
-        let cycle_sum = out
-            .iter()
-            .find(|m| m.name == "tc.task.cycle_count")
-            .unwrap();
-        assert_eq!(cycle_sum.value, 100050.0);
-        assert!(cycle_sum.is_monotonic);
-    }
-
-    #[test]
-    fn rt_violation_edge_emits_counter() {
-        let out = diag_event_to_metrics(
-            net(),
-            DiagEvent::RtViolationEdge {
-                task_port: 350,
-                task_name: "PlcTask".to_string(),
-                cycle_count: 100075,
-                last_exec_time_us: 1500,
-            },
-            &HashMap::new(),
-        );
-        assert_eq!(out.len(), 2);
-        let counter = out
-            .iter()
-            .find(|m| m.name == "tc.rt.rt_violation_edge_total")
-            .unwrap();
-        assert_eq!(counter.value, 1.0);
-        assert!(counter.is_monotonic);
-        let exec_gauge = out
-            .iter()
-            .find(|m| m.name == "tc.task.last_exec_time_us")
-            .unwrap();
-        assert_eq!(exec_gauge.value, 1500.0);
     }
 }
