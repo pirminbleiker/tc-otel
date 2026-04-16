@@ -13,6 +13,7 @@ pub mod connection_manager;
 pub mod diagnostics;
 pub mod diagnostics_observer;
 pub mod diagnostics_poller;
+pub mod diagnostics_push;
 pub mod error;
 pub mod health_metrics;
 pub mod listener;
@@ -35,6 +36,11 @@ pub use ams_server::AmsTcpServer;
 pub use connection_manager::{
     ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection,
 };
+pub use diagnostics::{
+    DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE,
+    IO_PUSH_SNAPSHOT, PUSH_WIRE_VERSION,
+};
+pub use diagnostics_push::EdgeKind;
 pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;

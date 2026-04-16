@@ -4,6 +4,7 @@ use crate::ams::{
     ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
     ADS_CMD_READ_STATE, ADS_CMD_READ_WRITE, ADS_CMD_WRITE, ADS_CMD_WRITE_CONTROL,
 };
+use crate::diagnostics::{DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE, IO_PUSH_SNAPSHOT};
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
@@ -15,6 +16,7 @@ pub struct AdsRouter {
     ads_port: u16,
     log_tx: mpsc::Sender<LogEntry>,
     metric_tx: Option<mpsc::Sender<MetricEntry>>,
+    push_tx: Option<mpsc::Sender<(crate::AmsNetId, DiagEvent)>>,
     registry: Arc<TaskRegistry>,
 }
 
@@ -29,8 +31,14 @@ impl AdsRouter {
             ads_port,
             log_tx,
             metric_tx,
+            push_tx: None,
             registry,
         }
+    }
+
+    pub fn with_push_sender(mut self, tx: mpsc::Sender<(crate::AmsNetId, DiagEvent)>) -> Self {
+        self.push_tx = Some(tx);
+        self
     }
 
     pub fn registry(&self) -> &Arc<TaskRegistry> {
@@ -79,7 +87,41 @@ impl AdsRouter {
                 let payload = &frame[32..];
                 if let Ok(wr) = AdsWriteRequest::parse(payload) {
                     if header.target_port == self.ads_port {
-                        self.dispatch_write_sync(&source_net_id, source_port, &wr.data);
+                        // Check if this is a push-diagnostic write
+                        if wr.index_group == IG_PUSH_DIAG {
+                            // Decode and dispatch push-diagnostic events
+                            let events = match wr.index_offset {
+                                IO_PUSH_SNAPSHOT => {
+                                    crate::diagnostics_push::decode_snapshot(&wr.data)
+                                }
+                                IO_PUSH_CYCLE_EXCEED_EDGE => {
+                                    crate::diagnostics_push::decode_edge(&wr.data, crate::diagnostics_push::EdgeKind::CycleExceed)
+                                        .into_iter()
+                                        .collect::<Vec<_>>()
+                                }
+                                IO_PUSH_RT_VIOLATION_EDGE => {
+                                    crate::diagnostics_push::decode_edge(&wr.data, crate::diagnostics_push::EdgeKind::RtViolation)
+                                        .into_iter()
+                                        .collect::<Vec<_>>()
+                                }
+                                _ => Vec::new(),
+                            };
+                            // Send each event to the push channel
+                            if let Some(ref tx) = self.push_tx {
+                                let net_id = header.source_net_id;
+                                for ev in events {
+                                    if tx.try_send((net_id, ev)).is_err() {
+                                        tracing::warn!(
+                                            "push-diagnostic channel full, dropping event from {}",
+                                            source_net_id
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            // Parse as log batch (existing behavior)
+                            self.dispatch_write_sync(&source_net_id, source_port, &wr.data);
+                        }
                     }
                 }
                 Some(response)
