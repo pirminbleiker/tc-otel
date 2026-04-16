@@ -304,6 +304,23 @@ impl SpanDispatcher {
         status_code: SpanStatusCode,
         status_message: String,
     ) {
+        // Populate resource attributes so Grafana/Tempo link the span to a
+        // service. Without service.name the UI labels it "root span not yet
+        // received" and the trace-detail view returns no data.
+        let mut resource_attributes = HashMap::with_capacity(3);
+        resource_attributes.insert(
+            "service.name".to_string(),
+            serde_json::json!(format!("plc-{}", pending.ams_net_id)),
+        );
+        resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!(pending.ams_net_id.to_string()),
+        );
+        resource_attributes.insert(
+            "plc.task_index".to_string(),
+            serde_json::json!(pending.task_index as i64),
+        );
+
         let trace_record = TraceRecord {
             trace_id: hex::encode(pending.trace_id),
             span_id: hex::encode(pending.span_id),
@@ -314,7 +331,7 @@ impl SpanDispatcher {
             end_time,
             status_code: status_code as i32,
             status_message,
-            resource_attributes: HashMap::new(),
+            resource_attributes,
             scope_attributes: HashMap::new(),
             span_attributes: pending
                 .attrs
