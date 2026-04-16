@@ -35,7 +35,7 @@ services:
     environment:
       - RUST_LOG=tc_otel=info
     volumes:
-      - ./config.mqtt.docker.json:/etc/tc-otel/config.json:ro
+      - ./tc-otel-config:/etc/tc-otel:ro
     networks:
       tc-otel-test:
         ipv4_address: 10.20.0.10
