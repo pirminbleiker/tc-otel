@@ -118,7 +118,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
 nTotalLen := 12 + 4 + nKeyLen + 1;
@@ -188,7 +188,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + name_len(1) + attr_count(1) + reserved(2) + name *)
 nTotalLen := 12 + 4 + nNameLen;
@@ -255,7 +255,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 12 + 4 + nKeyLen + 8;
@@ -325,7 +325,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 12 + 4 + nKeyLen + 8;
@@ -395,7 +395,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 12 + 4 + nKeyLen + 8;
@@ -473,7 +473,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
 nTotalLen := 12 + 4 + nKeyLen + nValLen;
@@ -568,7 +568,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIndex := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIndex := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Prepare frame sizes *)
 nNameLen := Tc2_Utilities.LEN2(ADR(sName));
@@ -686,7 +686,7 @@ nDcTime := Tc2_EtherCAT.F_GetActualDcTime64();
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
 (* Frame: header(12) + status(1) + msg_len(1) + reserved(2) + msg *)
 nTotalLen := 12 + 4 + nMsgLen;
