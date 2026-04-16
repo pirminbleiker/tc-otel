@@ -6,7 +6,7 @@
 //! - Transmission modes (on_change, cyclic)
 
 use tc_otel_core::config::{
-    CustomMetricDef, CustomMetricSource, MetricKindConfig, MetricsConfig, NotificationConfig,
+    CustomMetricDef, CustomMetricSource, MetricKindConfig, NotificationConfig,
     NotificationTransmissionMode,
 };
 use tc_otel_core::MetricMapper;

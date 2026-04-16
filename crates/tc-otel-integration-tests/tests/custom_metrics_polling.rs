@@ -6,7 +6,7 @@
 //! - Periodic ADS read operations
 
 use tc_otel_core::config::{
-    CustomMetricDef, CustomMetricSource, MetricKindConfig, MetricsConfig, PollConfig,
+    CustomMetricDef, CustomMetricSource, MetricKindConfig, PollConfig,
 };
 use tc_otel_core::MetricMapper;
 
