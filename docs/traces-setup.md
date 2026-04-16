@@ -206,6 +206,14 @@ This starts:
 - **tc-otel** (log + metric + trace router, ports 6831, 16150, 4317)
 - **otel-collector** (OTLP receiver, port 4318)
 
+### Grafana Dashboard
+
+The default landing dashboard **tc-otel TwinCAT Diagnostics** includes a **"Traces
+(push — span lifecycle)"** section alongside push-diagnostics and logs. The section
+shows span emission rates, trace duration percentiles, and a recent-traces table
+for quick navigation. Click any trace row to jump to the full trace detail view
+in Tempo, or use the "Open Traces Drilldown" link for deeper exploration.
+
 **Query Tempo directly:**
 
 ```bash
