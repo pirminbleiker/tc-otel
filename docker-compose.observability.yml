@@ -99,7 +99,7 @@ services:
       - "48899:48899/udp"
       - "8080:8080"
     environment:
-      - RUST_LOG=tc_otel=debug,tc_otel_ads=debug
+      - RUST_LOG=tc_otel=info,tc_otel_ads=info
     volumes:
       - ./tc-otel-config:/etc/tc-otel
     networks:
