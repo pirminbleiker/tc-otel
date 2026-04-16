@@ -25,6 +25,11 @@ exporters:
     endpoint: http://victoria-logs:9428/insert/opentelemetry
     tls:
       insecure: true
+  # Tempo receives traces via OTLP HTTP.
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+    tls:
+      insecure: true
   # Keep the file sink for debugging.
   file:
     path: /var/log/otlp.jsonl
@@ -50,4 +55,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [file]
+      exporters: [otlphttp/tempo, file]

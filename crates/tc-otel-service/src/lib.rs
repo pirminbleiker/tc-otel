@@ -2,4 +2,6 @@
 
 pub mod cycle_time;
 pub mod diagnostics_bridge;
+pub mod span_dispatcher;
 pub mod system_metrics;
+pub mod trace_dispatcher;

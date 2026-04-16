@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="PRG_TestTraceApi" Id="{9e8f4a2d-8e3f-4c5b-a1d2-b3c4d5e6f7a8}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM PRG_TestTraceApi
+VAR
+    spnTick       : FB_Span;
+    spnRecipe     : FB_Span;
+    spnRecipeStep : FB_Span;
+    tTickAccum    : TIME;
+    tRecipeAccum  : TIME;
+    nSeq          : DINT;
+    nRecipeStep   : DINT;
+    bRecipeActive : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// --- 1 Hz tick span: demonstrates a simple single-cycle span every second ---
+tTickAccum := tTickAccum + T#1MS;
+IF tTickAccum >= T#1S THEN
+    tTickAccum := T#0S;
+    spnTick.Begin('tester_1s_tick');
+    spnTick.AddInt('seq', nSeq);
+    spnTick.AddEvent('midpoint');
+    spnTick.End();
+    nSeq := nSeq + 1;
+END_IF
+
+// --- 5 s nested-span demo: demonstrates parent/child relationship over multiple cycles ---
+tRecipeAccum := tRecipeAccum + T#1MS;
+IF NOT bRecipeActive AND tRecipeAccum >= T#5S THEN
+    tRecipeAccum := T#0S;
+    spnRecipe.Begin('tester_recipe', eKind := E_SpanKind.Internal);
+    spnRecipe.AddString('mode', 'nested_demo');
+    bRecipeActive := TRUE;
+    nRecipeStep := 0;
+END_IF
+
+IF bRecipeActive THEN
+    // One nested step per second for 3 seconds, then end the outer recipe
+    IF spnRecipeStep.IsOpen THEN
+        // Inner span runs for ~300 ms from its Begin
+        IF tRecipeAccum MOD T#1S >= T#300MS THEN
+            spnRecipeStep.AddEvent('inner_done');
+            spnRecipeStep.End();
+        END_IF
+    ELSE
+        IF nRecipeStep < 3 AND tRecipeAccum MOD T#1S = T#0S THEN
+            spnRecipeStep.Begin(CONCAT('step_', DINT_TO_STRING(nRecipeStep)));
+            spnRecipeStep.AddInt('step_idx', nRecipeStep);
+            nRecipeStep := nRecipeStep + 1;
+        END_IF
+    END_IF
+
+    IF nRecipeStep >= 3 AND NOT spnRecipeStep.IsOpen THEN
+        spnRecipe.AddEvent('all_steps_done');
+        spnRecipe.End();
+        bRecipeActive := FALSE;
+    END_IF
+END_IF
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

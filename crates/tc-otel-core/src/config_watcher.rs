@@ -78,6 +78,7 @@ mod tests {
             web: WebConfig::default(),
             metrics: MetricsConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
+            traces: TracesConfig::default(),
         }
     }
 

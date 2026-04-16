@@ -1,0 +1,23 @@
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: true
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victoria-logs
+        spanStartTimeShift: '-1s'
+        spanEndTimeShift: '1s'
+        tags: ['task.cycle']
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: victoria-metrics
+      serviceMap:
+        datasourceUid: victoria-metrics
+      nodeGraph:
+        enabled: true

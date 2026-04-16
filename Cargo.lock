@@ -2541,6 +2541,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "hex",
  "hyper 1.9.0",
  "hyper-util",
  "mockall",

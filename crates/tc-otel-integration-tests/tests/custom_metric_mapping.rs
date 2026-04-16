@@ -122,6 +122,7 @@ fn test_mapper_from_config_with_definitions() {
                 unit: "Cel".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             },
             CustomMetricDef {
                 symbol: "GVL.count".to_string(),
@@ -130,6 +131,7 @@ fn test_mapper_from_config_with_definitions() {
                 unit: "{count}".to_string(),
                 kind: MetricKindConfig::Sum,
                 is_monotonic: true,
+                ..CustomMetricDef::default()
             },
         ],
         ..MetricsConfig::default()
@@ -151,6 +153,7 @@ fn test_mapper_applies_matching_symbol() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -182,6 +185,7 @@ fn test_mapper_no_match_passes_through() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -209,6 +213,7 @@ fn test_mapper_no_symbol_attribute_passes_through() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -233,6 +238,7 @@ fn test_mapper_overrides_kind_to_sum() {
             unit: "{count}".to_string(),
             kind: MetricKindConfig::Sum,
             is_monotonic: true,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -264,6 +270,7 @@ fn test_mapper_preserves_existing_attributes() {
             unit: "mm".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -306,6 +313,7 @@ fn test_mapper_with_multiple_definitions() {
                 unit: "Cel".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             },
             CustomMetricDef {
                 symbol: "GVL.partsProduced".to_string(),
@@ -314,6 +322,7 @@ fn test_mapper_with_multiple_definitions() {
                 unit: "{count}".to_string(),
                 kind: MetricKindConfig::Sum,
                 is_monotonic: true,
+                ..CustomMetricDef::default()
             },
             CustomMetricDef {
                 symbol: "GVL.axis1.pos".to_string(),
@@ -322,6 +331,7 @@ fn test_mapper_with_multiple_definitions() {
                 unit: "mm".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             },
         ],
         ..MetricsConfig::default()
@@ -370,6 +380,7 @@ fn test_mapper_validate_rejects_duplicate_symbols() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         },
         CustomMetricDef {
             symbol: "GVL.motor.temp".to_string(), // duplicate!
@@ -378,6 +389,7 @@ fn test_mapper_validate_rejects_duplicate_symbols() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         },
     ];
 
@@ -395,6 +407,7 @@ fn test_mapper_validate_rejects_empty_symbol() {
         unit: "".to_string(),
         kind: MetricKindConfig::Gauge,
         is_monotonic: false,
+        ..CustomMetricDef::default()
     }];
 
     let errors = MetricMapper::validate(&defs);
@@ -411,6 +424,7 @@ fn test_mapper_validate_rejects_empty_metric_name() {
         unit: "".to_string(),
         kind: MetricKindConfig::Gauge,
         is_monotonic: false,
+        ..CustomMetricDef::default()
     }];
 
     let errors = MetricMapper::validate(&defs);
@@ -428,6 +442,7 @@ fn test_mapper_validate_accepts_valid_defs() {
             unit: "".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         },
         CustomMetricDef {
             symbol: "GVL.count".to_string(),
@@ -436,6 +451,7 @@ fn test_mapper_validate_accepts_valid_defs() {
             unit: "".to_string(),
             kind: MetricKindConfig::Sum,
             is_monotonic: true,
+            ..CustomMetricDef::default()
         },
     ];
 
@@ -506,6 +522,7 @@ fn test_end_to_end_counter_mapping_to_otlp() {
             unit: "{count}".to_string(),
             kind: MetricKindConfig::Sum,
             is_monotonic: true,
+            ..CustomMetricDef::default()
         }],
         ..MetricsConfig::default()
     };
@@ -548,6 +565,7 @@ fn test_custom_metrics_config_round_trip() {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }],
         ..Default::default()
     };

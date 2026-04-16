@@ -242,6 +242,7 @@
     <Folder Include="ITFs" />
     <Folder Include="DUTs" />
     <Folder Include="POUs\Diagnostic" />
+    <Folder Include="POUs\Trace" />
     <Folder Include="Test" />
     <Folder Include="POUs" />
     <Folder Include="POUs\Utils" />
@@ -327,6 +328,21 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\Diagnostic\ST_PushDiagSample.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\E_SpanKind.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\E_SpanStatus.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\ST_SpanSlot.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\FB_Log4TcTaskTracer.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\FB_Span.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_ContextBuilder.TcPOU">

@@ -69,6 +69,8 @@ impl MetricMapper {
     /// Validate a list of custom metric definitions.
     /// Returns a list of error messages (empty if valid).
     pub fn validate(defs: &[CustomMetricDef]) -> Vec<String> {
+        use crate::config::CustomMetricSource;
+
         let mut errors = Vec::new();
         let mut seen_symbols = HashMap::with_capacity(defs.len());
 
@@ -88,6 +90,53 @@ impl MetricMapper {
                         "custom_metrics[{}]: duplicate symbol '{}' (first at [{}])",
                         i, def.symbol, prev_idx
                     ));
+                }
+            }
+
+            // Validate source-specific rules
+            match def.source {
+                CustomMetricSource::Push => {
+                    // Push sources don't require ams_net_id/ams_port
+                }
+                CustomMetricSource::Poll => {
+                    if def.ams_net_id.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=poll requires ams_net_id",
+                            i
+                        ));
+                    }
+                    if def.ams_port.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=poll requires ams_port",
+                            i
+                        ));
+                    }
+                    if def.poll.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=poll requires poll config",
+                            i
+                        ));
+                    }
+                }
+                CustomMetricSource::Notification => {
+                    if def.ams_net_id.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=notification requires ams_net_id",
+                            i
+                        ));
+                    }
+                    if def.ams_port.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=notification requires ams_port",
+                            i
+                        ));
+                    }
+                    if def.notification.is_none() {
+                        errors.push(format!(
+                            "custom_metrics[{}]: source=notification requires notification config",
+                            i
+                        ));
+                    }
                 }
             }
         }
@@ -125,6 +174,7 @@ mod tests {
                 unit: "Cel".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             }],
             ..MetricsConfig::default()
         };
@@ -150,6 +200,7 @@ mod tests {
                 unit: "".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             }],
             ..MetricsConfig::default()
         };
@@ -179,6 +230,7 @@ mod tests {
                 unit: "".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             },
             CustomMetricDef {
                 symbol: "GVL.x".to_string(),
@@ -187,10 +239,95 @@ mod tests {
                 unit: "".to_string(),
                 kind: MetricKindConfig::Gauge,
                 is_monotonic: false,
+                ..CustomMetricDef::default()
             },
         ];
         let errs = MetricMapper::validate(&defs);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("duplicate"));
+    }
+
+    #[test]
+    fn test_validate_poll_source_requires_net_id() {
+        use crate::config::CustomMetricSource;
+
+        let defs = vec![CustomMetricDef {
+            symbol: "GVL.temp".to_string(),
+            metric_name: "plc.temperature".to_string(),
+            description: "".to_string(),
+            unit: "".to_string(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+            source: CustomMetricSource::Poll,
+            ams_net_id: None,
+            ams_port: Some(851),
+            poll: Some(crate::config::PollConfig::default()),
+            ..CustomMetricDef::default()
+        }];
+        let errs = MetricMapper::validate(&defs);
+        assert!(errs.iter().any(|e| e.contains("ams_net_id")));
+    }
+
+    #[test]
+    fn test_validate_poll_source_requires_port() {
+        use crate::config::CustomMetricSource;
+
+        let defs = vec![CustomMetricDef {
+            symbol: "GVL.temp".to_string(),
+            metric_name: "plc.temperature".to_string(),
+            description: "".to_string(),
+            unit: "".to_string(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+            source: CustomMetricSource::Poll,
+            ams_net_id: Some("192.168.1.1.1.1".to_string()),
+            ams_port: None,
+            poll: Some(crate::config::PollConfig::default()),
+            ..CustomMetricDef::default()
+        }];
+        let errs = MetricMapper::validate(&defs);
+        assert!(errs.iter().any(|e| e.contains("ams_port")));
+    }
+
+    #[test]
+    fn test_validate_poll_source_requires_poll_config() {
+        use crate::config::CustomMetricSource;
+
+        let defs = vec![CustomMetricDef {
+            symbol: "GVL.temp".to_string(),
+            metric_name: "plc.temperature".to_string(),
+            description: "".to_string(),
+            unit: "".to_string(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+            source: CustomMetricSource::Poll,
+            ams_net_id: Some("192.168.1.1.1.1".to_string()),
+            ams_port: Some(851),
+            poll: None,
+            ..CustomMetricDef::default()
+        }];
+        let errs = MetricMapper::validate(&defs);
+        assert!(errs.iter().any(|e| e.contains("poll config")));
+    }
+
+    #[test]
+    fn test_validate_notification_source_requires_net_id() {
+        use crate::config::CustomMetricSource;
+
+        let defs = vec![CustomMetricDef {
+            symbol: "GVL.temp".to_string(),
+            metric_name: "plc.temperature".to_string(),
+            description: "".to_string(),
+            unit: "".to_string(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+            source: CustomMetricSource::Notification,
+            ams_net_id: None,
+            ams_port: Some(851),
+            notification: Some(crate::config::NotificationConfig::default()),
+            ..CustomMetricDef::default()
+        }];
+        let errs = MetricMapper::validate(&defs);
+        assert!(errs.iter().any(|e| e.contains("ams_net_id")));
     }
 }

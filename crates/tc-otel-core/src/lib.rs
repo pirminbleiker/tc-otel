@@ -13,7 +13,7 @@ pub mod models;
 pub use config::{
     AppSettings, CustomMetricDef, DiagnosticsConfig, DiagnosticsTargetConfig, ExportConfig,
     LogFormat, LoggingConfig, MetricKindConfig, MetricsConfig, OutputConfig, ReceiverConfig,
-    ServiceConfig, TlsConfig, WebConfig,
+    ServiceConfig, TlsConfig, TracesConfig, WebConfig,
 };
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};

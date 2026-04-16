@@ -17,6 +17,7 @@ pub struct AdsRouter {
     log_tx: mpsc::Sender<LogEntry>,
     metric_tx: Option<mpsc::Sender<MetricEntry>>,
     push_tx: Option<mpsc::Sender<(crate::AmsNetId, DiagEvent)>>,
+    trace_tx: Option<mpsc::Sender<(crate::AmsNetId, crate::protocol::TraceWireEvent)>>,
     registry: Arc<TaskRegistry>,
 }
 
@@ -32,12 +33,21 @@ impl AdsRouter {
             log_tx,
             metric_tx,
             push_tx: None,
+            trace_tx: None,
             registry,
         }
     }
 
     pub fn with_push_sender(mut self, tx: mpsc::Sender<(crate::AmsNetId, DiagEvent)>) -> Self {
         self.push_tx = Some(tx);
+        self
+    }
+
+    pub fn with_trace_sender(
+        mut self,
+        tx: mpsc::Sender<(crate::AmsNetId, crate::protocol::TraceWireEvent)>,
+    ) -> Self {
+        self.trace_tx = Some(tx);
         self
     }
 
@@ -224,6 +234,21 @@ impl AdsRouter {
                 le.trace_id = e.trace_id;
                 le.span_id = e.span_id;
                 let _ = self.log_tx.try_send(le);
+            }
+            // Dispatch trace events
+            if let Some(ref tx) = self.trace_tx {
+                if let Ok(net_id) = crate::AmsNetId::from_str_ref(source_net_id) {
+                    for ev in pr.trace_events {
+                        if tx.try_send((net_id, ev)).is_err() {
+                            tracing::debug!(
+                                "trace-event channel full, dropping from {}",
+                                source_net_id
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!("Invalid source AMS Net ID: {}", source_net_id);
+                }
             }
         }
     }

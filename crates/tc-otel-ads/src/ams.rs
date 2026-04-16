@@ -25,6 +25,11 @@ pub const ADSERR_NOERR: u32 = 0x0000;
 pub const ADSERR_DEVICE_SRVNOTSUPP: u32 = 0x0701;
 pub const ADSERR_DEVICE_INVALIDPARM: u32 = 0x0708;
 
+// ADS Index Groups for symbol operations
+pub const ADSIGRP_SYM_HNDBYNAME: u32 = 0xF003; // Get symbol handle by name
+pub const ADSIGRP_SYM_VALBYHND: u32 = 0xF005; // Read/write symbol by handle
+pub const ADSIGRP_SYM_RELEASEHND: u32 = 0xF006; // Release symbol handle
+
 /// AMS Net ID (6 bytes: xxx.xxx.xxx.xxx.1.1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AmsNetId(pub [u8; 6]);
