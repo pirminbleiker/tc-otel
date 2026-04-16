@@ -418,6 +418,37 @@ impl SpanDispatcher {
         self.pending.len()
     }
 
+    /// Lookup the innermost open span for a task.
+    /// Returns (trace_id_hex, span_id_hex) of the most recently begun span, or None.
+    pub fn current_context(
+        &self,
+        ams_net_id: &AmsNetId,
+        task_index: u8,
+    ) -> Option<(String, String)> {
+        // Find all spans for this (ams_net_id, task_index) pair and return the
+        // most recently begun one (highest start_time).
+        let mut best: Option<(SpanKey, DateTime<Utc>, String, String)> = None;
+
+        for (key, pending) in self.pending.iter() {
+            if key.ams_net_id == *ams_net_id && key.task_index == task_index {
+                let trace_id_hex = hex::encode(pending.trace_id);
+                let span_id_hex = hex::encode(pending.span_id);
+
+                match &mut best {
+                    None => {
+                        best = Some((*key, pending.start_time, trace_id_hex, span_id_hex));
+                    }
+                    Some((_, best_time, _, _)) if pending.start_time > *best_time => {
+                        best = Some((*key, pending.start_time, trace_id_hex, span_id_hex));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best.map(|(_, _, trace_hex, span_hex)| (trace_hex, span_hex))
+    }
+
     fn new_trace_id(&self) -> [u8; 16] {
         *Uuid::new_v4().as_bytes()
     }

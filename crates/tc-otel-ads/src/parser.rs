@@ -436,9 +436,9 @@ impl AdsParser {
     /// [trace_id: 16 bytes] [span_id: 8 bytes]
     /// ...rest identical to v2 format (level, timestamps, etc.)...
     fn parse_v2_traced_from_reader(reader: &mut BytesReader) -> Result<AdsLogEntry> {
-        // Type byte (must be 6)
+        // Type byte (must be 9 — moved from 6 when 5..=8 were claimed for span events)
         let type_byte = reader.read_u8()?;
-        if type_byte != 6 {
+        if type_byte != 9 {
             return Err(AdsError::ParseError(format!(
                 "Invalid traced log type: {}",
                 type_byte
