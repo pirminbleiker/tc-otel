@@ -471,7 +471,12 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00,
         ];
-        let resp = response_header(AMSPORT_R0_REALTIME, ADS_CMD_READ, 99, (8 + data.len()) as u32);
+        let resp = response_header(
+            AMSPORT_R0_REALTIME,
+            ADS_CMD_READ,
+            99,
+            (8 + data.len()) as u32,
+        );
         let rpl = read_resp_payload(0, &data);
         let ev = decode_response(&resp, &rpl, &pending).unwrap();
         assert_eq!(

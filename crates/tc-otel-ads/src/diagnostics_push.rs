@@ -54,21 +54,15 @@ pub fn decode_snapshot(bytes: &[u8]) -> Vec<DiagEvent> {
         let offset = 16 + i * 72;
         let task_data = &bytes[offset..offset + 72];
 
-        let _task_obj_id = u32::from_le_bytes([task_data[0], task_data[1], task_data[2], task_data[3]]);
+        let _task_obj_id =
+            u32::from_le_bytes([task_data[0], task_data[1], task_data[2], task_data[3]]);
         let ads_port = u32::from_le_bytes([task_data[4], task_data[5], task_data[6], task_data[7]]);
-        let priority = u32::from_le_bytes([task_data[8], task_data[9], task_data[10], task_data[11]]);
-        let cycle_time_us = u32::from_le_bytes([
-            task_data[12],
-            task_data[13],
-            task_data[14],
-            task_data[15],
-        ]);
-        let last_exec_time_us = u32::from_le_bytes([
-            task_data[16],
-            task_data[17],
-            task_data[18],
-            task_data[19],
-        ]);
+        let priority =
+            u32::from_le_bytes([task_data[8], task_data[9], task_data[10], task_data[11]]);
+        let cycle_time_us =
+            u32::from_le_bytes([task_data[12], task_data[13], task_data[14], task_data[15]]);
+        let last_exec_time_us =
+            u32::from_le_bytes([task_data[16], task_data[17], task_data[18], task_data[19]]);
         // task_data[20..24] is reserved
         let cycle_count = u64::from_le_bytes([
             task_data[24],
@@ -100,12 +94,8 @@ pub fn decode_snapshot(bytes: &[u8]) -> Vec<DiagEvent> {
             task_data[46],
             task_data[47],
         ]);
-        let flags = u32::from_le_bytes([
-            task_data[48],
-            task_data[49],
-            task_data[50],
-            task_data[51],
-        ]);
+        let flags =
+            u32::from_le_bytes([task_data[48], task_data[49], task_data[50], task_data[51]]);
         let task_name_bytes = &task_data[52..72];
         let task_name = String::from_utf8_lossy(task_name_bytes)
             .trim_end_matches('\0')
