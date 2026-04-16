@@ -39,12 +39,12 @@ IF bRecipeActive THEN
     // One nested step per second for 3 seconds, then end the outer recipe
     IF spnRecipeStep.IsOpen THEN
         // Inner span runs for ~300 ms from its Begin
-        IF tRecipeAccum MOD T#1S >= T#300MS THEN
+        IF TIME_TO_UDINT(tRecipeAccum) MOD 1000 >= 300 THEN
             spnRecipeStep.AddEvent('inner_done');
             spnRecipeStep.End();
         END_IF
     ELSE
-        IF nRecipeStep < 3 AND tRecipeAccum MOD T#1S = T#0S THEN
+        IF nRecipeStep < 3 AND TIME_TO_UDINT(tRecipeAccum) MOD 1000 = 0 THEN
             spnRecipeStep.Begin(CONCAT('step_', DINT_TO_STRING(nRecipeStep)));
             spnRecipeStep.AddInt('step_idx', nRecipeStep);
             nRecipeStep := nRecipeStep + 1;
