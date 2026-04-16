@@ -1,34 +1,5 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "datasource": "VictoriaMetrics",
-        "enable": true,
-        "iconColor": "red",
-        "name": "Cycle exceeds",
-        "target": {
-          "expr": "changes(tc_rt_exceed_counter_total[30s]) > 0",
-          "legendFormat": "exceed on {{ams_net_id}}",
-          "useValueForTime": false
-        },
-        "titleFormat": "Cycle exceed",
-        "tagKeys": "ams_net_id"
-      },
-      {
-        "datasource": "VictoriaMetrics",
-        "enable": true,
-        "iconColor": "orange",
-        "name": "RT violations",
-        "target": {
-          "expr": "changes(tc_rt_rt_violation_edge_total[30s]) > 0",
-          "legendFormat": "RT violation on {{ams_net_id}}",
-          "useValueForTime": false
-        },
-        "titleFormat": "RT violation",
-        "tagKeys": "ams_net_id"
-      }
-    ]
-  },
+  "annotations": { "list": [] },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -37,10 +8,19 @@
   "liveNow": true,
   "panels": [
     {
+      "type": "row",
+      "title": "System (polled — port 200, no push equivalent)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+    {
       "type": "timeseries",
-      "title": "RT CPU Usage (%)",
+      "title": "RT CPU Usage (%) — system-wide",
+      "description": "Polled from the TwinCAT RT subsystem (port 200). Not available via push diagnostics.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 1 },
       "id": 1,
       "interval": "1s",
       "maxDataPoints": 2000,
@@ -49,7 +29,7 @@
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3 }
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3, "spanNulls": true }
         }
       },
       "targets": [
@@ -64,8 +44,9 @@
     {
       "type": "timeseries",
       "title": "System Latency (µs) — current + peak",
+      "description": "Polled latency of the RT subsystem. Peak is a reset-on-read tracker maintained by TwinCAT.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 1 },
       "id": 2,
       "interval": "1s",
       "maxDataPoints": 2000,
@@ -86,42 +67,52 @@
       ]
     },
     {
-      "type": "stat",
-      "title": "Cycle-Exceed Counter (total)",
+      "type": "row",
+      "title": "Per-Task Execution (push — oversampled batches)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Task Exec Time per Window (µs) — min / avg / max",
+      "description": "Per-window aggregate of cycle execution time. Each push batch carries min/max/avg computed on the PLC over window_ms.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
-      "id": 3,
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
+      "id": 10,
+      "interval": "1s",
+      "maxDataPoints": 2000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10, "spanNulls": true }
+        }
+      },
       "targets": [
         {
-          "expr": "tc_rt_exceed_counter_total",
-          "legendFormat": "{{ams_net_id}}",
+          "expr": "tc_task_exec_time_min_us",
+          "legendFormat": "{{task_name}} min",
           "refId": "A"
+        },
+        {
+          "expr": "tc_task_exec_time_avg_us",
+          "legendFormat": "{{task_name}} avg",
+          "refId": "B"
+        },
+        {
+          "expr": "tc_task_exec_time_max_us",
+          "legendFormat": "{{task_name}} max",
+          "refId": "C"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Cycle Exceeds (events/min)",
+      "title": "Task Cycle Rate (cycles/s)",
+      "description": "Derived from tc_task_cycle_count_total (monotonic, emitted from each push batch).",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
-      "id": 4,
-      "interval": "10s",
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "targets": [
-        {
-          "expr": "rate(tc_rt_exceed_counter_total[1m]) * 60",
-          "legendFormat": "{{ams_net_id}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Task Cycle Rate (cycles/s) — sanity check against base-time",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
       "id": 11,
       "interval": "5s",
       "fieldConfig": { "defaults": { "unit": "hertz" } },
@@ -134,129 +125,38 @@
       ]
     },
     {
-      "type": "timeseries",
-      "title": "Task CPU-Time per Cycle (µs) — \"CPU\" blue line from XAE Task Online",
+      "type": "row",
+      "title": "Exceptions (push — per-cycle edge events with log correlation)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Cycle Exceeds (time range total)",
+      "description": "Total number of individual exceeded cycles in the current time range.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "id": 5,
-      "interval": "5s",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 18 },
+      "id": 22,
       "fieldConfig": {
         "defaults": {
-          "unit": "µs",
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10 }
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
         }
       },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
       "targets": [
         {
-          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
-          "legendFormat": "{{task_name}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Task Exec-Time per Cycle (µs) — \"Total\" red line from XAE Task Online",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "id": 6,
-      "interval": "5s",
-      "fieldConfig": {
-        "defaults": {
-          "unit": "µs",
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10 }
-        }
-      },
-      "targets": [
-        {
-          "expr": "rate(tc_task_exec_time_ns_total[30s]) / rate(tc_task_cycle_count_total[30s]) / 1000",
-          "legendFormat": "{{task_name}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Task CPU Usage (% of wall-clock)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
-      "id": 7,
-      "interval": "5s",
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "targets": [
-        {
-          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / 1e9",
-          "legendFormat": "{{task_name}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "CPU/Exec Ratio per Task (overhead indicator)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
-      "id": 8,
-      "interval": "5s",
-      "fieldConfig": {
-        "defaults": { "unit": "none", "decimals": 2, "min": 0 }
-      },
-      "targets": [
-        {
-          "expr": "rate(tc_task_cpu_time_ns_total[30s]) / rate(tc_task_exec_time_ns_total[30s])",
-          "legendFormat": "{{task_name}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Actual Last-Exec-Time per Task (µs)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
-      "id": 12,
-      "interval": "1s",
-      "maxDataPoints": 2000,
-      "fieldConfig": { "defaults": { "unit": "µs" } },
-      "targets": [
-        {
-          "expr": "tc_task_last_exec_time_us",
-          "legendFormat": "{{task_name}}",
-          "refId": "A",
-          "interval": "1s"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Per-Task Cycle-Exceed Counter (lifetime)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
-      "id": 13,
-      "interval": "1s",
-      "maxDataPoints": 2000,
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
-      "targets": [
-        {
-          "expr": "tc_task_cycle_exceed_counter_total",
-          "legendFormat": "{{task_name}}",
-          "refId": "A",
-          "interval": "1s"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Cycle-Exceed Events Rate (events/min)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
-      "id": 14,
-      "interval": "5s",
-      "maxDataPoints": 2000,
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "targets": [
-        {
-          "expr": "rate(tc_task_cycle_exceed_edge_total[1m]) * 60",
+          "expr": "sum_over_time(tc_task_cycle_exceed_window[$__range])",
           "legendFormat": "{{task_name}}",
           "refId": "A"
         }
@@ -264,76 +164,180 @@
     },
     {
       "type": "stat",
-      "title": "RT Violations (lifetime)",
+      "title": "RT Violations (time range total)",
+      "description": "Total RT-violation count over the dashboard's time range.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 34 },
-      "id": 15,
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 18 },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
       "targets": [
         {
-          "expr": "tc_rt_rt_violation_counter_total",
-          "legendFormat": "{{ams_net_id}}",
+          "expr": "sum_over_time(tc_task_rt_violation_window[$__range])",
+          "legendFormat": "{{task_name}}",
           "refId": "A"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "RT Violations Rate (events/min)",
+      "title": "Exceeds/min (trailing 1-minute total, rolling)",
+      "description": "At each time point: total number of exceeding cycles in the preceding 60 seconds. Fixed lookback window independent of display step — no overlap double-counting, no step-size sensitivity. For the absolute total use the stat panel above.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 34 },
-      "id": 16,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+      "id": 20,
       "interval": "5s",
-      "maxDataPoints": 2000,
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "targets": [
-        {
-          "expr": "rate(tc_rt_rt_violation_edge_total[1m]) * 60",
-          "legendFormat": "{{ams_net_id}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Configured vs Actual Cycle Time (µs)",
-      "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 42 },
-      "id": 17,
-      "interval": "1s",
-      "maxDataPoints": 2000,
+      "maxDataPoints": 500,
       "fieldConfig": {
         "defaults": {
-          "unit": "µs",
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3 }
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 20, "pointSize": 3, "spanNulls": true }
         }
       },
       "targets": [
         {
-          "expr": "tc_task_cycle_time_configured_us",
-          "legendFormat": "{{task_name}} (configured)",
-          "refId": "A",
-          "interval": "1s"
+          "expr": "sum_over_time(tc_task_cycle_exceed_window[1m])",
+          "legendFormat": "{{task_name}} exceeds/min",
+          "refId": "A"
         },
         {
-          "expr": "tc_task_last_exec_time_us",
-          "legendFormat": "{{task_name}} (actual)",
-          "refId": "B",
-          "interval": "1s"
+          "expr": "sum_over_time(tc_task_rt_violation_window[1m])",
+          "legendFormat": "{{task_name}} rtv/min",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "PLC logs (raw stream — analyse exceeds manually via LogsQL in Explore)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Task logs in range",
+      "description": "All PLC logs in the dashboard time range. For deeper analysis open Grafana Explore on the VictoriaLogs data source and query by task.cycle, severity, etc.",
+      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "victoria-logs" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 32 },
+      "id": 40,
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "*",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Sampler Health (push — meta)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Samples per Window",
+      "description": "Number of samples the PLC shipped in each batch. Stays well below 1024 in healthy operation.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 45 },
+      "id": 30,
+      "interval": "1s",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "max": 1024,
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "spanNulls": true }
+        }
+      },
+      "targets": [
+        {
+          "expr": "tc_task_sample_count",
+          "legendFormat": "{{task_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Ring Buffer Overflow",
+      "description": "1 = the 1024-sample ring filled before the window flushed. Older samples were overwritten; tune window_ms down or divider up.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 45 },
+      "id": 31,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "tc_task_sample_buffer_overflow",
+          "legendFormat": "{{task_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Effective Window (ms)",
+      "description": "Per-task window_ms actually used by the PLC. Configurable at runtime via PRG_TaskLog.aTaskDiagConfig[n].window_ms.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 45 },
+      "id": 32,
+      "fieldConfig": { "defaults": { "unit": "ms", "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "tc_task_window_ms",
+          "legendFormat": "{{task_name}}",
+          "refId": "A"
         }
       ]
     }
   ],
   "refresh": "1s",
   "schemaVersion": 39,
-  "tags": ["tc-otel", "twincat", "diagnostics"],
+  "tags": ["tc-otel", "twincat", "diagnostics", "push"],
   "templating": { "list": [] },
-  "time": { "from": "now-2m", "to": "now" },
+  "time": { "from": "now-5m", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "tc-otel TwinCAT Diagnostics",
   "uid": "tc-otel-diag",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

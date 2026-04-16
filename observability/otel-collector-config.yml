@@ -17,6 +17,14 @@ exporters:
     endpoint: http://victoria-metrics:8428/api/v1/write
     tls:
       insecure: true
+  # VictoriaLogs receives logs via OTLP. task_cycle_counter and other
+  # per-task attributes become indexed fields so Grafana can correlate
+  # an exceed (metric, by cycle_count) with the log entry produced on
+  # the same task cycle using LogsQL.
+  otlphttp/victorialogs:
+    endpoint: http://victoria-logs:9428/insert/opentelemetry
+    tls:
+      insecure: true
   # Keep the file sink for debugging.
   file:
     path: /var/log/otlp.jsonl
@@ -34,7 +42,7 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [file]
+      exporters: [otlphttp/victorialogs, file]
     metrics:
       receivers: [otlp]
       processors: [batch]

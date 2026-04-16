@@ -23,6 +23,20 @@ services:
       - tc-otel-obs
     restart: unless-stopped
 
+  victoria-logs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: victoria-logs
+    ports:
+      - "9428:9428"
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=30d"
+    volumes:
+      - vl-data:/storage
+    networks:
+      - tc-otel-obs
+    restart: unless-stopped
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
@@ -51,6 +65,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/tc-otel-diagnostics.json
+      - GF_INSTALL_PLUGINS=victoriametrics-logs-datasource
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -59,6 +74,7 @@ services:
       - tc-otel-obs
     depends_on:
       - victoria-metrics
+      - victoria-logs
     restart: unless-stopped
 
   tc-otel:
@@ -99,6 +115,7 @@ services:
 
 volumes:
   vm-data:
+  vl-data:
   grafana-data:
   tc31-boot:
   tc31-license:
