@@ -503,9 +503,8 @@ fn build_poller_config(
 
     let mut parsed_targets = Vec::with_capacity(targets.len());
     for t in targets {
-        let net_id = AmsNetId::from_str(&t.ams_net_id).map_err(|e| {
-            anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e)
-        })?;
+        let net_id = AmsNetId::from_str(&t.ams_net_id)
+            .map_err(|e| anyhow::anyhow!("invalid ams_net_id '{}': {}", t.ams_net_id, e))?;
         // Parse the string-keyed `task_names` map from config into
         // `HashMap<u16, String>`, silently skipping entries with a
         // non-numeric port.
