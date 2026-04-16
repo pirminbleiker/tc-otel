@@ -682,8 +682,8 @@ mod tests {
         let mut frame = metric_batch_header(1, 1, 100, 2000, 1000, 2000);
         frame.extend_from_slice(&metric_descriptor_bytes(
             20,
-            1,  // Sum/Counter
-            1,  // is_monotonic
+            1, // Sum/Counter
+            1, // is_monotonic
             "request_count",
             "1",
             "HTTP requests",
@@ -851,11 +851,25 @@ mod tests {
         let mut frame = metric_batch_header(2, 2, 100, 1000, 1000, 3000);
         // First descriptor: gauge temperature
         frame.extend_from_slice(&metric_descriptor_bytes(
-            10, 0, 0, "temperature", "Cel", "", &[], None,
+            10,
+            0,
+            0,
+            "temperature",
+            "Cel",
+            "",
+            &[],
+            None,
         ));
         // Second descriptor: counter requests
         frame.extend_from_slice(&metric_descriptor_bytes(
-            20, 1, 1, "requests", "1", "", &[], None,
+            20,
+            1,
+            1,
+            "requests",
+            "1",
+            "",
+            &[],
+            None,
         ));
         // Two samples referencing different metrics
         frame.extend_from_slice(&metric_sample_bytes(10, 0, 1000, 25.5));

@@ -20,7 +20,7 @@ use tc_otel_ads::diagnostics::{
     DiagEvent, DiagSample, MetricDescriptor, MetricSample, SAMPLE_FLAG_CYCLE_EXCEED,
     SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
 };
-use tc_otel_core::{MetricEntry, MetricKind};
+use tc_otel_core::MetricEntry;
 
 /// Descriptor table per `(ams_net_id, task_port)`. Maps metric_id → MetricDescriptor.
 /// This cache is populated as descriptors are announced and referenced across
@@ -164,17 +164,14 @@ pub fn diag_event_to_metrics(
                 cache.insert(desc.metric_id, desc);
             }
             // Convert samples using the cache.
-            metric_batch_to_entries(
-                &net_id_str,
-                &cache,
-                &samples,
-                dc_time_start,
-                dc_time_end,
-            )
+            metric_batch_to_entries(&net_id_str, &cache, &samples, dc_time_start, dc_time_end)
         }
     }
 }
 
+/// Convert per-task diagnostic batch to metrics. Pre-aggregated stats (min/max/avg
+/// exec-time, cycle-exceed/RT-violation counts) are emitted as gauges/sums. Per-sample
+/// edges (flagged cycles) are emitted as event counters with cycle/dc-time attributes.
 #[allow(clippy::too_many_arguments)]
 fn batch_to_metrics(
     net_id: &str,
@@ -366,7 +363,9 @@ fn metric_batch_to_entries(
                 // Histogram
                 if let Some(ref bounds) = desc.histogram_bounds {
                     // Accumulate observation into bucket (linear search for simplicity).
-                    let bucket_idx = bounds.iter().position(|&b| (sample.value as f32) < b)
+                    let bucket_idx = bounds
+                        .iter()
+                        .position(|&b| sample.value < b)
                         .unwrap_or(bounds.len());
                     let mut counts = vec![0_u64; bounds.len() + 1];
                     counts[bucket_idx] = 1;
@@ -395,7 +394,9 @@ fn metric_batch_to_entries(
 
         // Add attributes from descriptor.
         for (key, val) in &desc.attributes {
-            entry.attributes.insert(key.clone(), serde_json::Value::String(val.clone()));
+            entry
+                .attributes
+                .insert(key.clone(), serde_json::Value::String(val.clone()));
         }
 
         out.push(entry);
@@ -443,6 +444,7 @@ fn with_sample_attrs(mut m: MetricEntry, s: &DiagSample) -> MetricEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tc_otel_core::MetricKind;
 
     fn net() -> AmsNetId {
         AmsNetId::from_bytes([172, 28, 41, 37, 1, 1])
@@ -677,7 +679,7 @@ mod tests {
     fn metric_batch_counter_monotonic_delta() {
         let desc = MetricDescriptor {
             metric_id: 20,
-            kind: 1, // Sum/Counter
+            kind: 1,  // Sum/Counter
             flags: 1, // is_monotonic
             name: "request_count".into(),
             unit: "1".into(),
@@ -713,7 +715,7 @@ mod tests {
     fn metric_batch_counter_non_monotonic() {
         let desc = MetricDescriptor {
             metric_id: 25,
-            kind: 1, // Sum/Counter
+            kind: 1,  // Sum/Counter
             flags: 0, // not is_monotonic
             name: "balance_change".into(),
             unit: "units".into(),
