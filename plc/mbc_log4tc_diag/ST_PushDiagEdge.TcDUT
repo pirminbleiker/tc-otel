@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.10">
+  <DUT Name="ST_PushDiagEdge" Id="{0e1f2a3b-4c5d-6e7f-8a9b-0c1d2e3f4a5b}">
+    <Declaration><![CDATA[TYPE ST_PushDiagEdge :
+STRUCT
+  {attribute 'pack_mode' := '1'}
+  version        : BYTE;                        // +0x00, version = 1
+  event_type     : BYTE;                        // +0x01, event_type = 1 (cycle-exceed) or 2 (rt-violation)
+  reserved       : UINT;                        // +0x02, reserved = 0
+  ads_port       : UDINT;                       // +0x04, Task's ADS port
+  cycle_count    : ULINT;                       // +0x08, Cycle count at event
+  last_exec_time_us : UDINT;                    // +0x10, Execution time in microseconds
+  reserved2      : UDINT;                       // +0x14, reserved = 0
+  task_name      : ARRAY [0..19] OF BYTE;       // +0x18, Task name (20 bytes, null-padded)
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -40,32 +40,34 @@ pub const IO_TASK_STATS: u32 = 0x0000_0000;
 /// Index offset of the RT-usage + latency block inside `IG_RT_USAGE`.
 pub const IO_RT_USAGE: u32 = 0x0000_000F;
 
-/// AMS port of the TwinCAT realtime subsystem.
-pub const AMSPORT_R0_REALTIME: u16 = 200;
-
-/// Index group for push-diagnostic frames (0x4D42_4301 = 'MB' + 'C' + 0x01).
+/// Index group for push-diagnostic events (ADS Write targets).
+/// Encoded as ASCII "MBC\1" in little-endian byte order: 0x4D42_4301.
+/// Chosen for debug-friendliness and collision safety.
 pub const IG_PUSH_DIAG: u32 = 0x4D42_4301;
 
-/// Index offset for snapshot frames (per-task batch).
+/// Index offset for task snapshots within `IG_PUSH_DIAG`.
 pub const IO_PUSH_SNAPSHOT: u32 = 0;
 
-/// Index offset for cycle-exceed edge events.
+/// Index offset for cycle-exceed edge events within `IG_PUSH_DIAG`.
 pub const IO_PUSH_CYCLE_EXCEED_EDGE: u32 = 1;
 
-/// Index offset for real-time violation edge events.
+/// Index offset for RT-violation edge events within `IG_PUSH_DIAG`.
 pub const IO_PUSH_RT_VIOLATION_EDGE: u32 = 2;
 
-/// Wire format version for push-diagnostic frames.
+/// Wire-format version for push-diagnostic events.
 pub const PUSH_WIRE_VERSION: u8 = 1;
 
-/// Flag: cycle exceed is currently active.
+/// Flag: cycle-exceed condition is active on the current cycle.
 pub const PUSH_FLAG_CYCLE_EXCEED_NOW: u32 = 1 << 0;
 
-/// Flag: real-time violation is currently active.
+/// Flag: RT-violation condition is active on the current cycle.
 pub const PUSH_FLAG_RT_VIOLATION_NOW: u32 = 1 << 1;
 
-/// Flag: first cycle after initialization.
+/// Flag: first cycle after PLC start (initial condition).
 pub const PUSH_FLAG_FIRST_CYCLE: u32 = 1 << 2;
+
+/// AMS port of the TwinCAT realtime subsystem.
+pub const AMSPORT_R0_REALTIME: u16 = 200;
 
 /// Expected response size for the task-stats payload.
 pub const TASK_STATS_LEN: usize = 16;
@@ -138,7 +140,12 @@ pub enum DiagEvent {
         /// Current CPU usage as whole percent, 0–100 (payload +0x10).
         cpu_percent: u32,
     },
-    /// Snapshot of task diagnostics pushed by PLC (batch of one or more tasks).
+    /// Push-diagnostic: per-task cycle / execution-time / RT-state snapshot.
+    ///
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_SNAPSHOT`. Contains
+    /// configuration, execution stats, and edge-condition flags for all tasks
+    /// in a single push event, avoiding the ~200 ms sampling gap of polled
+    /// diagnostics.
     TaskSnapshot {
         task_port: u16,
         task_name: String,
@@ -151,14 +158,22 @@ pub enum DiagEvent {
         flags: u32,
         plc_timestamp_ns: u64,
     },
-    /// Edge event: cycle time exceeded for a task.
+    /// Push-diagnostic: edge event when a task exceeded its cycle time.
+    ///
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_CYCLE_EXCEED_EDGE`.
+    /// Allows cycle-exceed transients to be captured that would be invisible
+    /// in 5 Hz polling.
     CycleExceedEdge {
         task_port: u16,
         task_name: String,
         cycle_count: u64,
         last_exec_time_us: u32,
     },
-    /// Edge event: real-time violation for a task.
+    /// Push-diagnostic: edge event when a task violated real-time guarantees.
+    ///
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_RT_VIOLATION_EDGE`.
+    /// Allows RT violations to be captured that would be invisible in
+    /// polled diagnostics.
     RtViolationEdge {
         task_port: u16,
         task_name: String,
