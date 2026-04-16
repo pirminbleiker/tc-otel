@@ -43,6 +43,30 @@ pub const IO_RT_USAGE: u32 = 0x0000_000F;
 /// AMS port of the TwinCAT realtime subsystem.
 pub const AMSPORT_R0_REALTIME: u16 = 200;
 
+/// Index group for push-diagnostic frames (0x4D42_4301 = 'MB' + 'C' + 0x01).
+pub const IG_PUSH_DIAG: u32 = 0x4D42_4301;
+
+/// Index offset for snapshot frames (per-task batch).
+pub const IO_PUSH_SNAPSHOT: u32 = 0;
+
+/// Index offset for cycle-exceed edge events.
+pub const IO_PUSH_CYCLE_EXCEED_EDGE: u32 = 1;
+
+/// Index offset for real-time violation edge events.
+pub const IO_PUSH_RT_VIOLATION_EDGE: u32 = 2;
+
+/// Wire format version for push-diagnostic frames.
+pub const PUSH_WIRE_VERSION: u8 = 1;
+
+/// Flag: cycle exceed is currently active.
+pub const PUSH_FLAG_CYCLE_EXCEED_NOW: u32 = 1 << 0;
+
+/// Flag: real-time violation is currently active.
+pub const PUSH_FLAG_RT_VIOLATION_NOW: u32 = 1 << 1;
+
+/// Flag: first cycle after initialization.
+pub const PUSH_FLAG_FIRST_CYCLE: u32 = 1 << 2;
+
 /// Expected response size for the task-stats payload.
 pub const TASK_STATS_LEN: usize = 16;
 
@@ -113,6 +137,33 @@ pub enum DiagEvent {
         system_latency_us: u32,
         /// Current CPU usage as whole percent, 0–100 (payload +0x10).
         cpu_percent: u32,
+    },
+    /// Snapshot of task diagnostics pushed by PLC (batch of one or more tasks).
+    TaskSnapshot {
+        task_port: u16,
+        task_name: String,
+        priority: u32,
+        cycle_time_configured_us: u32,
+        last_exec_time_us: u32,
+        cycle_count: u64,
+        cycle_exceed_count: u64,
+        rt_violation_count: u64,
+        flags: u32,
+        plc_timestamp_ns: u64,
+    },
+    /// Edge event: cycle time exceeded for a task.
+    CycleExceedEdge {
+        task_port: u16,
+        task_name: String,
+        cycle_count: u64,
+        last_exec_time_us: u32,
+    },
+    /// Edge event: real-time violation for a task.
+    RtViolationEdge {
+        task_port: u16,
+        task_name: String,
+        cycle_count: u64,
+        last_exec_time_us: u32,
     },
 }
 

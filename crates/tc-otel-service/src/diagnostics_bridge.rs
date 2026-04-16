@@ -103,6 +103,80 @@ pub fn diag_event_to_metrics(
                 ),
             ]
         }
+        DiagEvent::TaskSnapshot {
+            task_port,
+            task_name,
+            cycle_count,
+            last_exec_time_us,
+            cycle_exceed_count,
+            rt_violation_count,
+            ..
+        } => {
+            // Snapshot: emit cycle count and exceed/violation counters.
+            vec![
+                with_task(
+                    net_id_str.clone(),
+                    task_port,
+                    &task_name,
+                    MetricEntry::sum("tc.task.cycle_count".into(), cycle_count as f64, true),
+                ),
+                with_task(
+                    net_id_str.clone(),
+                    task_port,
+                    &task_name,
+                    MetricEntry::sum(
+                        "tc.task.cycle_exceed_count".into(),
+                        cycle_exceed_count as f64,
+                        true,
+                    ),
+                ),
+                with_task(
+                    net_id_str.clone(),
+                    task_port,
+                    &task_name,
+                    MetricEntry::sum(
+                        "tc.task.rt_violation_count".into(),
+                        rt_violation_count as f64,
+                        true,
+                    ),
+                ),
+                with_task(
+                    net_id_str,
+                    task_port,
+                    &task_name,
+                    MetricEntry::gauge(
+                        "tc.task.last_exec_time_us".into(),
+                        last_exec_time_us as f64,
+                    ),
+                ),
+            ]
+        }
+        DiagEvent::CycleExceedEdge {
+            task_port,
+            task_name,
+            ..
+        } => {
+            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
+            vec![with_task(
+                net_id_str,
+                task_port,
+                &task_name,
+                MetricEntry::sum("tc.task.cycle_exceed_edge".into(), 1.0, false),
+            )]
+        }
+        DiagEvent::RtViolationEdge {
+            task_port,
+            task_name,
+            ..
+        } => {
+            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
+            vec![with_task(
+                net_id_str,
+                task_port,
+                &task_name,
+                MetricEntry::sum("tc.task.rt_violation_edge".into(), 1.0, false),
+            )]
+        }
     }
 }
 

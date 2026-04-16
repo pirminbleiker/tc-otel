@@ -13,6 +13,7 @@ pub mod connection_manager;
 pub mod diagnostics;
 pub mod diagnostics_observer;
 pub mod diagnostics_poller;
+pub mod diagnostics_push;
 pub mod error;
 pub mod health_metrics;
 pub mod listener;
