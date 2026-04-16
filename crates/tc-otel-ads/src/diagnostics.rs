@@ -40,31 +40,49 @@ pub const IO_TASK_STATS: u32 = 0x0000_0000;
 /// Index offset of the RT-usage + latency block inside `IG_RT_USAGE`.
 pub const IO_RT_USAGE: u32 = 0x0000_000F;
 
-/// Index group for push-diagnostic events (ADS Write targets).
+/// Index group for push-diagnostic events (ADS Write from PLC → tc-otel).
 /// Encoded as ASCII "MBC\1" in little-endian byte order: 0x4D42_4301.
-/// Chosen for debug-friendliness and collision safety.
 pub const IG_PUSH_DIAG: u32 = 0x4D42_4301;
 
-/// Index offset for task snapshots within `IG_PUSH_DIAG`.
-pub const IO_PUSH_SNAPSHOT: u32 = 0;
+/// Index group for push-diagnostic configuration (ADS Write from tc-otel → PLC).
+/// Reserved for outbound writes that adjust per-task windowing / enable state.
+/// Encoded as ASCII "MBC\2" in little-endian byte order: 0x4D42_4302.
+pub const IG_PUSH_CONFIG: u32 = 0x4D42_4302;
 
-/// Index offset for cycle-exceed edge events within `IG_PUSH_DIAG`.
-pub const IO_PUSH_CYCLE_EXCEED_EDGE: u32 = 1;
+/// Index offset for per-task diagnostic batches within `IG_PUSH_DIAG`.
+///
+/// A batch = 80-byte header + N × 24-byte samples, where each sample is one
+/// PLC cycle's `{cycle_count, exec_time_us, dc_time, flags}`. Aggregates
+/// (min/max/avg exec_time, exceed/rtv counts) are in the header.
+pub const IO_PUSH_BATCH: u32 = 0;
 
-/// Index offset for RT-violation edge events within `IG_PUSH_DIAG`.
-pub const IO_PUSH_RT_VIOLATION_EDGE: u32 = 2;
+/// Wire-format version for push-diagnostic events. Bumped from v1 (legacy
+/// snapshot + edge frames) to v2 (batch frame with per-cycle samples).
+pub const PUSH_WIRE_VERSION: u8 = 2;
 
-/// Wire-format version for push-diagnostic events.
-pub const PUSH_WIRE_VERSION: u8 = 1;
+/// Batch event-type discriminator in the batch header.
+pub const PUSH_BATCH_EVENT_TYPE: u8 = 10;
 
-/// Flag: cycle-exceed condition is active on the current cycle.
-pub const PUSH_FLAG_CYCLE_EXCEED_NOW: u32 = 1 << 0;
+/// Fixed batch-header size in bytes.
+pub const PUSH_BATCH_HEADER_SIZE: usize = 80;
 
-/// Flag: RT-violation condition is active on the current cycle.
-pub const PUSH_FLAG_RT_VIOLATION_NOW: u32 = 1 << 1;
+/// Fixed per-sample size in bytes.
+pub const PUSH_SAMPLE_SIZE: usize = 24;
 
-/// Flag: first cycle after PLC start (initial condition).
-pub const PUSH_FLAG_FIRST_CYCLE: u32 = 1 << 2;
+/// Maximum samples in a single batch (mirrors PLC ringbuffer depth).
+pub const PUSH_BATCH_MAX_SAMPLES: usize = 1024;
+
+/// Per-sample flag: cycle-exceed observed during this cycle.
+pub const SAMPLE_FLAG_CYCLE_EXCEED: u8 = 1 << 0;
+
+/// Per-sample flag: RT-violation observed during this cycle.
+pub const SAMPLE_FLAG_RT_VIOLATION: u8 = 1 << 1;
+
+/// Per-sample flag: first cycle after PLC start.
+pub const SAMPLE_FLAG_FIRST_CYCLE: u8 = 1 << 2;
+
+/// Per-sample flag: ringbuffer overflowed before this sample (data gap).
+pub const SAMPLE_FLAG_OVERFLOW: u8 = 1 << 3;
 
 /// AMS port of the TwinCAT realtime subsystem.
 pub const AMSPORT_R0_REALTIME: u16 = 200;
@@ -140,46 +158,68 @@ pub enum DiagEvent {
         /// Current CPU usage as whole percent, 0–100 (payload +0x10).
         cpu_percent: u32,
     },
-    /// Push-diagnostic: per-task cycle / execution-time / RT-state snapshot.
+    /// Push-diagnostic: per-task oversampled batch covering one aggregation
+    /// window.
     ///
-    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_SNAPSHOT`. Contains
-    /// configuration, execution stats, and edge-condition flags for all tasks
-    /// in a single push event, avoiding the ~200 ms sampling gap of polled
-    /// diagnostics.
-    TaskSnapshot {
-        task_port: u16,
-        task_name: String,
-        priority: u32,
-        cycle_time_configured_us: u32,
-        last_exec_time_us: u32,
-        cycle_count: u64,
-        cycle_exceed_count: u64,
-        rt_violation_count: u64,
-        flags: u32,
-        plc_timestamp_ns: u64,
-    },
-    /// Push-diagnostic: edge event when a task exceeded its cycle time.
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_BATCH`. The batch
+    /// contains one sample per PLC cycle within the window, allowing
+    /// cycle-exact reconstruction of execution-time and RT-state transitions.
+    /// Aggregates (min/max/avg exec_time, exceed/rtv counts) are pre-computed
+    /// on the PLC to reduce downstream processing.
     ///
-    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_CYCLE_EXCEED_EDGE`.
-    /// Allows cycle-exceed transients to be captured that would be invisible
-    /// in 5 Hz polling.
-    CycleExceedEdge {
+    /// Samples include `cycle_count` and `dc_time` so each flagged event
+    /// (cycle-exceed, RT-violation) can be correlated 1:1 with log entries
+    /// emitted on the same cycle.
+    TaskDiagBatch {
+        /// AMS port of the owning task (340, 350, 351, …).
         task_port: u16,
+        /// Human-readable task name (lossy UTF-8, trailing NULs stripped).
         task_name: String,
-        cycle_count: u64,
-        last_exec_time_us: u32,
+        /// TwinCAT task object id.
+        task_obj_id: u32,
+        /// Aggregation window used for this batch, in milliseconds.
+        window_ms: u16,
+        /// Cycle count at the first sample in the batch.
+        cycle_count_start: u32,
+        /// Cycle count at the last sample in the batch.
+        cycle_count_end: u32,
+        /// Wall-clock time at the first sample as FILETIME (100 ns ticks
+        /// since 1601-01-01). Same format as log entries' `plc_timestamp`,
+        /// so a flagged cycle can be matched to its log line by equality.
+        dc_time_start: i64,
+        /// Wall-clock time at the last sample, FILETIME ticks.
+        dc_time_end: i64,
+        /// Minimum observed execution time in the window (µs).
+        exec_time_min_us: u32,
+        /// Maximum observed execution time in the window (µs).
+        exec_time_max_us: u32,
+        /// Average execution time in the window (µs).
+        exec_time_avg_us: u32,
+        /// Total cycles with `CycleTimeExceeded` observed in the window.
+        cycle_exceed_count: u32,
+        /// Total cycles with `RTViolation` observed in the window.
+        rt_violation_count: u32,
+        /// Per-cycle samples, ordered from oldest to newest.
+        samples: Vec<DiagSample>,
     },
-    /// Push-diagnostic: edge event when a task violated real-time guarantees.
-    ///
-    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_RT_VIOLATION_EDGE`.
-    /// Allows RT violations to be captured that would be invisible in
-    /// polled diagnostics.
-    RtViolationEdge {
-        task_port: u16,
-        task_name: String,
-        cycle_count: u64,
-        last_exec_time_us: u32,
-    },
+}
+
+/// Single PLC-cycle sample inside a [`DiagEvent::TaskDiagBatch`].
+///
+/// Samples are ordered chronologically. The `flags` byte carries per-cycle
+/// signals: bit0=cycle-exceed, bit1=rt-violation, bit2=first-cycle,
+/// bit3=overflow (ringbuffer wrap before this sample — previous samples lost).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagSample {
+    /// TwinCAT task cycle counter (monotonic, may wrap after ~4.3 B cycles).
+    pub cycle_count: u32,
+    /// Observed execution time of this cycle in microseconds.
+    pub exec_time_us: u32,
+    /// Wall-clock time at cycle start as FILETIME ticks (100 ns since
+    /// 1601-01-01). Same format log entries use — compare by equality.
+    pub dc_time: i64,
+    /// Per-cycle flags. See `SAMPLE_FLAG_*` constants.
+    pub flags: u8,
 }
 
 /// Decode a request frame into a [`PendingRequest`] if it matches a

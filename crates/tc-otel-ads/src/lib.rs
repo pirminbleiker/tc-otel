@@ -37,10 +37,11 @@ pub use connection_manager::{
     ConnectionConfig, ConnectionManager, ConnectionPermit, ConnectionRejection,
 };
 pub use diagnostics::{
-    DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE,
-    IO_PUSH_SNAPSHOT, PUSH_WIRE_VERSION,
+    DiagEvent, DiagSample, IG_PUSH_CONFIG, IG_PUSH_DIAG, IO_PUSH_BATCH, PUSH_BATCH_EVENT_TYPE,
+    PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
+    SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_FIRST_CYCLE, SAMPLE_FLAG_OVERFLOW,
+    SAMPLE_FLAG_RT_VIOLATION,
 };
-pub use diagnostics_push::EdgeKind;
 pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;

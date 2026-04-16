@@ -1,458 +1,367 @@
-//! Decoder for push-diagnostic frames sent by TwinCAT PLCs.
+//! Decoder for push-diagnostic batch frames sent by TwinCAT PLCs.
 //!
-//! PLCs push per-task diagnostics (cycle time, exec time, edge events) via AdsWrite
-//! to index group `IG_PUSH_DIAG` with three distinct index offsets: snapshot,
-//! cycle-exceed edge, and real-time violation edge. All frames are little-endian.
+//! Each task on the PLC runs its own per-cycle sampler (see `FB_Log4TcTaskDiag`
+//! in the PLC library). Every aggregation window it flushes one batch frame
+//! containing the per-cycle samples captured in the window plus a pre-computed
+//! aggregate. Batches are pushed via AdsWrite to index group `IG_PUSH_DIAG`
+//! and index offset `IO_PUSH_BATCH`. All frames are little-endian.
 //!
-//! Snapshot frames contain a batch of one or more task snapshots (up to N tasks per frame).
-//! Edge frames contain a single event for one task and use the wire format to signal
-//! the event kind via `event_type`.
+//! Wire layout:
+//!
+//! - 80-byte header: version, event_type, task_obj_id, cycle/dc windows,
+//!   sample count, window_ms, exec-time min/max/avg, exceed/rtv counts,
+//!   task name, reserved.
+//! - N × 24-byte samples: cycle_count, exec_time_us, dc_time, flags.
+//!
+//! The decoder rejects malformed frames (wrong version, wrong event_type,
+//! truncated body, sample count above `PUSH_BATCH_MAX_SAMPLES`) by returning
+//! `None`.
 
-use crate::diagnostics::{DiagEvent, PUSH_WIRE_VERSION};
+use crate::diagnostics::{
+    DiagEvent, DiagSample, PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES,
+    PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
+};
 
-/// Discriminates edge event type during decoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeKind {
-    /// event_type must be 1.
-    CycleExceed,
-    /// event_type must be 2.
-    RtViolation,
-}
-
-/// Decode a snapshot frame (16 + 72 × num_tasks bytes).
+/// Decode a task-diagnostic batch frame (80 + 24 × sample_count bytes).
 ///
-/// Returns one `TaskSnapshot` DiagEvent per task in the frame.
-/// Rejects frames with wrong version or event_type; returns empty vec on malformed input.
-/// Names are decoded with lossy UTF-8 and trailing NULs stripped.
-pub fn decode_snapshot(bytes: &[u8]) -> Vec<DiagEvent> {
-    // Minimum: header is 16 bytes (0x00..0x0F).
-    if bytes.len() < 16 {
-        return vec![];
+/// Returns `Some(DiagEvent::TaskDiagBatch)` on success. Returns `None` on any
+/// validation failure: wrong version, wrong event_type, truncated payload,
+/// sample count out of bounds.
+///
+/// Task names are decoded with lossy UTF-8 and trailing NULs stripped.
+pub fn decode_batch(bytes: &[u8]) -> Option<DiagEvent> {
+    if bytes.len() < PUSH_BATCH_HEADER_SIZE {
+        return None;
     }
 
     let version = bytes[0];
     let event_type = bytes[1];
-    let num_tasks = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-
-    // Validate version and event_type.
-    if version != PUSH_WIRE_VERSION || event_type != 0 {
-        return vec![];
+    if version != PUSH_WIRE_VERSION || event_type != PUSH_BATCH_EVENT_TYPE {
+        return None;
     }
 
-    // Check that we have enough bytes: 16 + 72*num_tasks.
-    let body_len = num_tasks.saturating_mul(72);
-    if bytes.len() < 16 + body_len {
-        return vec![];
+    // Header layout (LE, pack_mode=1):
+    //   +0x00 version      : u8
+    //   +0x01 event_type   : u8
+    //   +0x02 reserved0    : u16
+    //   +0x04 task_obj_id  : u32
+    //   +0x08 task_port    : u16
+    //   +0x0A window_ms    : u16
+    //   +0x0C sample_count : u16
+    //   +0x0E reserved1    : u16
+    //   +0x10 cycle_count_start : u32
+    //   +0x14 cycle_count_end   : u32
+    //   +0x18 dc_time_start     : i64
+    //   +0x20 dc_time_end       : i64
+    //   +0x28 exec_time_min_us  : u32
+    //   +0x2C exec_time_max_us  : u32
+    //   +0x30 exec_time_avg_us  : u32
+    //   +0x34 cycle_exceed_count: u32
+    //   +0x38 rt_violation_count: u32
+    //   +0x3C task_name [20]
+    //   +0x50 total = 80 bytes
+    let task_obj_id = read_u32(bytes, 4);
+    let task_port = read_u16(bytes, 8);
+    let window_ms = read_u16(bytes, 0x0A);
+    let sample_count = read_u16(bytes, 0x0C) as usize;
+    let cycle_count_start = read_u32(bytes, 0x10);
+    let cycle_count_end = read_u32(bytes, 0x14);
+    let dc_time_start = read_i64(bytes, 0x18);
+    let dc_time_end = read_i64(bytes, 0x20);
+    let exec_time_min_us = read_u32(bytes, 0x28);
+    let exec_time_max_us = read_u32(bytes, 0x2C);
+    let exec_time_avg_us = read_u32(bytes, 0x30);
+    let cycle_exceed_count = read_u32(bytes, 0x34);
+    let rt_violation_count = read_u32(bytes, 0x38);
+    let task_name = decode_task_name(&bytes[0x3C..0x50]);
+
+    if sample_count > PUSH_BATCH_MAX_SAMPLES {
+        return None;
+    }
+    let body_len = sample_count.checked_mul(PUSH_SAMPLE_SIZE)?;
+    let total_len = PUSH_BATCH_HEADER_SIZE.checked_add(body_len)?;
+    if bytes.len() < total_len {
+        return None;
     }
 
-    let plc_timestamp_ns = u64::from_le_bytes(bytes[4..12].try_into().unwrap_or([0; 8]));
-
-    let mut events = Vec::with_capacity(num_tasks);
-    for i in 0..num_tasks {
-        let offset = 16 + i * 72;
-        let task_bytes = &bytes[offset..offset + 72];
-
-        // +0x04: ads_port → u16 truncation
-        let ads_port = u32::from_le_bytes(task_bytes[4..8].try_into().unwrap_or([0; 4]));
-        let task_port = (ads_port & 0xFFFF) as u16;
-
-        // +0x08: priority
-        let priority = u32::from_le_bytes(task_bytes[8..12].try_into().unwrap_or([0; 4]));
-
-        // +0x0C: cycle_time_us
-        let cycle_time_configured_us =
-            u32::from_le_bytes(task_bytes[12..16].try_into().unwrap_or([0; 4]));
-
-        // +0x10: last_exec_time_us
-        let last_exec_time_us = u32::from_le_bytes(task_bytes[16..20].try_into().unwrap_or([0; 4]));
-
-        // +0x18: cycle_count
-        let cycle_count = u64::from_le_bytes(task_bytes[24..32].try_into().unwrap_or([0; 8]));
-
-        // +0x20: cycle_exceed_count
-        let cycle_exceed_count =
-            u64::from_le_bytes(task_bytes[32..40].try_into().unwrap_or([0; 8]));
-
-        // +0x28: rt_violation_count
-        let rt_violation_count =
-            u64::from_le_bytes(task_bytes[40..48].try_into().unwrap_or([0; 8]));
-
-        // +0x30: flags
-        let flags = u32::from_le_bytes(task_bytes[48..52].try_into().unwrap_or([0; 4]));
-
-        // +0x34: task_name [20]
-        let name_bytes = &task_bytes[52..72];
-        let task_name = decode_task_name(name_bytes);
-
-        events.push(DiagEvent::TaskSnapshot {
-            task_port,
-            task_name,
-            priority,
-            cycle_time_configured_us,
-            last_exec_time_us,
-            cycle_count,
-            cycle_exceed_count,
-            rt_violation_count,
-            flags,
-            plc_timestamp_ns,
+    let mut samples = Vec::with_capacity(sample_count);
+    for i in 0..sample_count {
+        let off = PUSH_BATCH_HEADER_SIZE + i * PUSH_SAMPLE_SIZE;
+        // Sample layout (LE, pack_mode=1):
+        //   +0x00 cycle_count  : u32
+        //   +0x04 exec_time_us : u32
+        //   +0x08 dc_time      : i64
+        //   +0x10 flags        : u8
+        //   +0x11 reserved     : 7 bytes (padding to 24)
+        samples.push(DiagSample {
+            cycle_count: read_u32(bytes, off),
+            exec_time_us: read_u32(bytes, off + 4),
+            dc_time: read_i64(bytes, off + 8),
+            flags: bytes[off + 0x10],
         });
     }
 
-    events
+    Some(DiagEvent::TaskDiagBatch {
+        task_port,
+        task_name,
+        task_obj_id,
+        window_ms,
+        cycle_count_start,
+        cycle_count_end,
+        dc_time_start,
+        dc_time_end,
+        exec_time_min_us,
+        exec_time_max_us,
+        exec_time_avg_us,
+        cycle_exceed_count,
+        rt_violation_count,
+        samples,
+    })
 }
 
-/// Decode one edge event frame (44 bytes).
-///
-/// The `which` parameter selects the expected `event_type` (1 for CycleExceed, 2 for RtViolation).
-/// Returns `None` if version/event_type mismatch, frame is too short, or malformed.
-/// Names are decoded with lossy UTF-8 and trailing NULs stripped.
-pub fn decode_edge(bytes: &[u8], which: EdgeKind) -> Option<DiagEvent> {
-    // Minimum frame size is 44 bytes.
-    if bytes.len() < 44 {
-        return None;
-    }
-
-    let version = bytes[0];
-    let event_type = bytes[1];
-
-    // Validate version.
-    if version != PUSH_WIRE_VERSION {
-        return None;
-    }
-
-    // Validate event_type matches the expected kind.
-    let expected_event_type = match which {
-        EdgeKind::CycleExceed => 1_u8,
-        EdgeKind::RtViolation => 2_u8,
-    };
-    if event_type != expected_event_type {
-        return None;
-    }
-
-    // +0x04: ads_port → u16 truncation
-    let ads_port = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
-    let task_port = (ads_port & 0xFFFF) as u16;
-
-    // +0x08: cycle_count
-    let cycle_count = u64::from_le_bytes(bytes[8..16].try_into().unwrap_or([0; 8]));
-
-    // +0x10: last_exec_time_us
-    let last_exec_time_us = u32::from_le_bytes(bytes[16..20].try_into().unwrap_or([0; 4]));
-
-    // +0x18: task_name [20]
-    let name_bytes = &bytes[24..44];
-    let task_name = decode_task_name(name_bytes);
-
-    let event = match which {
-        EdgeKind::CycleExceed => DiagEvent::CycleExceedEdge {
-            task_port,
-            task_name,
-            cycle_count,
-            last_exec_time_us,
-        },
-        EdgeKind::RtViolation => DiagEvent::RtViolationEdge {
-            task_port,
-            task_name,
-            cycle_count,
-            last_exec_time_us,
-        },
-    };
-
-    Some(event)
+fn read_u16(bytes: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap_or([0; 2]))
 }
 
-/// Decode a task name from a fixed 20-byte array.
-///
-/// Strips trailing NULs and decodes with lossy UTF-8 to avoid panics on invalid UTF-8.
+fn read_u32(bytes: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap_or([0; 4]))
+}
+
+fn read_i64(bytes: &[u8], off: usize) -> i64 {
+    i64::from_le_bytes(bytes[off..off + 8].try_into().unwrap_or([0; 8]))
+}
+
 fn decode_task_name(bytes: &[u8]) -> String {
-    // Find the last non-NUL byte.
     let mut end = bytes.len();
     while end > 0 && bytes[end - 1] == 0 {
         end -= 1;
     }
-
-    // Decode with lossy UTF-8.
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::{PUSH_FLAG_CYCLE_EXCEED_NOW, PUSH_FLAG_RT_VIOLATION_NOW};
+    use crate::diagnostics::{
+        SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+    };
 
-    /// Helper: build a snapshot frame header.
-    fn snapshot_header(num_tasks: usize, plc_timestamp_ns: u64) -> Vec<u8> {
-        let mut v = Vec::with_capacity(16);
-        v.push(PUSH_WIRE_VERSION);
-        v.push(0); // event_type = 0
-        v.extend_from_slice(&(num_tasks as u16).to_le_bytes());
-        v.extend_from_slice(&plc_timestamp_ns.to_le_bytes());
-        v.extend_from_slice(&0_u32.to_le_bytes()); // reserved
-        v
-    }
-
-    /// Helper: build a single task record (72 bytes).
     #[allow(clippy::too_many_arguments)]
-    fn task_record(
+    fn batch_header(
         task_obj_id: u32,
-        ads_port: u32,
-        priority: u32,
-        cycle_time_us: u32,
-        last_exec_time_us: u32,
-        cycle_count: u64,
-        cycle_exceed_count: u64,
-        rt_violation_count: u64,
-        flags: u32,
+        task_port: u16,
+        window_ms: u16,
+        sample_count: u16,
+        cycle_count_start: u32,
+        cycle_count_end: u32,
+        dc_time_start: i64,
+        dc_time_end: i64,
+        exec_time_min_us: u32,
+        exec_time_max_us: u32,
+        exec_time_avg_us: u32,
+        cycle_exceed_count: u32,
+        rt_violation_count: u32,
         task_name: &str,
     ) -> Vec<u8> {
-        let mut v = Vec::with_capacity(72);
+        let mut v = Vec::with_capacity(PUSH_BATCH_HEADER_SIZE);
+        v.push(PUSH_WIRE_VERSION);
+        v.push(PUSH_BATCH_EVENT_TYPE);
+        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved0
         v.extend_from_slice(&task_obj_id.to_le_bytes());
-        v.extend_from_slice(&ads_port.to_le_bytes());
-        v.extend_from_slice(&priority.to_le_bytes());
-        v.extend_from_slice(&cycle_time_us.to_le_bytes());
-        v.extend_from_slice(&last_exec_time_us.to_le_bytes());
-        v.extend_from_slice(&0_u32.to_le_bytes()); // reserved +0x14
-        v.extend_from_slice(&cycle_count.to_le_bytes());
+        v.extend_from_slice(&task_port.to_le_bytes());
+        v.extend_from_slice(&window_ms.to_le_bytes());
+        v.extend_from_slice(&sample_count.to_le_bytes());
+        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved1
+        v.extend_from_slice(&cycle_count_start.to_le_bytes());
+        v.extend_from_slice(&cycle_count_end.to_le_bytes());
+        v.extend_from_slice(&dc_time_start.to_le_bytes());
+        v.extend_from_slice(&dc_time_end.to_le_bytes());
+        v.extend_from_slice(&exec_time_min_us.to_le_bytes());
+        v.extend_from_slice(&exec_time_max_us.to_le_bytes());
+        v.extend_from_slice(&exec_time_avg_us.to_le_bytes());
         v.extend_from_slice(&cycle_exceed_count.to_le_bytes());
         v.extend_from_slice(&rt_violation_count.to_le_bytes());
-        v.extend_from_slice(&flags.to_le_bytes());
 
-        // Encode task_name into 20-byte array with NUL padding.
         let mut name_bytes = [0_u8; 20];
-        let name_len = task_name.len().min(20);
-        name_bytes[..name_len].copy_from_slice(&task_name.as_bytes()[..name_len]);
+        let n = task_name.len().min(20);
+        name_bytes[..n].copy_from_slice(&task_name.as_bytes()[..n]);
         v.extend_from_slice(&name_bytes);
-
+        assert_eq!(v.len(), PUSH_BATCH_HEADER_SIZE, "header size mismatch");
         v
     }
 
-    /// Helper: build an edge frame (44 bytes).
-    fn edge_frame(
-        event_type: u8,
-        ads_port: u32,
-        cycle_count: u64,
-        last_exec_time_us: u32,
-        task_name: &str,
-    ) -> Vec<u8> {
-        let mut v = Vec::with_capacity(44);
-        v.push(PUSH_WIRE_VERSION);
-        v.push(event_type);
-        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved +0x02
-        v.extend_from_slice(&ads_port.to_le_bytes());
+    fn sample_bytes(cycle_count: u32, exec_time_us: u32, dc_time: i64, flags: u8) -> Vec<u8> {
+        let mut v = Vec::with_capacity(PUSH_SAMPLE_SIZE);
         v.extend_from_slice(&cycle_count.to_le_bytes());
-        v.extend_from_slice(&last_exec_time_us.to_le_bytes());
-        v.extend_from_slice(&0_u32.to_le_bytes()); // reserved +0x14
-
-        // task_name [20]
-        let mut name_bytes = [0_u8; 20];
-        let name_len = task_name.len().min(20);
-        name_bytes[..name_len].copy_from_slice(&task_name.as_bytes()[..name_len]);
-        v.extend_from_slice(&name_bytes);
-
+        v.extend_from_slice(&exec_time_us.to_le_bytes());
+        v.extend_from_slice(&dc_time.to_le_bytes());
+        v.push(flags);
+        v.extend_from_slice(&[0_u8; 7]); // padding
+        assert_eq!(v.len(), PUSH_SAMPLE_SIZE, "sample size mismatch");
         v
     }
 
     #[test]
-    fn decode_snapshot_with_one_task() {
-        let mut frame = snapshot_header(1, 1_000_000_000);
-        frame.extend_from_slice(&task_record(
-            100,                        // task_obj_id
-            350,                        // ads_port
-            20,                         // priority
-            1000,                       // cycle_time_us
-            500,                        // last_exec_time_us
-            1234,                       // cycle_count
-            5,                          // cycle_exceed_count
-            0,                          // rt_violation_count
-            PUSH_FLAG_CYCLE_EXCEED_NOW, // flags
-            "PlcTask",                  // task_name
-        ));
-
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 1, "should decode exactly one task");
-
-        match &events[0] {
-            DiagEvent::TaskSnapshot {
+    fn decode_batch_empty_sample_count() {
+        let frame = batch_header(100, 350, 100, 0, 1000, 1000, 0, 0, 0, 0, 0, 0, 0, "PlcTask");
+        let ev = decode_batch(&frame).expect("empty batch decodes");
+        match ev {
+            DiagEvent::TaskDiagBatch {
                 task_port,
                 task_name,
-                priority,
-                cycle_time_configured_us,
-                last_exec_time_us,
-                cycle_count,
-                cycle_exceed_count,
-                rt_violation_count,
-                flags,
-                plc_timestamp_ns,
-            } => {
-                assert_eq!(*task_port, 350);
-                assert_eq!(task_name, "PlcTask");
-                assert_eq!(*priority, 20);
-                assert_eq!(*cycle_time_configured_us, 1000);
-                assert_eq!(*last_exec_time_us, 500);
-                assert_eq!(*cycle_count, 1234);
-                assert_eq!(*cycle_exceed_count, 5);
-                assert_eq!(*rt_violation_count, 0);
-                assert_eq!(*flags, PUSH_FLAG_CYCLE_EXCEED_NOW);
-                assert_eq!(*plc_timestamp_ns, 1_000_000_000);
-            }
-            _ => panic!("expected TaskSnapshot variant"),
-        }
-    }
-
-    #[test]
-    fn decode_snapshot_with_three_tasks() {
-        let mut frame = snapshot_header(3, 2_000_000_000);
-        frame.extend_from_slice(&task_record(
-            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
-        ));
-        frame.extend_from_slice(&task_record(
-            101,
-            351,
-            10,
-            10000,
-            5000,
-            123,
-            0,
-            1,
-            PUSH_FLAG_RT_VIOLATION_NOW,
-            "PlcTask1",
-        ));
-        frame.extend_from_slice(&task_record(
-            102, 340, 5, 1000, 100, 9999, 0, 0, 0, "IoIdle",
-        ));
-
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 3, "should decode all three tasks");
-
-        // Verify order is preserved.
-        if let DiagEvent::TaskSnapshot { task_name: n1, .. } = &events[0] {
-            assert_eq!(n1, "PlcTask");
-        } else {
-            panic!("expected first event to be TaskSnapshot");
-        }
-        if let DiagEvent::TaskSnapshot { task_name: n2, .. } = &events[1] {
-            assert_eq!(n2, "PlcTask1");
-        } else {
-            panic!("expected second event to be TaskSnapshot");
-        }
-        if let DiagEvent::TaskSnapshot { task_name: n3, .. } = &events[2] {
-            assert_eq!(n3, "IoIdle");
-        } else {
-            panic!("expected third event to be TaskSnapshot");
-        }
-    }
-
-    #[test]
-    fn decode_snapshot_rejects_wrong_version() {
-        let mut frame = snapshot_header(1, 1_000_000_000);
-        frame[0] = 99; // wrong version
-        frame.extend_from_slice(&task_record(
-            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
-        ));
-
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 0, "should reject wrong version");
-    }
-
-    #[test]
-    fn decode_snapshot_rejects_wrong_event_type() {
-        let mut frame = snapshot_header(1, 1_000_000_000);
-        frame[1] = 1; // wrong event_type (should be 0)
-        frame.extend_from_slice(&task_record(
-            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
-        ));
-
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 0, "should reject wrong event_type");
-    }
-
-    #[test]
-    fn decode_snapshot_rejects_truncated_payload() {
-        let mut frame = snapshot_header(2, 1_000_000_000); // claims 2 tasks
-        frame.extend_from_slice(&task_record(
-            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
-        ));
-        // Missing second task
-
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 0, "should reject truncated payload");
-    }
-
-    #[test]
-    fn decode_edge_cycle_exceed() {
-        let frame = edge_frame(1, 350, 5000, 750, "PlcTask");
-        let event = decode_edge(&frame, EdgeKind::CycleExceed);
-
-        assert!(event.is_some());
-        match event.unwrap() {
-            DiagEvent::CycleExceedEdge {
-                task_port,
-                task_name,
-                cycle_count,
-                last_exec_time_us,
+                samples,
+                window_ms,
+                ..
             } => {
                 assert_eq!(task_port, 350);
                 assert_eq!(task_name, "PlcTask");
-                assert_eq!(cycle_count, 5000);
-                assert_eq!(last_exec_time_us, 750);
+                assert_eq!(window_ms, 100);
+                assert!(samples.is_empty());
             }
-            _ => panic!("expected CycleExceedEdge variant"),
+            _ => panic!("expected TaskDiagBatch"),
         }
     }
 
     #[test]
-    fn decode_edge_rejects_wrong_event_type_for_kind() {
-        let frame = edge_frame(2, 350, 5000, 750, "PlcTask"); // event_type=2 (RtViolation)
-        let event = decode_edge(&frame, EdgeKind::CycleExceed); // but we expect CycleExceed
-        assert!(event.is_none(), "should reject mismatched event_type");
-    }
-
-    #[test]
-    fn decode_edge_rejects_short_frame() {
-        let frame = &[0_u8; 40]; // too short
-        let event = decode_edge(frame, EdgeKind::CycleExceed);
-        assert!(event.is_none(), "should reject short frame");
-    }
-
-    #[test]
-    fn task_name_handles_null_padding() {
-        let mut frame = snapshot_header(1, 1_000_000_000);
-        frame.extend_from_slice(&task_record(
-            100, 350, 20, 1000, 500, 1234, 5, 0, 0, "PlcTask",
+    fn decode_batch_with_three_samples_preserves_order_and_flags() {
+        let mut frame = batch_header(
+            100, 350, 100, 3, 1000, 1002, 1_000_000, 1_200_000, 150, 800, 400, 1, 1, "PlcTask",
+        );
+        frame.extend_from_slice(&sample_bytes(1000, 150, 1_000_000, 0));
+        frame.extend_from_slice(&sample_bytes(
+            1001,
+            800,
+            1_100_000,
+            SAMPLE_FLAG_CYCLE_EXCEED,
+        ));
+        frame.extend_from_slice(&sample_bytes(
+            1002,
+            250,
+            1_200_000,
+            SAMPLE_FLAG_RT_VIOLATION,
         ));
 
-        let events = decode_snapshot(&frame);
-        if let DiagEvent::TaskSnapshot { task_name, .. } = &events[0] {
-            assert_eq!(task_name, "PlcTask", "should strip NUL padding");
-        } else {
-            panic!("expected TaskSnapshot");
+        let ev = decode_batch(&frame).expect("valid batch decodes");
+        match ev {
+            DiagEvent::TaskDiagBatch {
+                samples,
+                exec_time_min_us,
+                exec_time_max_us,
+                exec_time_avg_us,
+                cycle_exceed_count,
+                rt_violation_count,
+                cycle_count_start,
+                cycle_count_end,
+                ..
+            } => {
+                assert_eq!(samples.len(), 3);
+                assert_eq!(samples[0].cycle_count, 1000);
+                assert_eq!(samples[1].exec_time_us, 800);
+                assert_eq!(samples[1].flags, SAMPLE_FLAG_CYCLE_EXCEED);
+                assert_eq!(samples[2].flags, SAMPLE_FLAG_RT_VIOLATION);
+                assert_eq!(samples[2].dc_time, 1_200_000);
+                assert_eq!(exec_time_min_us, 150);
+                assert_eq!(exec_time_max_us, 800);
+                assert_eq!(exec_time_avg_us, 400);
+                assert_eq!(cycle_exceed_count, 1);
+                assert_eq!(rt_violation_count, 1);
+                assert_eq!(cycle_count_start, 1000);
+                assert_eq!(cycle_count_end, 1002);
+            }
+            _ => panic!("expected TaskDiagBatch"),
         }
     }
 
     #[test]
-    fn task_name_handles_non_utf8_gracefully() {
-        // Build a frame with invalid UTF-8 in task name.
-        let mut frame = snapshot_header(1, 1_000_000_000);
+    fn decode_batch_overflow_flag_preserved() {
+        let mut frame = batch_header(
+            100, 350, 100, 1, 2000, 2000, 0, 0, 100, 100, 100, 0, 0, "PlcTask",
+        );
+        frame.extend_from_slice(&sample_bytes(2000, 100, 0, SAMPLE_FLAG_OVERFLOW));
+        let ev = decode_batch(&frame).unwrap();
+        match ev {
+            DiagEvent::TaskDiagBatch { samples, .. } => {
+                assert_eq!(samples[0].flags, SAMPLE_FLAG_OVERFLOW);
+            }
+            _ => panic!("expected TaskDiagBatch"),
+        }
+    }
 
-        // Create a task record but patch the name bytes with 0xFF.
-        let mut record = task_record(100, 350, 20, 1000, 500, 1234, 5, 0, 0, "");
-        // The name bytes start at offset 52 in the record (72 - 20).
-        record[52] = 0xFF; // invalid UTF-8
+    #[test]
+    fn decode_batch_rejects_short_header() {
+        let frame = vec![0_u8; PUSH_BATCH_HEADER_SIZE - 1];
+        assert!(decode_batch(&frame).is_none());
+    }
 
-        frame.extend_from_slice(&record);
+    #[test]
+    fn decode_batch_rejects_wrong_version() {
+        let mut frame = batch_header(100, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "PlcTask");
+        frame[0] = 99;
+        assert!(decode_batch(&frame).is_none());
+    }
 
-        let events = decode_snapshot(&frame);
-        assert_eq!(events.len(), 1, "should not panic on invalid UTF-8");
+    #[test]
+    fn decode_batch_rejects_wrong_event_type() {
+        let mut frame = batch_header(100, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "PlcTask");
+        frame[1] = 0;
+        assert!(decode_batch(&frame).is_none());
+    }
 
-        if let DiagEvent::TaskSnapshot { task_name, .. } = &events[0] {
-            // String::from_utf8_lossy will replace invalid sequences with U+FFFD.
-            // We just check that decoding succeeded without panicking.
-            assert!(
-                !task_name.is_empty() || task_name.contains('\u{FFFD}'),
-                "should use lossy decoding"
-            );
+    #[test]
+    fn decode_batch_rejects_truncated_samples() {
+        let mut frame = batch_header(
+            100, 350, 100, 2, 1000, 1001, 0, 0, 100, 200, 150, 0, 0, "PlcTask",
+        );
+        frame.extend_from_slice(&sample_bytes(1000, 100, 0, 0));
+        // Missing second sample
+        assert!(decode_batch(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_batch_rejects_sample_count_above_max() {
+        let mut frame = batch_header(
+            100,
+            350,
+            100,
+            (PUSH_BATCH_MAX_SAMPLES + 1) as u16,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "PlcTask",
+        );
+        // Even if we then provide bytes, header alone must be rejected.
+        frame.resize(
+            frame.len() + (PUSH_BATCH_MAX_SAMPLES + 1) * PUSH_SAMPLE_SIZE,
+            0,
+        );
+        assert!(decode_batch(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_batch_task_name_strips_trailing_nulls() {
+        let frame = batch_header(100, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "Task\0\0\0");
+        let ev = decode_batch(&frame).unwrap();
+        match ev {
+            DiagEvent::TaskDiagBatch { task_name, .. } => assert_eq!(task_name, "Task"),
+            _ => panic!("expected TaskDiagBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_batch_handles_non_utf8_task_name() {
+        let mut frame = batch_header(100, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "");
+        frame[0x3C] = 0xFF; // first name byte invalid UTF-8
+        let ev = decode_batch(&frame).expect("must not panic on invalid UTF-8");
+        if let DiagEvent::TaskDiagBatch { task_name, .. } = ev {
+            assert!(task_name.contains('\u{FFFD}'));
         } else {
-            panic!("expected TaskSnapshot");
+            panic!("expected TaskDiagBatch");
         }
     }
 }

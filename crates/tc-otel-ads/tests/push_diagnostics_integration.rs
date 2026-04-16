@@ -8,81 +8,74 @@ use std::sync::Arc;
 use tc_otel_ads::{
     ams::{AmsHeader, AmsNetId, ADS_CMD_WRITE, ADS_STATE_REQUEST},
     diagnostics::{
-        DiagEvent, IG_PUSH_DIAG, IO_PUSH_CYCLE_EXCEED_EDGE, IO_PUSH_RT_VIOLATION_EDGE,
-        IO_PUSH_SNAPSHOT, PUSH_WIRE_VERSION,
+        DiagEvent, IG_PUSH_DIAG, IO_PUSH_BATCH, PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE,
+        PUSH_BATCH_MAX_SAMPLES, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION, SAMPLE_FLAG_CYCLE_EXCEED,
+        SAMPLE_FLAG_RT_VIOLATION,
     },
     registry::TaskRegistry,
     router::AdsRouter,
 };
 use tokio::sync::mpsc;
 
-/// Per-task snapshot field layout (72 bytes each)
-#[derive(Clone)]
-struct TaskSnapshotFields {
+/// Build a complete batch payload (80-byte header + N × 24-byte samples).
+///
+/// `samples` is a slice of `(cycle_count, exec_time_us, dc_time, flags)`.
+#[allow(clippy::too_many_arguments)]
+fn build_batch_payload(
     task_obj_id: u32,
-    ads_port: u32,
-    priority: u32,
-    cycle_time_us: u32,
-    last_exec_time_us: u32,
-    cycle_count: u64,
-    cycle_exceed_count: u64,
-    rt_violation_count: u64,
-    flags: u32,
-    task_name: [u8; 20],
-}
+    task_port: u16,
+    window_ms: u16,
+    cycle_start: u32,
+    cycle_end: u32,
+    dc_start: i64,
+    dc_end: i64,
+    exec_min: u32,
+    exec_max: u32,
+    exec_avg: u32,
+    exceed_count: u32,
+    rtv_count: u32,
+    task_name: &str,
+    samples: &[(u32, u32, i64, u8)],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(PUSH_BATCH_HEADER_SIZE + samples.len() * PUSH_SAMPLE_SIZE);
 
-/// Build a snapshot payload (16 + 72 × num_tasks bytes).
-fn build_snapshot_frame(tasks: &[TaskSnapshotFields]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(16 + 72 * tasks.len());
+    buf.push(PUSH_WIRE_VERSION);
+    buf.push(PUSH_BATCH_EVENT_TYPE);
+    buf.extend_from_slice(&0_u16.to_le_bytes()); // reserved0
+    buf.extend_from_slice(&task_obj_id.to_le_bytes());
+    buf.extend_from_slice(&task_port.to_le_bytes());
+    buf.extend_from_slice(&window_ms.to_le_bytes());
+    buf.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+    buf.extend_from_slice(&0_u16.to_le_bytes()); // reserved1
+    buf.extend_from_slice(&cycle_start.to_le_bytes());
+    buf.extend_from_slice(&cycle_end.to_le_bytes());
+    buf.extend_from_slice(&dc_start.to_le_bytes());
+    buf.extend_from_slice(&dc_end.to_le_bytes());
+    buf.extend_from_slice(&exec_min.to_le_bytes());
+    buf.extend_from_slice(&exec_max.to_le_bytes());
+    buf.extend_from_slice(&exec_avg.to_le_bytes());
+    buf.extend_from_slice(&exceed_count.to_le_bytes());
+    buf.extend_from_slice(&rtv_count.to_le_bytes());
 
-    // Header (16 bytes)
-    buf.push(PUSH_WIRE_VERSION); // version
-    buf.push(0); // event_type = SNAPSHOT
-    buf.extend_from_slice(&(tasks.len() as u16).to_le_bytes()); // num_tasks
-    buf.extend_from_slice(&0x123456789ABCDEFu64.to_le_bytes()); // plc_timestamp_ns
-    buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    let mut name_bytes = [0_u8; 20];
+    let n = task_name.len().min(20);
+    name_bytes[..n].copy_from_slice(&task_name.as_bytes()[..n]);
+    buf.extend_from_slice(&name_bytes);
 
-    // Per-task data (72 bytes each)
-    for task in tasks {
-        buf.extend_from_slice(&task.task_obj_id.to_le_bytes());
-        buf.extend_from_slice(&task.ads_port.to_le_bytes());
-        buf.extend_from_slice(&task.priority.to_le_bytes());
-        buf.extend_from_slice(&task.cycle_time_us.to_le_bytes());
-        buf.extend_from_slice(&task.last_exec_time_us.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
-        buf.extend_from_slice(&task.cycle_count.to_le_bytes());
-        buf.extend_from_slice(&task.cycle_exceed_count.to_le_bytes());
-        buf.extend_from_slice(&task.rt_violation_count.to_le_bytes());
-        buf.extend_from_slice(&task.flags.to_le_bytes());
-        buf.extend_from_slice(&task.task_name);
+    assert_eq!(buf.len(), PUSH_BATCH_HEADER_SIZE);
+
+    for (cycle, exec_us, dc, flags) in samples {
+        buf.extend_from_slice(&cycle.to_le_bytes());
+        buf.extend_from_slice(&exec_us.to_le_bytes());
+        buf.extend_from_slice(&dc.to_le_bytes());
+        buf.push(*flags);
+        buf.extend_from_slice(&[0_u8; 7]);
     }
 
     buf
 }
 
-/// Build an edge event payload (44 bytes).
-fn build_edge_frame(
-    event_type: u8,
-    ads_port: u32,
-    cycle_count: u64,
-    last_exec_us: u32,
-    name: &str,
-) -> Vec<u8> {
-    let mut buf = vec![0u8; 44];
-    buf[0] = PUSH_WIRE_VERSION;
-    buf[1] = event_type;
-    // buf[2..4] reserved (already zero)
-    buf[4..8].copy_from_slice(&ads_port.to_le_bytes());
-    buf[8..16].copy_from_slice(&cycle_count.to_le_bytes());
-    buf[16..20].copy_from_slice(&last_exec_us.to_le_bytes());
-    // buf[20..24] reserved (already zero)
-    let name_bytes = name.as_bytes();
-    let len = std::cmp::min(20, name_bytes.len());
-    buf[24..24 + len].copy_from_slice(&name_bytes[..len]);
-    buf
-}
-
-/// Wrap payload as an AMS Write request, then as an AMS frame (32-byte header + write request).
+/// Wrap a push-diagnostic payload as an AMS write frame.
 fn wrap_as_ams_write(
     source: AmsNetId,
     target_port: u16,
@@ -90,14 +83,12 @@ fn wrap_as_ams_write(
     io: u32,
     payload: &[u8],
 ) -> Vec<u8> {
-    // Build ADS Write request (12-byte header + data)
     let mut write_req = Vec::with_capacity(12 + payload.len());
     write_req.extend_from_slice(&ig.to_le_bytes());
     write_req.extend_from_slice(&io.to_le_bytes());
     write_req.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     write_req.extend_from_slice(payload);
 
-    // Build AMS header (32 bytes)
     let header = AmsHeader {
         target_net_id: AmsNetId::from_str("10.10.10.10.1.1").unwrap(),
         target_port,
@@ -116,7 +107,7 @@ fn wrap_as_ams_write(
 }
 
 #[tokio::test]
-async fn snapshot_with_three_tasks_produces_three_events() {
+async fn batch_with_samples_produces_single_event_with_all_samples() {
     let (log_tx, _) = mpsc::channel(100);
     let (push_tx, mut push_rx) = mpsc::channel(100);
     let registry = Arc::new(TaskRegistry::new());
@@ -124,164 +115,76 @@ async fn snapshot_with_three_tasks_produces_three_events() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    let tasks = vec![
-        TaskSnapshotFields {
-            task_obj_id: 1,
-            ads_port: 340,
-            priority: 10,
-            cycle_time_us: 1000,
-            last_exec_time_us: 500,
-            cycle_count: 100,
-            cycle_exceed_count: 0,
-            rt_violation_count: 0,
-            flags: 0,
-            task_name: {
-                let mut name = [0u8; 20];
-                let bytes = b"IO Idle";
-                name[..bytes.len()].copy_from_slice(bytes);
-                name
-            },
-        },
-        TaskSnapshotFields {
-            task_obj_id: 2,
-            ads_port: 350,
-            priority: 20,
-            cycle_time_us: 1000,
-            last_exec_time_us: 600,
-            cycle_count: 101,
-            cycle_exceed_count: 0,
-            rt_violation_count: 0,
-            flags: 0,
-            task_name: {
-                let mut name = [0u8; 20];
-                let bytes = b"PlcTask";
-                name[..bytes.len()].copy_from_slice(bytes);
-                name
-            },
-        },
-        TaskSnapshotFields {
-            task_obj_id: 3,
-            ads_port: 351,
-            priority: 30,
-            cycle_time_us: 10000,
-            last_exec_time_us: 1000,
-            cycle_count: 102,
-            cycle_exceed_count: 0,
-            rt_violation_count: 0,
-            flags: 0,
-            task_name: {
-                let mut name = [0u8; 20];
-                let bytes = b"PlcTask1";
-                name[..bytes.len()].copy_from_slice(bytes);
-                name
-            },
-        },
+    // 3 samples: one normal, one cycle-exceed, one rt-violation.
+    let samples = vec![
+        (1000, 400, 1_000_000_000, 0),
+        (1001, 900, 1_001_000_000, SAMPLE_FLAG_CYCLE_EXCEED),
+        (1002, 300, 1_002_000_000, SAMPLE_FLAG_RT_VIOLATION),
     ];
-
-    let payload = build_snapshot_frame(&tasks);
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_SNAPSHOT, &payload);
-
-    let resp = router.dispatch(&frame).await.unwrap();
-    assert!(resp.is_some(), "dispatch should return ACK response");
-
-    // Collect all events from the push channel
-    let mut events = Vec::new();
-    while let Ok((net_id, ev)) = push_rx.try_recv() {
-        assert_eq!(net_id, plc_net_id);
-        events.push(ev);
-    }
-
-    assert_eq!(events.len(), 3, "expected 3 snapshot events");
-
-    // Verify each event
-    match &events[0] {
-        DiagEvent::TaskSnapshot {
-            task_port,
-            task_name,
-            cycle_count,
-            ..
-        } => {
-            assert_eq!(*task_port, 340);
-            assert_eq!(task_name, "IO Idle");
-            assert_eq!(*cycle_count, 100);
-        }
-        _ => panic!("expected TaskSnapshot"),
-    }
-
-    match &events[1] {
-        DiagEvent::TaskSnapshot {
-            task_port,
-            task_name,
-            cycle_count,
-            ..
-        } => {
-            assert_eq!(*task_port, 350);
-            assert_eq!(task_name, "PlcTask");
-            assert_eq!(*cycle_count, 101);
-        }
-        _ => panic!("expected TaskSnapshot"),
-    }
-
-    match &events[2] {
-        DiagEvent::TaskSnapshot {
-            task_port,
-            task_name,
-            cycle_count,
-            ..
-        } => {
-            assert_eq!(*task_port, 351);
-            assert_eq!(task_name, "PlcTask1");
-            assert_eq!(*cycle_count, 102);
-        }
-        _ => panic!("expected TaskSnapshot"),
-    }
-}
-
-#[tokio::test]
-async fn cycle_exceed_edge_produces_single_event() {
-    let (log_tx, _) = mpsc::channel(100);
-    let (push_tx, mut push_rx) = mpsc::channel(100);
-    let registry = Arc::new(TaskRegistry::new());
-    let router = AdsRouter::new(16150, log_tx, None, registry).with_push_sender(push_tx);
-
-    let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
-
-    let payload = build_edge_frame(1, 350, 999, 2500, "PlcTask");
-    let frame = wrap_as_ams_write(
-        plc_net_id,
-        16150,
-        IG_PUSH_DIAG,
-        IO_PUSH_CYCLE_EXCEED_EDGE,
-        &payload,
+    let payload = build_batch_payload(
+        42,
+        350,
+        100,
+        1000,
+        1002,
+        1_000_000_000,
+        1_002_000_000,
+        300,
+        900,
+        533,
+        1,
+        1,
+        "PlcTask",
+        &samples,
     );
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
 
     let resp = router.dispatch(&frame).await.unwrap();
     assert!(resp.is_some(), "dispatch should return ACK response");
 
-    let (net_id, ev) = push_rx.recv().await.expect("should receive event");
+    let (net_id, ev) = push_rx.recv().await.expect("should receive one batch");
     assert_eq!(net_id, plc_net_id);
 
     match ev {
-        DiagEvent::CycleExceedEdge {
+        DiagEvent::TaskDiagBatch {
             task_port,
             task_name,
-            cycle_count,
-            last_exec_time_us,
+            task_obj_id,
+            window_ms,
+            cycle_count_start,
+            cycle_count_end,
+            exec_time_min_us,
+            exec_time_max_us,
+            exec_time_avg_us,
+            cycle_exceed_count,
+            rt_violation_count,
+            samples: decoded,
+            ..
         } => {
             assert_eq!(task_port, 350);
             assert_eq!(task_name, "PlcTask");
-            assert_eq!(cycle_count, 999);
-            assert_eq!(last_exec_time_us, 2500);
+            assert_eq!(task_obj_id, 42);
+            assert_eq!(window_ms, 100);
+            assert_eq!(cycle_count_start, 1000);
+            assert_eq!(cycle_count_end, 1002);
+            assert_eq!(exec_time_min_us, 300);
+            assert_eq!(exec_time_max_us, 900);
+            assert_eq!(exec_time_avg_us, 533);
+            assert_eq!(cycle_exceed_count, 1);
+            assert_eq!(rt_violation_count, 1);
+            assert_eq!(decoded.len(), 3);
+            assert_eq!(decoded[1].flags, SAMPLE_FLAG_CYCLE_EXCEED);
+            assert_eq!(decoded[2].flags, SAMPLE_FLAG_RT_VIOLATION);
+            assert_eq!(decoded[2].cycle_count, 1002);
         }
-        _ => panic!("expected CycleExceedEdge"),
+        _ => panic!("expected TaskDiagBatch"),
     }
 
-    // Verify no more events
     assert!(push_rx.try_recv().is_err());
 }
 
 #[tokio::test]
-async fn rt_violation_edge_produces_single_event() {
+async fn empty_batch_still_produces_event_with_aggregates() {
     let (log_tx, _) = mpsc::channel(100);
     let (push_tx, mut push_rx) = mpsc::channel(100);
     let registry = Arc::new(TaskRegistry::new());
@@ -289,79 +192,34 @@ async fn rt_violation_edge_produces_single_event() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    let payload = build_edge_frame(2, 351, 50, 15000, "PlcTask1");
-    let frame = wrap_as_ams_write(
-        plc_net_id,
-        16150,
-        IG_PUSH_DIAG,
-        IO_PUSH_RT_VIOLATION_EDGE,
-        &payload,
-    );
+    let payload = build_batch_payload(1, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "PlcTask", &[]);
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
+    let _ = router.dispatch(&frame).await.unwrap();
 
-    let resp = router.dispatch(&frame).await.unwrap();
-    assert!(resp.is_some(), "dispatch should return ACK response");
-
-    let (net_id, ev) = push_rx.recv().await.expect("should receive event");
-    assert_eq!(net_id, plc_net_id);
-
+    let (_, ev) = push_rx.recv().await.expect("should receive event");
     match ev {
-        DiagEvent::RtViolationEdge {
-            task_port,
-            task_name,
-            cycle_count,
-            last_exec_time_us,
-        } => {
-            assert_eq!(task_port, 351);
-            assert_eq!(task_name, "PlcTask1");
-            assert_eq!(cycle_count, 50);
-            assert_eq!(last_exec_time_us, 15000);
+        DiagEvent::TaskDiagBatch { samples, .. } => {
+            assert!(samples.is_empty());
         }
-        _ => panic!("expected RtViolationEdge"),
+        _ => panic!("expected TaskDiagBatch"),
     }
-
-    // Verify no more events
-    assert!(push_rx.try_recv().is_err());
 }
 
 #[tokio::test]
-async fn snapshot_ack_returns_immediately() {
+async fn batch_ack_returns_immediately() {
     let (log_tx, _) = mpsc::channel(100);
     let (push_tx, _) = mpsc::channel(100);
     let registry = Arc::new(TaskRegistry::new());
     let router = AdsRouter::new(16150, log_tx, None, registry).with_push_sender(push_tx);
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
-    let tasks = vec![TaskSnapshotFields {
-        task_obj_id: 1,
-        ads_port: 340,
-        priority: 10,
-        cycle_time_us: 1000,
-        last_exec_time_us: 500,
-        cycle_count: 100,
-        cycle_exceed_count: 0,
-        rt_violation_count: 0,
-        flags: 0,
-        task_name: {
-            let mut name = [0u8; 20];
-            let bytes = b"IO Idle";
-            name[..bytes.len()].copy_from_slice(bytes);
-            name
-        },
-    }];
-
-    let payload = build_snapshot_frame(&tasks);
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_SNAPSHOT, &payload);
+    let payload = build_batch_payload(1, 340, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "IO Idle", &[]);
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
 
     let resp = router.dispatch(&frame).await.unwrap();
-    assert!(
-        resp.is_some(),
-        "dispatch should return Some with ACK response"
-    );
+    let resp_data = resp.expect("dispatch returned ACK");
+    assert!(resp_data.len() >= 32);
 
-    let resp_data = resp.unwrap();
-    assert!(resp_data.len() >= 32, "response must have AMS header");
-
-    // Parse the response header to verify structure
     let resp_header = AmsHeader::parse(&resp_data).unwrap();
     assert_eq!(resp_header.target_net_id, plc_net_id);
     assert_eq!(resp_header.command_id, ADS_CMD_WRITE);
@@ -376,58 +234,12 @@ async fn unknown_version_is_dropped_silently() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    let mut payload = vec![0u8; 16];
-    payload[0] = 99; // version = 99 (unknown)
-    payload[1] = 0; // event_type = 0
-    payload[2..4].copy_from_slice(&1u16.to_le_bytes()); // num_tasks = 1
-    payload[4..12].copy_from_slice(&0x123456789ABCDEFu64.to_le_bytes()); // plc_timestamp
+    let mut payload = build_batch_payload(1, 340, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "Task", &[]);
+    payload[0] = 99; // invalid version
 
-    // Add a dummy task (72 bytes) to make it valid structurally
-    let task = TaskSnapshotFields {
-        task_obj_id: 1,
-        ads_port: 340,
-        priority: 10,
-        cycle_time_us: 1000,
-        last_exec_time_us: 500,
-        cycle_count: 100,
-        cycle_exceed_count: 0,
-        rt_violation_count: 0,
-        flags: 0,
-        task_name: {
-            let mut name = [0u8; 20];
-            let bytes = b"Task";
-            name[..bytes.len()].copy_from_slice(bytes);
-            name
-        },
-    };
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
+    let _ = router.dispatch(&frame).await.unwrap();
 
-    let mut full_payload = payload;
-    let mut buf = Vec::with_capacity(72);
-    buf.extend_from_slice(&task.task_obj_id.to_le_bytes());
-    buf.extend_from_slice(&task.ads_port.to_le_bytes());
-    buf.extend_from_slice(&task.priority.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_time_us.to_le_bytes());
-    buf.extend_from_slice(&task.last_exec_time_us.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_count.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_exceed_count.to_le_bytes());
-    buf.extend_from_slice(&task.rt_violation_count.to_le_bytes());
-    buf.extend_from_slice(&task.flags.to_le_bytes());
-    buf.extend_from_slice(&task.task_name);
-    full_payload.extend_from_slice(&buf);
-
-    let frame = wrap_as_ams_write(
-        plc_net_id,
-        16150,
-        IG_PUSH_DIAG,
-        IO_PUSH_SNAPSHOT,
-        &full_payload,
-    );
-
-    let resp = router.dispatch(&frame).await.unwrap();
-    assert!(resp.is_some(), "dispatch should still return ACK");
-
-    // Verify push_rx is empty (event was dropped)
     assert!(
         push_rx.try_recv().is_err(),
         "unknown version should be dropped"
@@ -435,7 +247,7 @@ async fn unknown_version_is_dropped_silently() {
 }
 
 #[tokio::test]
-async fn malformed_truncated_snapshot_is_dropped_silently() {
+async fn truncated_batch_is_dropped_silently() {
     let (log_tx, _) = mpsc::channel(100);
     let (push_tx, mut push_rx) = mpsc::channel(100);
     let registry = Arc::new(TaskRegistry::new());
@@ -443,56 +255,43 @@ async fn malformed_truncated_snapshot_is_dropped_silently() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    // Build a valid header but claim 2 tasks while providing only 1 (72 bytes)
-    let mut payload = vec![0u8; 16];
-    payload[0] = PUSH_WIRE_VERSION;
-    payload[1] = 0; // event_type = 0
-    payload[2..4].copy_from_slice(&2u16.to_le_bytes()); // num_tasks = 2 (but we'll only provide 1)
-    payload[4..12].copy_from_slice(&0x123456789ABCDEFu64.to_le_bytes());
+    // Claim 2 samples in header, provide only 1.
+    let samples = vec![(1000, 100, 0, 0), (1001, 100, 0, 0)];
+    let mut payload = build_batch_payload(
+        1, 350, 100, 1000, 1001, 0, 0, 100, 100, 100, 0, 0, "Task", &samples,
+    );
+    // Truncate the last sample (24 bytes) → body now claims 2 samples but only has 1.
+    payload.truncate(payload.len() - PUSH_SAMPLE_SIZE);
 
-    let task = TaskSnapshotFields {
-        task_obj_id: 1,
-        ads_port: 340,
-        priority: 10,
-        cycle_time_us: 1000,
-        last_exec_time_us: 500,
-        cycle_count: 100,
-        cycle_exceed_count: 0,
-        rt_violation_count: 0,
-        flags: 0,
-        task_name: {
-            let mut name = [0u8; 20];
-            let bytes = b"Task";
-            name[..bytes.len()].copy_from_slice(bytes);
-            name
-        },
-    };
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
+    let _ = router.dispatch(&frame).await.unwrap();
 
-    let mut buf = Vec::with_capacity(72);
-    buf.extend_from_slice(&task.task_obj_id.to_le_bytes());
-    buf.extend_from_slice(&task.ads_port.to_le_bytes());
-    buf.extend_from_slice(&task.priority.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_time_us.to_le_bytes());
-    buf.extend_from_slice(&task.last_exec_time_us.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_count.to_le_bytes());
-    buf.extend_from_slice(&task.cycle_exceed_count.to_le_bytes());
-    buf.extend_from_slice(&task.rt_violation_count.to_le_bytes());
-    buf.extend_from_slice(&task.flags.to_le_bytes());
-    buf.extend_from_slice(&task.task_name);
-    payload.extend_from_slice(&buf);
-
-    // payload is now 16 + 72 = 88 bytes, but header claims 2 tasks (needs 16 + 144)
-
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_SNAPSHOT, &payload);
-
-    let resp = router.dispatch(&frame).await.unwrap();
-    assert!(resp.is_some(), "dispatch should still return ACK");
-
-    // Verify push_rx is empty (truncated event was dropped)
     assert!(
         push_rx.try_recv().is_err(),
-        "truncated snapshot should be dropped"
+        "truncated batch should be dropped"
+    );
+}
+
+#[tokio::test]
+async fn sample_count_above_max_is_rejected() {
+    let (log_tx, _) = mpsc::channel(100);
+    let (push_tx, mut push_rx) = mpsc::channel(100);
+    let registry = Arc::new(TaskRegistry::new());
+    let router = AdsRouter::new(16150, log_tx, None, registry).with_push_sender(push_tx);
+
+    let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
+
+    // Forge a header with sample_count = MAX + 1.
+    let mut payload = build_batch_payload(1, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "Task", &[]);
+    let forged = (PUSH_BATCH_MAX_SAMPLES + 1) as u16;
+    payload[0x0C..0x0E].copy_from_slice(&forged.to_le_bytes());
+
+    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
+    let _ = router.dispatch(&frame).await.unwrap();
+
+    assert!(
+        push_rx.try_recv().is_err(),
+        "oversized sample_count should be rejected"
     );
 }
 
@@ -505,25 +304,14 @@ async fn non_push_write_still_reaches_log_parser() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    // Send a regular write to IG_RT_SYSTEM (not a push-diagnostic)
-    let mut payload = [0u8; 20];
-    payload[0..4].copy_from_slice(&0xF200_0000u32.to_le_bytes()); // IG_RT_SYSTEM
-    payload[4..8].copy_from_slice(&0u32.to_le_bytes()); // IO_TASK_STATS
-    payload[8..12].copy_from_slice(&8u32.to_le_bytes()); // size = 8
-    payload[12..20].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-
-    let frame = wrap_as_ams_write(plc_net_id, 16150, 0xF200_0000, 0, &payload[12..20]);
-
+    // Send a regular write to IG_RT_SYSTEM (not push-diagnostic).
+    let dummy = [0x01_u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let frame = wrap_as_ams_write(plc_net_id, 16150, 0xF200_0000, 0, &dummy);
     let resp = router.dispatch(&frame).await.unwrap();
-    assert!(resp.is_some(), "dispatch should return ACK");
+    assert!(resp.is_some());
 
-    // Verify push_rx is empty (not a push-diagnostic write)
     assert!(
         push_rx.try_recv().is_err(),
-        "non-push write should not trigger push channel"
+        "non-push write must not surface on push channel"
     );
-
-    // Log dispatch should have tried to parse, but since our payload is dummy,
-    // log_rx will be empty too. The important invariant is that we didn't crash
-    // and the ACK went out.
 }
