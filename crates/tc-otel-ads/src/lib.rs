@@ -10,6 +10,8 @@ pub mod ads_client;
 pub mod ams;
 pub mod ams_server;
 pub mod connection_manager;
+pub mod custom_metric_notifier;
+pub mod custom_metric_poller;
 pub mod diagnostics;
 pub mod diagnostics_observer;
 pub mod diagnostics_poller;
@@ -23,6 +25,7 @@ pub mod protocol;
 pub mod registry;
 pub mod router;
 pub mod symbol;
+pub mod symbol_handle;
 pub mod transport;
 
 pub use ads_client::{
@@ -56,4 +59,5 @@ pub use symbol::{
     parse_symbol_table, AdsSymbolEntry, AdsSymbolUploadInfo, ADSIGRP_SYM_UPLOAD,
     ADSIGRP_SYM_UPLOADINFO,
 };
+pub use symbol_handle::{CachedSymbolHandle, SymbolHandleCache, SymbolHandleKey};
 pub use transport::{AmsTransport, TcpAmsTransport};

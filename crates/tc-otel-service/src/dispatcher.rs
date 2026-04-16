@@ -884,6 +884,7 @@ mod tests {
             unit: "Cel".to_string(),
             kind: MetricKindConfig::Gauge,
             is_monotonic: false,
+            ..CustomMetricDef::default()
         }];
 
         let dispatcher = MetricDispatcher::new(&settings, None).await.unwrap();
@@ -938,6 +939,7 @@ mod tests {
             unit: "{parts}".to_string(),
             kind: MetricKindConfig::Sum,
             is_monotonic: true,
+            ..CustomMetricDef::default()
         }];
         tx.send(updated).unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
