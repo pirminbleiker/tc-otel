@@ -1,5 +1,7 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -9,18 +11,28 @@
   "panels": [
     {
       "type": "row",
-      "title": "System (polled — port 200, no push equivalent)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "title": "System (polled \u2014 port 200, no push equivalent)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "collapsed": false,
       "panels": []
     },
     {
       "type": "timeseries",
-      "title": "RT CPU Usage (%) — system-wide",
+      "title": "RT CPU Usage (%) \u2014 system-wide",
       "description": "Polled from the TwinCAT RT subsystem (port 200). Not available via push diagnostics.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
       "interval": "1s",
       "maxDataPoints": 2000,
@@ -29,7 +41,12 @@
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "pointSize": 3, "spanNulls": true }
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "pointSize": 3,
+            "spanNulls": true
+          }
         }
       },
       "targets": [
@@ -43,14 +60,23 @@
     },
     {
       "type": "timeseries",
-      "title": "System Latency (µs) — current + peak",
+      "title": "System Latency (\u00b5s) \u2014 current + peak",
       "description": "Polled latency of the RT subsystem. Peak is a reset-on-read tracker maintained by TwinCAT.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 1 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
       "id": 2,
       "interval": "1s",
       "maxDataPoints": 2000,
-      "fieldConfig": { "defaults": { "unit": "µs" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "\u00b5s"
+        }
+      },
       "targets": [
         {
           "expr": "tc_rt_system_latency_us",
@@ -68,25 +94,40 @@
     },
     {
       "type": "row",
-      "title": "Per-Task Execution (push — oversampled batches)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
+      "title": "Per-Task Execution (push \u2014 oversampled batches)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
       "id": 101,
       "collapsed": false,
       "panels": []
     },
     {
       "type": "timeseries",
-      "title": "Task Exec Time per Window (µs) — min / avg / max",
+      "title": "Task Exec Time per Window (\u00b5s) \u2014 min / avg / max",
       "description": "Per-window aggregate of cycle execution time. Each push batch carries min/max/avg computed on the PLC over window_ms.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 9
+      },
       "id": 10,
       "interval": "1s",
       "maxDataPoints": 2000,
       "fieldConfig": {
         "defaults": {
-          "unit": "µs",
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10, "spanNulls": true }
+          "unit": "\u00b5s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
         }
       },
       "targets": [
@@ -112,10 +153,19 @@
       "title": "Task Cycle Rate (cycles/s)",
       "description": "Derived from tc_task_cycle_count_total (monotonic, emitted from each push batch).",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
       "id": 11,
       "interval": "5s",
-      "fieldConfig": { "defaults": { "unit": "hertz" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz"
+        }
+      },
       "targets": [
         {
           "expr": "rate(tc_task_cycle_count_total[30s])",
@@ -126,8 +176,181 @@
     },
     {
       "type": "row",
-      "title": "Exceptions (push — per-cycle edge events with log correlation)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "title": "Traces (push \u2014 span lifecycle)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 105,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Span rate (spans/s) \u2014 by service",
+      "description": "Rate of span creation across all services. Expected ~1 span/s from tester in steady state.",
+      "datasource": "Tempo",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "id": 106,
+      "interval": "1s",
+      "maxDataPoints": 1000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "metricsInstant",
+          "expr": "{} | rate()",
+          "legendFormat": "{{resource.service.name}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Trace duration (p95) \u2014 by root span",
+      "description": "95th percentile of root span duration. Rising indicates slower operations.",
+      "datasource": "Tempo",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "id": 107,
+      "interval": "5s",
+      "maxDataPoints": 500,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "spanNulls": true
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "metricsInstant",
+          "expr": "{} | quantile_over_time(duration, 0.95)",
+          "legendFormat": "{{span.name}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Recent traces (limit 20)",
+      "description": "Latest traces by start time. Click trace ID to open in Tempo explorer.",
+      "datasource": "Tempo",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 108,
+      "interval": "5s",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "startTime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsUS"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "durationMs"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "startTime": 0,
+              "rootServiceName": 1,
+              "rootName": 2,
+              "durationMs": 3
+            },
+            "renameByName": {
+              "startTime": "Start Time",
+              "rootServiceName": "Service",
+              "rootName": "Root Span",
+              "durationMs": "Duration (ms)",
+              "traceID": "Trace ID"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "limit": 20,
+          "search": "{}"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "Open Traces Drilldown",
+      "description": "Navigate to detailed trace explorer for deep-dive analysis.",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 109,
+      "options": {
+        "text": "[Open Traces Drilldown Explorer](d/tempo-traces)",
+        "mode": "markdown"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Exceptions (push \u2014 per-cycle edge events with log correlation)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
       "id": 102,
       "collapsed": false,
       "panels": []
@@ -137,7 +360,12 @@
       "title": "Cycle Exceeds (time range total)",
       "description": "Total number of individual exceeded cycles in the current time range.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 18 },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
       "id": 22,
       "fieldConfig": {
         "defaults": {
@@ -146,14 +374,30 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 10 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
       "targets": [
         {
           "expr": "sum_over_time(tc_task_cycle_exceed_window[$__range])",
@@ -167,7 +411,12 @@
       "title": "RT Violations (time range total)",
       "description": "Total RT-violation count over the dashboard's time range.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 18 },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
       "id": 23,
       "fieldConfig": {
         "defaults": {
@@ -176,13 +425,26 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
       "targets": [
         {
           "expr": "sum_over_time(tc_task_rt_violation_window[$__range])",
@@ -194,16 +456,27 @@
     {
       "type": "timeseries",
       "title": "Exceeds/min (trailing 1-minute total, rolling)",
-      "description": "At each time point: total number of exceeding cycles in the preceding 60 seconds. Fixed lookback window independent of display step — no overlap double-counting, no step-size sensitivity. For the absolute total use the stat panel above.",
+      "description": "At each time point: total number of exceeding cycles in the preceding 60 seconds. Fixed lookback window independent of display step \u2014 no overlap double-counting, no step-size sensitivity. For the absolute total use the stat panel above.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
       "id": 20,
       "interval": "5s",
       "maxDataPoints": 500,
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 20, "pointSize": 3, "spanNulls": true }
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20,
+            "pointSize": 3,
+            "spanNulls": true
+          }
         }
       },
       "targets": [
@@ -221,8 +494,13 @@
     },
     {
       "type": "row",
-      "title": "PLC logs (raw stream — analyse exceeds manually via LogsQL in Explore)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "title": "PLC logs (raw stream \u2014 analyse exceeds manually via LogsQL in Explore)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
       "id": 104,
       "collapsed": false,
       "panels": []
@@ -230,9 +508,17 @@
     {
       "type": "logs",
       "title": "Task logs in range",
-      "description": "All PLC logs in the dashboard time range. For deeper analysis open Grafana Explore on the VictoriaLogs data source and query by task.cycle, severity, etc.",
-      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "victoria-logs" },
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 32 },
+      "description": "All PLC logs in the dashboard time range. For deeper analysis open Grafana Explore on the VictoriaLogs data source and query by task.cycle, severity, etc.\n\nTODO (Phase 3 \u2014 log-trace correlation): Add derivedField for `traceId` to enable clicking log rows with trace IDs to jump directly to Tempo traces. Once available, add this to fieldConfig.defaults.custom.dataLinks:\n```json\n{\"title\": \"Open Trace\", \"url\": \"/explore?var-ds=tempo&var-primarySignal=traceID&var-traceID=${traceId}\"}\n```",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "victoria-logs"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
       "id": 40,
       "options": {
         "showTime": true,
@@ -254,8 +540,13 @@
     },
     {
       "type": "row",
-      "title": "Sampler Health (push — meta)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "title": "Sampler Health (push \u2014 meta)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
       "id": 103,
       "collapsed": false,
       "panels": []
@@ -265,14 +556,23 @@
       "title": "Samples per Window",
       "description": "Number of samples the PLC shipped in each batch. Stays well below 1024 in healthy operation.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 45 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
       "id": 30,
       "interval": "1s",
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "max": 1024,
-          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "spanNulls": true }
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "spanNulls": true
+          }
         }
       },
       "targets": [
@@ -288,7 +588,12 @@
       "title": "Ring Buffer Overflow",
       "description": "1 = the 1024-sample ring filled before the window flushed. Older samples were overwritten; tune window_ms down or divider up.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 45 },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 45
+      },
       "id": 31,
       "fieldConfig": {
         "defaults": {
@@ -296,13 +601,26 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background"
+      },
       "targets": [
         {
           "expr": "tc_task_sample_buffer_overflow",
@@ -316,10 +634,27 @@
       "title": "Effective Window (ms)",
       "description": "Per-task window_ms actually used by the PLC. Configurable at runtime via PRG_TaskLog.aTaskDiagConfig[n].window_ms.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 45 },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 45
+      },
       "id": 32,
-      "fieldConfig": { "defaults": { "unit": "ms", "decimals": 0 } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
       "targets": [
         {
           "expr": "tc_task_window_ms",
@@ -331,13 +666,23 @@
   ],
   "refresh": "1s",
   "schemaVersion": 39,
-  "tags": ["tc-otel", "twincat", "diagnostics", "push"],
-  "templating": { "list": [] },
-  "time": { "from": "now-5m", "to": "now" },
+  "tags": [
+    "tc-otel",
+    "twincat",
+    "diagnostics",
+    "push"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "tc-otel TwinCAT Diagnostics",
   "uid": "tc-otel-diag",
-  "version": 3,
+  "version": 5,
   "weekStart": ""
 }
