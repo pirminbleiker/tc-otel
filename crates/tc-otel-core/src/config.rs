@@ -640,21 +640,16 @@ impl MetricKindConfig {
 }
 
 /// Source of custom metric values: push (mapping only), poll (ADS reads), or notification (ADS subscriptions)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomMetricSource {
     /// PLC pushes the metric via push-diagnostics (mapping only; default)
+    #[default]
     Push,
     /// tc-otel issues periodic ADS reads by symbol name
     Poll,
     /// tc-otel opens an AddDeviceNotification subscription; PLC pushes on-change
     Notification,
-}
-
-impl Default for CustomMetricSource {
-    fn default() -> Self {
-        Self::Push
-    }
 }
 
 /// Poll configuration for custom metrics (poll_interval_ms)
@@ -703,19 +698,14 @@ fn default_max_delay_ms() -> u32 {
 }
 
 /// Transmission mode for ADS notifications
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationTransmissionMode {
     /// Send notification on value change only
+    #[default]
     OnChange,
     /// Send notification periodically
     Cyclic,
-}
-
-impl Default for NotificationTransmissionMode {
-    fn default() -> Self {
-        Self::OnChange
-    }
 }
 
 impl Default for NotificationConfig {

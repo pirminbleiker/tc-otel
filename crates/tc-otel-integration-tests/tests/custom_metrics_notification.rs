@@ -17,7 +17,10 @@ fn test_notification_config_defaults() {
     assert_eq!(notif.min_period_ms, 0);
     assert_eq!(notif.max_period_ms, 10000);
     assert_eq!(notif.max_delay_ms, 5000);
-    assert_eq!(notif.transmission_mode, NotificationTransmissionMode::OnChange);
+    assert_eq!(
+        notif.transmission_mode,
+        NotificationTransmissionMode::OnChange
+    );
 }
 
 #[test]
@@ -49,7 +52,11 @@ fn test_notification_metric_valid_config() {
     };
 
     let errors = MetricMapper::validate(&[def]);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -134,7 +141,11 @@ fn test_notification_cyclic_mode() {
     };
 
     let errors = MetricMapper::validate(&[def]);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -169,7 +180,11 @@ fn test_multiple_notification_metrics_different_targets() {
     ];
 
     let errors = MetricMapper::validate(&metrics);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -210,5 +225,9 @@ fn test_mixed_notification_transmission_modes() {
     ];
 
     let errors = MetricMapper::validate(&metrics);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }

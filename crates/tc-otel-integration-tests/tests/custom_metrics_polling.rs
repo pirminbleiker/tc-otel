@@ -5,9 +5,7 @@
 //! - Symbol handle caching
 //! - Periodic ADS read operations
 
-use tc_otel_core::config::{
-    CustomMetricDef, CustomMetricSource, MetricKindConfig, PollConfig,
-};
+use tc_otel_core::config::{CustomMetricDef, CustomMetricSource, MetricKindConfig, PollConfig};
 use tc_otel_core::MetricMapper;
 
 #[test]
@@ -33,7 +31,11 @@ fn test_poll_metric_valid_config() {
     };
 
     let errors = MetricMapper::validate(&[def]);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -128,7 +130,11 @@ fn test_multiple_poll_metrics_different_targets() {
     ];
 
     let errors = MetricMapper::validate(&metrics);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -163,7 +169,11 @@ fn test_mixed_push_and_poll_metrics() {
     ];
 
     let errors = MetricMapper::validate(&metrics);
-    assert!(errors.is_empty(), "Expected valid config, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Expected valid config, got: {:?}",
+        errors
+    );
 }
 
 #[test]
