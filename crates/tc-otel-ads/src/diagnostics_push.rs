@@ -578,6 +578,7 @@ mod tests {
         v
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn metric_descriptor_bytes(
         metric_id: u16,
         kind: u8,
