@@ -234,14 +234,29 @@ impl Log4TcService {
             }),
         };
 
-        // Spawn push-diagnostic drain task
+        // Spawn push-diagnostic drain task — converts each DiagEvent into
+        // MetricEntry items via the bridge and forwards them to the metric
+        // pipeline. Task names are not needed: TaskDiagBatch already carries
+        // the task name in the wire frame.
         let mut shutdown_rx_push = shutdown_tx.subscribe();
+        let bridge_metric_tx = metric_tx.clone();
         let push_drain_handle = tokio::spawn(async move {
+            let empty_names = std::collections::HashMap::new();
             loop {
                 tokio::select! {
-                    Some((_net_id, ev)) = push_rx.recv() => {
-                        tracing::debug!("push-diagnostic event: {:?}", ev);
-                        // Unit 4 will replace this body with actual metric dispatch logic
+                    Some((net_id, ev)) = push_rx.recv() => {
+                        let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                            net_id, ev, &empty_names,
+                        );
+                        if let Some(ref tx) = bridge_metric_tx {
+                            for m in metrics {
+                                if tx.try_send(m).is_err() {
+                                    tracing::debug!(
+                                        "push-diagnostic bridge: metric channel full, dropping"
+                                    );
+                                }
+                            }
+                        }
                     }
                     _ = shutdown_rx_push.recv() => {
                         tracing::debug!("Push-diagnostic drain shutdown");
@@ -429,9 +444,10 @@ impl Log4TcService {
 
         // Start web UI server if enabled
         let web_handle = if self.settings.web.enabled {
-            let config_path = self.config_path.clone().unwrap_or_else(|| {
-                PathBuf::from("/etc/tc-otel/config.json")
-            });
+            let config_path = self
+                .config_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/etc/tc-otel/config.json"));
             let web_state = WebState {
                 stats: diagnostic_stats,
                 conn_manager,

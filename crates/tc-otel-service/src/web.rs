@@ -16,7 +16,7 @@ use schemars;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 #[allow(unused_imports)]
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tc_otel_ads::{AdsSymbolEntry, ConnectionManager, TaskRegistry};
@@ -451,9 +451,9 @@ async fn get_config(State(state): State<WebState>) -> Json<GetConfigResponse> {
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH + d).to_rfc3339())
+            t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
+                chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH + d).to_rfc3339()
+            })
         });
 
     let restart_pending = state.restart_pending.load(Ordering::SeqCst);
@@ -483,16 +483,15 @@ async fn post_config(
     State(state): State<WebState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<PostConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let mut incoming: AppSettings = serde_json::from_value(payload.clone())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid config JSON".to_string(),
-                    detail: Some(e.to_string()),
-                }),
-            )
-        })?;
+    let mut incoming: AppSettings = serde_json::from_value(payload.clone()).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid config JSON".to_string(),
+                detail: Some(e.to_string()),
+            }),
+        )
+    })?;
 
     let current = state.current_settings.read().unwrap().clone();
 
@@ -515,22 +514,23 @@ async fn post_config(
     // Write to temporary file then atomically rename
     let config_path = state.config_path.as_ref();
     let tmp_path = {
-        let parent = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
         let file_name = config_path.file_name().unwrap_or_default();
         let tmp_name = format!("{}.tmp", file_name.to_string_lossy());
         parent.join(tmp_name)
     };
 
-    let json_str = serde_json::to_string_pretty(&validated)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to serialize config".to_string(),
-                    detail: Some(e.to_string()),
-                }),
-            )
-        })?;
+    let json_str = serde_json::to_string_pretty(&validated).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to serialize config".to_string(),
+                detail: Some(e.to_string()),
+            }),
+        )
+    })?;
 
     std::fs::write(&tmp_path, json_str).map_err(|e| {
         (
@@ -759,7 +759,18 @@ td{font-size:.9rem}
   const MASKED='***MASKED***';
 
   function resolveRef(ref){if(!ref||!ref.startsWith('#/'))return null;const parts=ref.slice(2).split('/');let c=rootSchema;for(const p of parts){if(!c||typeof c!=='object')return null;c=c[p]}return c}
-  function resolve(s){if(!s||typeof s!=='object')return s;if(s.$ref){const r=resolveRef(s.$ref);return r?Object.assign({},r,Object.fromEntries(Object.entries(s).filter(([k])=>k!=='$ref'))):s}return s}
+  function resolve(s){
+    if(!s||typeof s!=='object')return s;
+    // Direct $ref
+    if(s.$ref){const r=resolveRef(s.$ref);return r?resolve(Object.assign({},r,Object.fromEntries(Object.entries(s).filter(([k])=>k!=='$ref')))):s}
+    // allOf wrapper (schemars emits this when a field has a default)
+    if(Array.isArray(s.allOf)&&s.allOf.length>0){
+      let merged=Object.fromEntries(Object.entries(s).filter(([k])=>k!=='allOf'));
+      for(const part of s.allOf){const r=resolve(part);if(r&&typeof r==='object')merged=Object.assign({},r,merged)}
+      return merged;
+    }
+    return s;
+  }
 
   function titleOf(schema,key){return schema.title||(key?key.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()):'')}
 

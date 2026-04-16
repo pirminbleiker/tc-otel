@@ -1,13 +1,38 @@
-//! Bridge DiagEvents from the self-polling collector to tc-otel's
-//! existing MetricEntry / OTel export pipeline.
+//! Bridge DiagEvents from push-diagnostic batches and the self-polling
+//! collector to tc-otel's existing MetricEntry / OTel export pipeline.
 //!
 //! Emitted metric names follow `tc.rt.*` and `tc.task.*` prefixes with
 //! resource attributes `ams_net_id` and — for per-task metrics — `task_port`.
+//! Flagged samples (cycle-exceed / RT-violation) additionally carry
+//! `cycle_count` and `dc_time_ns` attributes so each event can be correlated
+//! 1:1 with the PLC log entry produced on the same cycle. `dc_time_ns` is
+//! FILETIME — 100-nanosecond ticks since 1601-01-01 UTC — the same format
+//! log entries use for `plc_timestamp` / `clock_timestamp`.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_ads::ams::AmsNetId;
-use tc_otel_ads::diagnostics::DiagEvent;
+use tc_otel_ads::diagnostics::{
+    DiagEvent, DiagSample, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+};
 use tc_otel_core::MetricEntry;
+
+/// `DcTaskTime` (nanoseconds since 2000-01-01 UTC — TwinCAT Distributed
+/// Clock epoch) → `DateTime<Utc>`.
+///
+/// The PLC ships DcTaskTime in each diag sample because it is stamped by
+/// the runtime at the start of the task cycle and has true nanosecond
+/// resolution — unlike `PRG_TaskLog.RtcTime` which is quantised at
+/// ~100 ms. Using DcTaskTime lets every flagged-cycle metric point land
+/// on the Grafana time axis at the exact cycle boundary, so annotations
+/// and log correlation are cycle-accurate.
+fn dc_time_to_datetime(dc_ns: i64) -> DateTime<Utc> {
+    // Seconds between Unix epoch (1970) and DC epoch (2000).
+    const UNIX_TO_DC_EPOCH_SECS: i64 = 946_684_800;
+    let secs = dc_ns / 1_000_000_000;
+    let nanos_in_sec = (dc_ns.rem_euclid(1_000_000_000)) as u32;
+    DateTime::from_timestamp(UNIX_TO_DC_EPOCH_SECS + secs, nanos_in_sec).unwrap_or_else(Utc::now)
+}
 
 /// Convert a single decoded diagnostic event into zero or more OTel metrics.
 ///
@@ -60,17 +85,8 @@ pub fn diag_event_to_metrics(
             exec_ticks_100ns,
             ..
         } => {
-            // CPU-time accumulators as monotonic counters in nanoseconds.
-            // Prometheus rate() gives ns/s → divide by 1e9 for CPU fraction.
-            // u32 wrap (every ~7 min at full rate) is handled by PromQL's
-            // counter-reset semantics.
             let cpu_ns = cpu_ticks_100ns as f64 * 100.0;
             let exec_ns = exec_ticks_100ns as f64 * 100.0;
-            // u16 cycle counter wraps every ~65 s at 1 kHz; PromQL's
-            // rate() handles the apparent "reset" the same way. Emit raw;
-            // downstream can derive actual cycle time per cycle via
-            //   rate(tc_task_cpu_time_ns[1m]) / rate(tc_task_cycle_count[1m])
-            // → ns per cycle (÷1000 for µs).
             let task_name = task_names
                 .get(&(target_net_id, task_port))
                 .cloned()
@@ -96,81 +112,183 @@ pub fn diag_event_to_metrics(
                 ),
             ]
         }
-        DiagEvent::TaskSnapshot {
+        DiagEvent::TaskDiagBatch {
             task_port,
             task_name,
-            cycle_count,
-            last_exec_time_us,
+            window_ms,
+            cycle_count_end,
+            exec_time_min_us,
+            exec_time_max_us,
+            exec_time_avg_us,
             cycle_exceed_count,
             rt_violation_count,
+            samples,
             ..
-        } => {
-            // Snapshot: emit cycle count and exceed/violation counters.
-            vec![
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum("tc.task.cycle_count".into(), cycle_count as f64, true),
-                ),
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum(
-                        "tc.task.cycle_exceed_count".into(),
-                        cycle_exceed_count as f64,
-                        true,
-                    ),
-                ),
-                with_task(
-                    net_id_str.clone(),
-                    task_port,
-                    &task_name,
-                    MetricEntry::sum(
-                        "tc.task.rt_violation_count".into(),
-                        rt_violation_count as f64,
-                        true,
-                    ),
-                ),
-                with_task(
-                    net_id_str,
-                    task_port,
-                    &task_name,
-                    MetricEntry::gauge(
-                        "tc.task.last_exec_time_us".into(),
-                        last_exec_time_us as f64,
-                    ),
-                ),
-            ]
-        }
-        DiagEvent::CycleExceedEdge {
+        } => batch_to_metrics(
+            &net_id_str,
             task_port,
-            task_name,
-            ..
-        } => {
-            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
-            vec![with_task(
-                net_id_str,
-                task_port,
-                &task_name,
-                MetricEntry::sum("tc.task.cycle_exceed_edge".into(), 1.0, false),
-            )]
-        }
-        DiagEvent::RtViolationEdge {
-            task_port,
-            task_name,
-            ..
-        } => {
-            // Edge event: emit a non-monotonic counter = 1 to signal the edge.
-            vec![with_task(
-                net_id_str,
-                task_port,
-                &task_name,
-                MetricEntry::sum("tc.task.rt_violation_edge".into(), 1.0, false),
-            )]
-        }
+            &task_name,
+            window_ms,
+            cycle_count_end,
+            exec_time_min_us,
+            exec_time_max_us,
+            exec_time_avg_us,
+            cycle_exceed_count,
+            rt_violation_count,
+            &samples,
+        ),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn batch_to_metrics(
+    net_id: &str,
+    task_port: u16,
+    task_name: &str,
+    window_ms: u16,
+    cycle_count_end: u32,
+    exec_time_min_us: u32,
+    exec_time_max_us: u32,
+    exec_time_avg_us: u32,
+    cycle_exceed_count: u32,
+    rt_violation_count: u32,
+    samples: &[DiagSample],
+) -> Vec<MetricEntry> {
+    // One batch typically emits ~9 metrics plus one per flagged sample.
+    let mut out = Vec::with_capacity(9 + samples.len() / 10);
+
+    // Aggregate gauges for the window.
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge("tc.task.exec_time_min_us".into(), exec_time_min_us as f64),
+    ));
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge("tc.task.exec_time_max_us".into(), exec_time_max_us as f64),
+    ));
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge("tc.task.exec_time_avg_us".into(), exec_time_avg_us as f64),
+    ));
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge("tc.task.window_ms".into(), window_ms as f64),
+    ));
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge("tc.task.sample_count".into(), samples.len() as f64),
+    ));
+
+    // cycle_count is monotonic by construction (task cycle counter only grows);
+    // emit end-of-window value as a sum so rate() gives cycles/sec.
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::sum("tc.task.cycle_count".into(), cycle_count_end as f64, true),
+    ));
+
+    // Window deltas as non-monotonic sums. Downstream aggregates via
+    // sum_over_time() to reconstruct cumulative counts.
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::sum(
+            "tc.task.cycle_exceed_window".into(),
+            cycle_exceed_count as f64,
+            false,
+        ),
+    ));
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::sum(
+            "tc.task.rt_violation_window".into(),
+            rt_violation_count as f64,
+            false,
+        ),
+    ));
+
+    // Per-sample edge events for flagged cycles — timestamp set to each
+    // sample's real dc_time so Grafana places them at the exact cycle
+    // boundary (same timebase as log entries). Two metrics per flagged
+    // cycle:
+    //   - `cycle_exceed_edge` = 1   (event counter, rates + annotations)
+    //   - `cycle_exceed_exec_us` = exec_time_us (magnitude, Y-axis on the
+    //      scatter panel — shows by HOW MUCH each cycle overran)
+    // Both carry cycle_count attribute so you can click into logs.
+    let mut overflow_seen = false;
+    for s in samples {
+        let sample_ts = dc_time_to_datetime(s.dc_time);
+        if s.flags & SAMPLE_FLAG_CYCLE_EXCEED != 0 {
+            let mut m = with_sample_attrs(
+                with_task(
+                    net_id.into(),
+                    task_port,
+                    task_name,
+                    MetricEntry::sum("tc.task.cycle_exceed_edge".into(), 1.0, false),
+                ),
+                s,
+            );
+            m.timestamp = sample_ts;
+            out.push(m);
+
+            let mut m2 = with_sample_attrs(
+                with_task(
+                    net_id.into(),
+                    task_port,
+                    task_name,
+                    MetricEntry::gauge(
+                        "tc.task.cycle_exceed_exec_us".into(),
+                        s.exec_time_us as f64,
+                    ),
+                ),
+                s,
+            );
+            m2.timestamp = sample_ts;
+            out.push(m2);
+        }
+        if s.flags & SAMPLE_FLAG_RT_VIOLATION != 0 {
+            let mut m = with_sample_attrs(
+                with_task(
+                    net_id.into(),
+                    task_port,
+                    task_name,
+                    MetricEntry::sum("tc.task.rt_violation_edge".into(), 1.0, false),
+                ),
+                s,
+            );
+            m.timestamp = sample_ts;
+            out.push(m);
+        }
+        overflow_seen |= s.flags & SAMPLE_FLAG_OVERFLOW != 0;
+    }
+
+    // Signal overflow as a gauge once per batch — ops dashboards light up on
+    // any non-zero reading and operators know samples were dropped.
+    out.push(with_task(
+        net_id.into(),
+        task_port,
+        task_name,
+        MetricEntry::gauge(
+            "tc.task.sample_buffer_overflow".into(),
+            if overflow_seen { 1.0 } else { 0.0 },
+        ),
+    ));
+
+    out
 }
 
 fn with_ams(net_id: String, mut m: MetricEntry) -> MetricEntry {
@@ -189,6 +307,22 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
     m.attributes.insert(
         "task_name".into(),
         serde_json::Value::String(task_name.to_string()),
+    );
+    m
+}
+
+fn with_sample_attrs(mut m: MetricEntry, s: &DiagSample) -> MetricEntry {
+    m.attributes.insert(
+        "cycle_count".into(),
+        serde_json::Value::Number(s.cycle_count.into()),
+    );
+    m.attributes.insert(
+        "dc_time_ns".into(),
+        serde_json::Value::Number(s.dc_time.into()),
+    );
+    m.attributes.insert(
+        "exec_time_us".into(),
+        serde_json::Value::Number(s.exec_time_us.into()),
     );
     m
 }
@@ -266,18 +400,123 @@ mod tests {
     }
 
     #[test]
-    fn task_stats_falls_back_to_port_label_when_name_unknown() {
-        let out = diag_event_to_metrics(
-            net(),
-            DiagEvent::TaskStats {
-                task_port: 350,
-                type_marker: 0,
-                cycle_counter: 1,
-                cpu_ticks_100ns: 0,
-                exec_ticks_100ns: 0,
-            },
-            &HashMap::new(),
-        );
-        assert_eq!(out[0].task_name, "port-350");
+    fn batch_emits_aggregate_gauges_and_window_deltas() {
+        let ev = DiagEvent::TaskDiagBatch {
+            task_port: 350,
+            task_name: "PlcTask".into(),
+            task_obj_id: 42,
+            window_ms: 100,
+            cycle_count_start: 1000,
+            cycle_count_end: 1099,
+            dc_time_start: 0,
+            dc_time_end: 99_000_000,
+            exec_time_min_us: 200,
+            exec_time_max_us: 500,
+            exec_time_avg_us: 330,
+            cycle_exceed_count: 2,
+            rt_violation_count: 1,
+            samples: vec![DiagSample {
+                cycle_count: 1050,
+                exec_time_us: 500,
+                dc_time: 50_000_000,
+                flags: SAMPLE_FLAG_CYCLE_EXCEED,
+            }],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        let by_name: HashMap<String, &MetricEntry> =
+            out.iter().map(|m| (m.name.clone(), m)).collect();
+
+        assert_eq!(by_name["tc.task.exec_time_min_us"].value, 200.0);
+        assert_eq!(by_name["tc.task.exec_time_max_us"].value, 500.0);
+        assert_eq!(by_name["tc.task.exec_time_avg_us"].value, 330.0);
+        assert_eq!(by_name["tc.task.window_ms"].value, 100.0);
+        assert_eq!(by_name["tc.task.sample_count"].value, 1.0);
+        assert_eq!(by_name["tc.task.cycle_count"].value, 1099.0);
+        assert!(by_name["tc.task.cycle_count"].is_monotonic);
+        assert_eq!(by_name["tc.task.cycle_exceed_window"].value, 2.0);
+        assert!(!by_name["tc.task.cycle_exceed_window"].is_monotonic);
+        assert_eq!(by_name["tc.task.rt_violation_window"].value, 1.0);
+        assert_eq!(by_name["tc.task.sample_buffer_overflow"].value, 0.0);
+    }
+
+    #[test]
+    fn batch_emits_edge_events_with_cycle_and_dc_time_attributes() {
+        let ev = DiagEvent::TaskDiagBatch {
+            task_port: 350,
+            task_name: "PlcTask".into(),
+            task_obj_id: 42,
+            window_ms: 100,
+            cycle_count_start: 1000,
+            cycle_count_end: 1002,
+            dc_time_start: 0,
+            dc_time_end: 2_000_000,
+            exec_time_min_us: 100,
+            exec_time_max_us: 900,
+            exec_time_avg_us: 400,
+            cycle_exceed_count: 1,
+            rt_violation_count: 1,
+            samples: vec![
+                DiagSample {
+                    cycle_count: 1001,
+                    exec_time_us: 900,
+                    dc_time: 1_000_000,
+                    flags: SAMPLE_FLAG_CYCLE_EXCEED,
+                },
+                DiagSample {
+                    cycle_count: 1002,
+                    exec_time_us: 200,
+                    dc_time: 2_000_000,
+                    flags: SAMPLE_FLAG_RT_VIOLATION,
+                },
+            ],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        let exceed = out
+            .iter()
+            .find(|m| m.name == "tc.task.cycle_exceed_edge")
+            .expect("exceed edge metric present");
+        assert_eq!(exceed.attributes["cycle_count"].as_u64().unwrap(), 1001);
+        assert_eq!(exceed.attributes["dc_time_ns"].as_i64().unwrap(), 1_000_000);
+        assert_eq!(exceed.value, 1.0);
+        assert!(!exceed.is_monotonic);
+
+        let rtv = out
+            .iter()
+            .find(|m| m.name == "tc.task.rt_violation_edge")
+            .expect("rtv edge metric present");
+        assert_eq!(rtv.attributes["cycle_count"].as_u64().unwrap(), 1002);
+        assert_eq!(rtv.attributes["dc_time_ns"].as_i64().unwrap(), 2_000_000);
+    }
+
+    #[test]
+    fn batch_sets_overflow_gauge_when_any_sample_flagged() {
+        let ev = DiagEvent::TaskDiagBatch {
+            task_port: 350,
+            task_name: "PlcTask".into(),
+            task_obj_id: 42,
+            window_ms: 100,
+            cycle_count_start: 1000,
+            cycle_count_end: 1001,
+            dc_time_start: 0,
+            dc_time_end: 0,
+            exec_time_min_us: 0,
+            exec_time_max_us: 0,
+            exec_time_avg_us: 0,
+            cycle_exceed_count: 0,
+            rt_violation_count: 0,
+            samples: vec![DiagSample {
+                cycle_count: 1001,
+                exec_time_us: 0,
+                dc_time: 0,
+                flags: SAMPLE_FLAG_OVERFLOW,
+            }],
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        let overflow = out
+            .iter()
+            .find(|m| m.name == "tc.task.sample_buffer_overflow")
+            .unwrap();
+        assert_eq!(overflow.value, 1.0);
     }
 }

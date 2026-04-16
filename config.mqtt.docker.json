@@ -53,7 +53,7 @@
     "custom_metrics": [],
     "export_enabled": true,
     "export_batch_size": 100,
-    "export_flush_interval_ms": 5000
+    "export_flush_interval_ms": 1000
   },
   "diagnostics": {
     "enabled": true,
