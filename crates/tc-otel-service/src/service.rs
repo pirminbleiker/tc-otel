@@ -252,6 +252,7 @@ impl Log4TcService {
                                 cfg, diag_tx,
                             ));
                         let task_names = poller.task_names();
+                        let push_seen_map = poller.push_seen();
                         let mut shutdown_rx_poller = shutdown_tx.subscribe();
                         tokio::spawn(async move {
                             tokio::select! {
@@ -270,6 +271,7 @@ impl Log4TcService {
                         let bridge_metric_tx = metric_tx.clone();
                         tokio::spawn(async move {
                             while let Some((net_id, ev)) = diag_rx.recv().await {
+                                push_seen_map.write().await.insert(net_id, std::time::Instant::now());
                                 let names = task_names.read().await.clone();
                                 let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                                     net_id, ev, &names,

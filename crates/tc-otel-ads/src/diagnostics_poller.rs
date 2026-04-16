@@ -26,7 +26,7 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 /// Default AMS port of the TwinCAT realtime subsystem.
@@ -34,6 +34,9 @@ pub const DEFAULT_RT_PORT: u16 = 200;
 
 /// Default source port tc-otel uses when issuing diagnostic polls.
 pub const POLLER_SOURCE_PORT: u16 = 30001;
+
+/// Duration for which the poller suspends polling after a push-diagnostic event.
+pub const PUSH_SUSPEND_WINDOW: Duration = Duration::from_secs(10);
 
 /// Configuration for a single PLC target.
 #[derive(Debug, Clone)]
@@ -282,6 +285,9 @@ pub struct DiagnosticsPoller {
     /// Invoke-IDs the poller sent for `ReadDeviceInfo` requests, keyed so
     /// the matching response can be attributed to the right (net_id, port).
     pending_device_info: Arc<Mutex<HashMap<u32, (AmsNetId, u16)>>>,
+    /// Tracks the most recent time a push-diagnostic event was received
+    /// per target. Used to suspend polling when push events are active.
+    push_seen: Arc<RwLock<HashMap<AmsNetId, Instant>>>,
 }
 
 impl DiagnosticsPoller {
@@ -301,6 +307,7 @@ impl DiagnosticsPoller {
             event_tx,
             task_names: Arc::new(RwLock::new(seeded)),
             pending_device_info: Arc::new(Mutex::new(HashMap::new())),
+            push_seen: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -308,6 +315,12 @@ impl DiagnosticsPoller {
     /// until the first `ReadDeviceInfo` response arrives.
     pub fn task_names(&self) -> TaskNameMap {
         self.task_names.clone()
+    }
+
+    /// Shared push-seen timestamps map. Used to track when push-diagnostic
+    /// events are received so polling can be suspended during active push periods.
+    pub fn push_seen(&self) -> Arc<RwLock<HashMap<AmsNetId, Instant>>> {
+        self.push_seen.clone()
     }
 
     /// Run the poller forever. Subscribes to the response topic, spawns one
@@ -383,6 +396,20 @@ impl DiagnosticsPoller {
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            // Check if a push-diagnostic event was received recently for this target.
+            // If so, skip this polling tick to avoid redundant requests.
+            {
+                let push_map = self.push_seen.read().await;
+                if let Some(&last_push) = push_map.get(&target.net_id) {
+                    if Instant::now().duration_since(last_push) < PUSH_SUSPEND_WINDOW {
+                        tracing::debug!(
+                            "DiagnosticsPoller: suspending polls for {} (push-diagnostic active)",
+                            target.net_id
+                        );
+                        continue;
+                    }
+                }
+            }
             let polls = build_polls_for_target(
                 &target,
                 self.config.local_net_id,
@@ -662,5 +689,39 @@ mod tests {
         assert_eq!(polls.len(), 1);
         assert_eq!(polls[0].index_offset, IO_EXCEED_COUNTER);
         assert_eq!(polls[0].target_port, 500);
+    }
+
+    #[tokio::test]
+    async fn suspends_polling_when_push_seen_recently() {
+        let config = PollerConfig {
+            broker_host: "localhost".to_string(),
+            broker_port: 1883,
+            client_id: "test".to_string(),
+            topic_prefix: "test".to_string(),
+            local_net_id: net([10, 10, 10, 10, 1, 1]),
+            targets: vec![make_config()],
+        };
+        let (tx, _rx) = mpsc::channel(10);
+        let poller = Arc::new(DiagnosticsPoller::new(config, tx));
+        let target_id = net([172, 28, 41, 37, 1, 1]);
+
+        // Record a push event now
+        let push_seen_arc = poller.push_seen();
+        {
+            let mut map = push_seen_arc.write().await;
+            map.insert(target_id, Instant::now());
+        }
+
+        // Verify it's present and within the suspend window
+        let last_push = {
+            let map = push_seen_arc.read().await;
+            map.get(&target_id).copied()
+        };
+        if let Some(last_push) = last_push {
+            let elapsed = Instant::now().duration_since(last_push);
+            assert!(elapsed < PUSH_SUSPEND_WINDOW);
+        } else {
+            panic!("push_seen should contain the target");
+        }
     }
 }
