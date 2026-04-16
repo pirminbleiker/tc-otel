@@ -15,6 +15,7 @@ chrono.workspace = true
 uuid.workspace = true
 bytes.workspace = true
 regex = "1.10"
+schemars = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 proptest.workspace = true

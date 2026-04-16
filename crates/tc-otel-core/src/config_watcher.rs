@@ -14,6 +14,8 @@ pub struct ConfigDiff {
     pub service_changed: bool,
     pub outputs_changed: bool,
     pub web_changed: bool,
+    pub metrics_changed: bool,
+    pub diagnostics_changed: bool,
 }
 
 impl ConfigDiff {
@@ -26,12 +28,17 @@ impl ConfigDiff {
             service_changed: old.service != new.service,
             outputs_changed: old.outputs != new.outputs,
             web_changed: old.web != new.web,
+            metrics_changed: old.metrics != new.metrics,
+            diagnostics_changed: old.diagnostics != new.diagnostics,
         }
     }
 
-    /// Returns true if any hot-reloadable settings changed (export, logging)
+    /// Returns true if any hot-reloadable settings changed (export, logging, metrics, diagnostics)
     pub fn has_hot_reloadable_changes(&self) -> bool {
-        self.export_changed || self.logging_changed
+        self.export_changed
+            || self.logging_changed
+            || self.metrics_changed
+            || self.diagnostics_changed
     }
 
     /// Returns true if any settings that require restart changed
@@ -47,6 +54,8 @@ impl ConfigDiff {
             && !self.service_changed
             && !self.outputs_changed
             && !self.web_changed
+            && !self.metrics_changed
+            && !self.diagnostics_changed
     }
 }
 
@@ -201,5 +210,48 @@ mod tests {
 
         let diff = ConfigDiff::compute(&a, &b);
         assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn test_metrics_change_detected() {
+        let a = default_settings();
+        let mut b = default_settings();
+        b.metrics.cycle_time_window = 2000;
+
+        let diff = ConfigDiff::compute(&a, &b);
+
+        assert!(diff.metrics_changed);
+        assert!(!diff.receiver_changed);
+        assert!(diff.has_hot_reloadable_changes());
+        assert!(!diff.has_restart_required_changes());
+    }
+
+    #[test]
+    fn test_diagnostics_change_detected() {
+        let a = default_settings();
+        let mut b = default_settings();
+        b.diagnostics.enabled = true;
+
+        let diff = ConfigDiff::compute(&a, &b);
+
+        assert!(diff.diagnostics_changed);
+        assert!(!diff.receiver_changed);
+        assert!(diff.has_hot_reloadable_changes());
+        assert!(!diff.has_restart_required_changes());
+    }
+
+    #[test]
+    fn test_metrics_and_diagnostics_are_hot_reloadable() {
+        let a = default_settings();
+        let mut b = default_settings();
+        b.metrics.export_batch_size = 5000;
+        b.diagnostics.enabled = true;
+
+        let diff = ConfigDiff::compute(&a, &b);
+
+        assert!(diff.metrics_changed);
+        assert!(diff.diagnostics_changed);
+        assert!(diff.has_hot_reloadable_changes());
+        assert!(!diff.has_restart_required_changes());
     }
 }

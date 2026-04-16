@@ -167,6 +167,19 @@ Add a route from your PLC to the tc-otel service (AMS Net ID from config, transp
 
 See [GETTING_STARTED.md](GETTING_STARTED.md) for the full walkthrough.
 
+## Config UI
+
+The tc-otel service exposes a web UI for live config editing at `http://localhost:8080/#/config` (Docker host port 8080).
+
+**Features:**
+
+- All `AppSettings` sections editable without restart
+- Secrets displayed as `***MASKED***`; empty field = preserve current value
+- POST response indicates which sections were hot-reloaded vs. require restart
+- For immutable deployments, mount config as `:ro` — UI saves will fail with HTTP 500
+
+**Security:** No authentication enabled. Restrict the web port to trusted networks only.
+
 ## Installation Options
 
 | Method | Platforms | Notes |

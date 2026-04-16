@@ -38,6 +38,7 @@ chrono.workspace = true
 uuid.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 reqwest.workspace = true
+schemars = "0.8"
 
 [dev-dependencies]
 mockall.workspace = true

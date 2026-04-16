@@ -23,13 +23,16 @@ use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebSta
 pub struct Log4TcService {
     settings: AppSettings,
     config_path: Option<PathBuf>,
+    current_settings: Arc<std::sync::RwLock<AppSettings>>,
 }
 
 impl Log4TcService {
     pub async fn new(settings: AppSettings) -> Result<Self> {
+        let current = settings.clone();
         Ok(Self {
             settings,
             config_path: None,
+            current_settings: Arc::new(std::sync::RwLock::new(current)),
         })
     }
 
@@ -426,6 +429,9 @@ impl Log4TcService {
 
         // Start web UI server if enabled
         let web_handle = if self.settings.web.enabled {
+            let config_path = self.config_path.clone().unwrap_or_else(|| {
+                PathBuf::from("/etc/tc-otel/config.json")
+            });
             let web_state = WebState {
                 stats: diagnostic_stats,
                 conn_manager,
@@ -436,6 +442,9 @@ impl Log4TcService {
                 symbols: Arc::new(SymbolStore::new()),
                 cycle_tracker,
                 service_name: self.settings.service.name.clone(),
+                config_path: Arc::new(config_path),
+                current_settings: self.current_settings.clone(),
+                restart_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let web_config = self.settings.web.clone();
             let shutdown_rx_web = shutdown_tx.subscribe();
@@ -477,6 +486,18 @@ impl Log4TcService {
 
         tracing::info!("Log4TC Service stopped");
         Ok(())
+    }
+
+    /// Apply configuration changes and update hot-reload components
+    #[allow(dead_code)]
+    pub fn apply_config_changes(&self, new_settings: AppSettings) {
+        // Update current settings
+        *self.current_settings.write().unwrap() = new_settings.clone();
+
+        // TODO: When ConfigDiff has restart_required fields available,
+        // set restart_pending flag accordingly
+        // For now, just update the settings
+        tracing::debug!("Configuration updated via apply_config_changes");
     }
 
     /// Task that watches for logging configuration changes and applies them.

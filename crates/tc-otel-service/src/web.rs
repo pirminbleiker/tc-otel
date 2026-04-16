@@ -11,13 +11,16 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use chrono;
+use schemars;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[allow(unused_imports)]
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tc_otel_ads::{AdsSymbolEntry, ConnectionManager, TaskRegistry};
-use tc_otel_core::WebConfig;
+use tc_otel_core::{AppSettings, WebConfig};
 
 use crate::cycle_time::CycleTimeTracker;
 
@@ -175,6 +178,9 @@ pub struct WebState {
     pub symbols: Arc<SymbolStore>,
     pub cycle_tracker: Arc<CycleTimeTracker>,
     pub service_name: String,
+    pub config_path: Arc<std::path::PathBuf>,
+    pub current_settings: Arc<RwLock<tc_otel_core::AppSettings>>,
+    pub restart_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // --- API response types ---
@@ -430,6 +436,174 @@ async fn dashboard() -> impl IntoResponse {
     )
 }
 
+#[derive(Serialize)]
+struct GetConfigResponse {
+    config: serde_json::Value,
+    restart_pending: bool,
+    last_modified: Option<String>,
+}
+
+async fn get_config(State(state): State<WebState>) -> Json<GetConfigResponse> {
+    let current = state.current_settings.read().unwrap();
+    let config_value = current.to_masked_json();
+
+    let last_modified = std::fs::metadata(state.config_path.as_ref())
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH + d).to_rfc3339())
+        });
+
+    let restart_pending = state.restart_pending.load(Ordering::SeqCst);
+
+    Json(GetConfigResponse {
+        config: config_value,
+        restart_pending,
+        last_modified,
+    })
+}
+
+#[derive(Serialize)]
+struct PostConfigResponse {
+    ok: bool,
+    hot_reloaded: Vec<String>,
+    restart_required: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+async fn post_config(
+    State(state): State<WebState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<PostConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let mut incoming: AppSettings = serde_json::from_value(payload.clone())
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid config JSON".to_string(),
+                    detail: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    let current = state.current_settings.read().unwrap().clone();
+
+    // Merge secrets from current config (restore masked values)
+    incoming.merge_secrets_from(&current);
+
+    // Validate the merged config
+    if let Err(errors) = incoming.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Config validation failed".to_string(),
+                detail: Some(errors.join("; ")),
+            }),
+        ));
+    }
+
+    let validated = incoming;
+
+    // Write to temporary file then atomically rename
+    let config_path = state.config_path.as_ref();
+    let tmp_path = {
+        let parent = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let file_name = config_path.file_name().unwrap_or_default();
+        let tmp_name = format!("{}.tmp", file_name.to_string_lossy());
+        parent.join(tmp_name)
+    };
+
+    let json_str = serde_json::to_string_pretty(&validated)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to serialize config".to_string(),
+                    detail: Some(e.to_string()),
+                }),
+            )
+        })?;
+
+    std::fs::write(&tmp_path, json_str).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to write config file".to_string(),
+                detail: Some(e.to_string()),
+            }),
+        )
+    })?;
+
+    std::fs::rename(&tmp_path, config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to atomically replace config".to_string(),
+                detail: Some(e.to_string()),
+            }),
+        )
+    })?;
+
+    // Compute diff to determine which components need reload/restart
+    let diff = tc_otel_core::ConfigDiff::compute(&current, &validated);
+
+    // Update current settings immediately to avoid stale reads
+    *state.current_settings.write().unwrap() = validated.clone();
+
+    // Build response arrays from diff flags
+    let mut hot_reloaded = vec![];
+    let mut restart_required = vec![];
+
+    if diff.logging_changed {
+        hot_reloaded.push("logging".to_string());
+    }
+    if diff.export_changed {
+        hot_reloaded.push("export".to_string());
+    }
+    if diff.metrics_changed {
+        hot_reloaded.push("metrics".to_string());
+    }
+    if diff.diagnostics_changed {
+        hot_reloaded.push("diagnostics".to_string());
+    }
+
+    if diff.receiver_changed {
+        restart_required.push("receiver".to_string());
+    }
+    if diff.service_changed {
+        restart_required.push("service".to_string());
+    }
+    if diff.outputs_changed {
+        restart_required.push("outputs".to_string());
+    }
+    if diff.web_changed {
+        restart_required.push("web".to_string());
+    }
+
+    if !restart_required.is_empty() {
+        state.restart_pending.store(true, Ordering::SeqCst);
+    }
+
+    Ok(Json(PostConfigResponse {
+        ok: true,
+        hot_reloaded,
+        restart_required,
+    }))
+}
+
+async fn get_config_schema() -> Json<serde_json::Value> {
+    let schema = schemars::schema_for!(AppSettings);
+    Json(serde_json::to_value(schema).unwrap_or(serde_json::json!({})))
+}
+
 /// Build the axum router for the web UI
 pub fn router(state: WebState) -> Router {
     Router::new()
@@ -444,6 +618,9 @@ pub fn router(state: WebState) -> Router {
         .route("/api/symbols", get(get_symbols))
         .route("/api/symbols/:name", get(get_symbol_by_name))
         .route("/api/cycle-metrics", get(cycle_metrics))
+        .route("/api/config", get(get_config))
+        .route("/api/config", post(post_config))
+        .route("/api/config/schema", get(get_config_schema))
         .with_state(state)
 }
 
@@ -470,7 +647,7 @@ pub async fn start_web_server(
 
 // --- Embedded SPA Dashboard ---
 
-const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -508,7 +685,10 @@ td{font-size:.9rem}
 <body>
 <div class="container">
 <h1>tc-otel Dashboard</h1>
+<nav id="topnav" style="display:flex;gap:.5rem;margin-bottom:1rem"><a href="#/" class="btn" id="nav-dash">Dashboard</a><a href="#/config" class="btn" id="nav-cfg">Config</a></nav>
 <div id="error"></div>
+
+<div id="dashboard-view">
 <div class="status-bar"><span id="last-update">Loading...</span><span id="uptime"></span></div>
 
 <div class="grid" id="stats"></div>
@@ -538,6 +718,258 @@ td{font-size:.9rem}
 <div class="tag-list" id="tag-list"></div>
 </div>
 </div>
+
+<section id="config-view" style="display:none">
+<h2>Configuration</h2>
+<div id="config-form-root"></div>
+<button id="config-save-btn" class="btn" onclick="saveConfig()">Speichern</button>
+<div id="config-toast" class="toast" style="display:none;background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1rem;margin-top:1rem"></div>
+</section>
+</div>
+<style id="cfg-style">
+.cfg-section{background:#1e293b;border:1px solid #334155;border-radius:.5rem;margin-bottom:1rem;overflow:hidden}
+.cfg-section>summary{padding:.75rem 1rem;cursor:pointer;font-weight:600;color:#38bdf8;user-select:none;background:#0f172a}
+.cfg-section>summary:hover{background:#1e293b}
+.cfg-section[open]>summary{border-bottom:1px solid #334155}
+.cfg-body{padding:1rem}
+.cfg-field{margin-bottom:.75rem}
+.cfg-field>label{display:block;font-size:.85rem;color:#cbd5e1;margin-bottom:.25rem}
+.cfg-field>.hint{font-size:.75rem;color:#64748b;margin-bottom:.25rem}
+.cfg-field input[type=text],.cfg-field input[type=number],.cfg-field input[type=password],.cfg-field select{width:100%;padding:.4rem .6rem;background:#0f172a;border:1px solid #475569;border-radius:.25rem;color:#e2e8f0;font-size:.9rem;font-family:inherit}
+.cfg-field input:focus,.cfg-field select:focus{outline:none;border-color:#38bdf8}
+.cfg-field input[type=checkbox]{width:auto;margin-right:.5rem}
+.cfg-array{border-left:2px solid #334155;padding-left:.75rem}
+.cfg-array-item{background:#0f172a;border:1px solid #334155;border-radius:.25rem;padding:.5rem;margin-bottom:.5rem;position:relative}
+.cfg-rm{position:absolute;top:.25rem;right:.25rem;padding:.1rem .5rem;background:#dc2626;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.75rem}
+.cfg-add{padding:.3rem .8rem;background:#16a34a;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.8rem;margin-top:.25rem}
+.cfg-union-tabs{display:flex;gap:.25rem;margin-bottom:.5rem;border-bottom:1px solid #334155}
+.cfg-union-tab{padding:.3rem .7rem;background:transparent;border:none;border-bottom:2px solid transparent;color:#94a3b8;cursor:pointer;font-size:.85rem}
+.cfg-union-tab.active{color:#38bdf8;border-bottom-color:#38bdf8}
+.cfg-union-panel{display:none}.cfg-union-panel.active{display:block}
+.toast.ok{background:#052e16;border-color:#16a34a;color:#bbf7d0}
+.toast.warn{background:#422006;border-color:#ca8a04;color:#fde68a}
+.toast.err{background:#450a0a;border-color:#dc2626;color:#fecaca}
+</style>
+<script>
+(function(){
+  const root=document.getElementById('config-form-root');
+  const toast=document.getElementById('config-toast');
+  const saveBtn=document.getElementById('config-save-btn');
+  let rootSchema=null, currentData=null;
+  const MASKED='***MASKED***';
+
+  function resolveRef(ref){if(!ref||!ref.startsWith('#/'))return null;const parts=ref.slice(2).split('/');let c=rootSchema;for(const p of parts){if(!c||typeof c!=='object')return null;c=c[p]}return c}
+  function resolve(s){if(!s||typeof s!=='object')return s;if(s.$ref){const r=resolveRef(s.$ref);return r?Object.assign({},r,Object.fromEntries(Object.entries(s).filter(([k])=>k!=='$ref'))):s}return s}
+
+  function titleOf(schema,key){return schema.title||(key?key.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()):'')}
+
+  function renderField(schema,value,path,key){
+    schema=resolve(schema);
+    const desc=schema.description?`<div class="hint">${escape(schema.description)}</div>`:'';
+    const lbl=key!=null?`<label>${escape(titleOf(schema,key))}</label>`:'';
+
+    if(schema.enum){
+      const opts=schema.enum.map(e=>`<option value="${escape(e)}"${e===value?' selected':''}>${escape(e)}</option>`).join('');
+      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<select data-kind="enum">${opts}</select></div>`;
+    }
+    if(schema.type==='boolean'){
+      return `<div class="cfg-field" data-path="${path}">${desc}<label><input type="checkbox" data-kind="bool"${value?' checked':''}> ${escape(titleOf(schema,key))}</label></div>`;
+    }
+    if(schema.type==='integer'||schema.type==='number'){
+      const min=schema.minimum!=null?` min="${schema.minimum}"`:'';
+      const max=schema.maximum!=null?` max="${schema.maximum}"`:'';
+      const step=schema.type==='integer'?' step="1"':'';
+      const v=value!=null?value:'';
+      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="number" data-kind="num"${min}${max}${step} value="${escape(String(v))}"></div>`;
+    }
+    if(schema.type==='string'&&schema.format==='password'){
+      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="password" data-kind="pw" placeholder="${value===MASKED?'unchanged':''}" data-orig="${value===MASKED?'1':'0'}"></div>`;
+    }
+    if(schema.type==='string'){
+      const v=value!=null?value:'';
+      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="text" data-kind="str" value="${escape(String(v))}"></div>`;
+    }
+    if(schema.type==='array'){
+      return renderArray(schema,value||[],path,key);
+    }
+    if(schema.type==='object'||schema.properties){
+      return renderObject(schema,value||{},path,key);
+    }
+    if(schema.oneOf||schema.anyOf){
+      return renderUnion(schema,value,path,key);
+    }
+    return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="text" data-kind="json" value="${escape(JSON.stringify(value||null))}"></div>`;
+  }
+
+  function renderObject(schema,value,path,key){
+    const props=schema.properties||{};
+    let body='';
+    for(const [pk,ps] of Object.entries(props)){
+      body+=renderField(ps,value?value[pk]:undefined,path?`${path}.${pk}`:pk,pk);
+    }
+    if(!path){return body}
+    if(key==null){return `<div data-obj="${path}">${body}</div>`}
+    return `<div class="cfg-field" data-path="${path}" data-obj="1"><details class="cfg-section" open><summary>${escape(titleOf(schema,key))}</summary><div class="cfg-body">${body}</div></details></div>`;
+  }
+
+  function renderArray(schema,items,path,key){
+    const itemSchema=resolve(schema.items||{});
+    const id='arr-'+path.replace(/[^a-z0-9]/gi,'_');
+    const inner=items.map((it,i)=>`<div class="cfg-array-item" data-idx="${i}"><button type="button" class="cfg-rm">×</button>${renderField(itemSchema,it,`${path}[${i}]`,null)}</div>`).join('');
+    return `<div class="cfg-field" data-path="${path}" data-arr="1"><label>${escape(titleOf(schema,key))}</label><div class="cfg-array" id="${id}" data-item-schema='${escape(JSON.stringify(itemSchema))}'>${inner}</div><button type="button" class="cfg-add" data-target="${id}" data-path="${path}">+ Add</button></div>`;
+  }
+
+  function renderUnion(schema,value,path,key){
+    const variants=(schema.oneOf||schema.anyOf).map(resolve);
+    // Determine active variant: match by 'type' discriminator if present
+    let active=0;
+    if(value&&typeof value==='object'&&value.type){
+      variants.forEach((v,i)=>{const t=v.properties&&v.properties.type;if(t&&(t.const===value.type||(t.enum&&t.enum.includes(value.type))))active=i});
+    }
+    const tabs=variants.map((v,i)=>{
+      const t=v.properties&&v.properties.type;
+      const name=(t&&(t.const||(t.enum&&t.enum[0])))||v.title||`Variant ${i+1}`;
+      return `<button type="button" class="cfg-union-tab${i===active?' active':''}" data-tab="${i}">${escape(name)}</button>`;
+    }).join('');
+    const panels=variants.map((v,i)=>`<div class="cfg-union-panel${i===active?' active':''}" data-panel="${i}">${renderObject(v,i===active?(value||{}):{},path,null)}</div>`).join('');
+    return `<div class="cfg-field" data-path="${path}" data-union="1"><label>${escape(titleOf(schema,key))}</label><div class="cfg-union-tabs">${tabs}</div>${panels}</div>`;
+  }
+
+  function escape(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])}
+
+  function collect(el,path){
+    // Walk DOM, build nested object matching original paths
+    const out={};
+    const fields=el.querySelectorAll('[data-path]');
+    fields.forEach(f=>{
+      // Only innermost leaves; skip object/array/union wrappers
+      if(f.dataset.obj||f.dataset.arr||f.dataset.union)return;
+      // Check we're not inside an inactive union panel
+      let p=f.parentElement;
+      while(p&&p!==el){
+        if(p.classList&&p.classList.contains('cfg-union-panel')&&!p.classList.contains('active'))return;
+        p=p.parentElement;
+      }
+      const fp=f.dataset.path;
+      const input=f.querySelector('input,select');
+      if(!input)return;
+      let val;
+      const k=input.dataset.kind;
+      if(k==='bool')val=input.checked;
+      else if(k==='num'){val=input.value===''?null:Number(input.value)}
+      else if(k==='pw'){if(input.value==='')val=input.dataset.orig==='1'?MASKED:null;else val=input.value}
+      else if(k==='json'){try{val=JSON.parse(input.value)}catch{val=input.value}}
+      else val=input.value===''?null:input.value;
+      setPath(out,fp,val);
+    });
+    // Arrays: reconstruct order from DOM
+    const arrs=el.querySelectorAll('[data-arr="1"]');
+    arrs.forEach(a=>{
+      const fp=a.dataset.path;
+      const items=[];
+      a.querySelectorAll(':scope > .cfg-array > .cfg-array-item').forEach((it,i)=>{
+        const sub=collect(it,`${fp}[${i}]`);
+        // If item's root was a single leaf (not object), pick the leaf value
+        const leafKey=`${fp}[${i}]`;
+        if(sub&&typeof sub==='object'&&Object.keys(sub).length===1&&sub[fp]!==undefined){items.push(sub[fp][`[${i}]`]||sub[fp])}
+        else items.push(getPath(sub,leafKey)||sub);
+      });
+      setPath(out,fp,items);
+    });
+    return out;
+  }
+
+  function setPath(obj,path,val){
+    const tokens=tokenize(path);
+    let c=obj;
+    for(let i=0;i<tokens.length-1;i++){
+      const t=tokens[i], nxt=tokens[i+1], isArr=typeof nxt==='number';
+      if(c[t]==null)c[t]=isArr?[]:{};
+      c=c[t];
+    }
+    c[tokens[tokens.length-1]]=val;
+  }
+  function getPath(obj,path){const tokens=tokenize(path);let c=obj;for(const t of tokens){if(c==null)return undefined;c=c[t]}return c}
+  function tokenize(path){
+    const out=[];
+    path.replace(/([^.\[\]]+)|\[(\d+)\]/g,(_,name,idx)=>{if(name!=null)out.push(name);else out.push(Number(idx))});
+    return out;
+  }
+
+  function showToast(msg,cls){toast.style.display='block';toast.className='toast '+cls;toast.textContent=msg;if(cls==='ok')setTimeout(()=>{toast.style.display='none'},6000)}
+
+  async function loadAndRender(){
+    try{
+      const[cfgResp,schemaResp]=await Promise.all([fetch('/api/config'),fetch('/api/config/schema')]);
+      if(!cfgResp.ok||!schemaResp.ok)throw new Error('Load failed: '+cfgResp.status+'/'+schemaResp.status);
+      const cfg=await cfgResp.json();
+      rootSchema=await schemaResp.json();
+      currentData=cfg.config||{};
+      root.innerHTML=renderObject(rootSchema,currentData,'',null);
+      bindEvents();
+      if(cfg.restart_pending)showToast('Restart pending — Änderungen warten auf Prozess-Neustart.','warn');
+    }catch(e){showToast('Config laden fehlgeschlagen: '+e.message,'err')}
+  }
+
+  function bindEvents(){
+    root.addEventListener('click',ev=>{
+      const rm=ev.target.closest('.cfg-rm');
+      if(rm){const item=rm.closest('.cfg-array-item');if(item)item.remove();ev.preventDefault();return}
+      const add=ev.target.closest('.cfg-add');
+      if(add){
+        const arr=document.getElementById(add.dataset.target);
+        const itemSchema=JSON.parse(arr.dataset.itemSchema.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'"));
+        const i=arr.children.length;
+        const wrap=document.createElement('div');
+        wrap.className='cfg-array-item';wrap.dataset.idx=i;
+        wrap.innerHTML=`<button type="button" class="cfg-rm">×</button>`+renderField(itemSchema,null,`${add.dataset.path}[${i}]`,null);
+        arr.appendChild(wrap);
+        ev.preventDefault();return;
+      }
+      const tab=ev.target.closest('.cfg-union-tab');
+      if(tab){
+        const union=tab.closest('[data-union="1"]');
+        union.querySelectorAll('.cfg-union-tab').forEach(t=>t.classList.remove('active'));
+        union.querySelectorAll('.cfg-union-panel').forEach(p=>p.classList.remove('active'));
+        tab.classList.add('active');
+        union.querySelector(`.cfg-union-panel[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+        ev.preventDefault();return;
+      }
+    });
+  }
+
+  window.saveConfig=async function(){
+    if(!rootSchema){showToast('Schema noch nicht geladen.','err');return}
+    saveBtn.disabled=true;
+    try{
+      const payload=collect(root,'');
+      const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const res=await r.json();
+      if(r.ok){
+        const hot=(res.hot_reloaded||[]).join(', ')||'–';
+        const rr=(res.restart_required||[]).join(', ');
+        const msg=`✓ Gespeichert. Hot-reloaded: ${hot}.`+(rr?` Restart erforderlich: ${rr}.`:'');
+        showToast(msg,rr?'warn':'ok');
+        currentData=payload;
+      }else if(res.errors){showToast('Validierung: '+res.errors.join('; '),'err')}
+      else{showToast('Fehler: '+(res.detail||res.error||r.statusText),'err')}
+    }catch(e){showToast('Save fehlgeschlagen: '+e.message,'err')}
+    finally{saveBtn.disabled=false}
+  };
+
+  function route(){
+    const isCfg=location.hash==='#/config';
+    document.getElementById('dashboard-view').style.display=isCfg?'none':'';
+    document.getElementById('config-view').style.display=isCfg?'':'none';
+    document.getElementById('nav-cfg').style.background=isCfg?'#1d4ed8':'';
+    document.getElementById('nav-dash').style.background=isCfg?'':'#1d4ed8';
+    if(isCfg&&!rootSchema)loadAndRender();
+  }
+  window.addEventListener('hashchange',route);
+  route();
+})();
+</script>
+<!-- CONFIG-FORM-JS-INJECTION-POINT -->
 
 <script>
 const API='';
@@ -610,7 +1042,7 @@ refresh();
 refreshTimer=setInterval(refresh,5000);
 </script>
 </body>
-</html>"#;
+</html>"##;
 
 #[cfg(test)]
 mod tests {
@@ -631,6 +1063,9 @@ mod tests {
             symbols: Arc::new(SymbolStore::new()),
             cycle_tracker: Arc::new(CycleTimeTracker::new(1000)),
             service_name: "test-service".to_string(),
+            config_path: Arc::new(std::path::PathBuf::from("/tmp/config.json")),
+            current_settings: Arc::new(RwLock::new(AppSettings::default())),
+            restart_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 

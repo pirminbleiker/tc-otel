@@ -1,10 +1,11 @@
 //! Configuration structures and loading
 
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 use std::path::PathBuf;
 
 /// Application-wide configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct AppSettings {
     pub logging: LoggingConfig,
     pub receiver: ReceiverConfig,
@@ -21,14 +22,24 @@ pub struct AppSettings {
 }
 
 /// Logging configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingConfig {
     pub log_level: String,
     pub format: LogFormat,
     pub output_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            log_level: "info".to_string(),
+            format: LogFormat::Json,
+            output_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     Json,
@@ -36,7 +47,7 @@ pub enum LogFormat {
 }
 
 /// TLS/SSL configuration for the receiver
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TlsConfig {
     /// Enable TLS for the receiver
     #[serde(default)]
@@ -233,7 +244,7 @@ impl TlsConfig {
 }
 
 /// TCP transport configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TcpTransportConfig {
     /// Listening address (default "0.0.0.0")
     #[serde(default = "default_tcp_host")]
@@ -261,7 +272,7 @@ impl Default for TcpTransportConfig {
 }
 
 /// MQTT TLS configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MqttTlsConfig {
     /// Path to CA certificate (PEM format)
     pub ca_cert_path: PathBuf,
@@ -277,7 +288,7 @@ pub struct MqttTlsConfig {
 }
 
 /// MQTT transport configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MqttTransportConfig {
     /// MQTT broker host (e.g., "localhost")
     pub broker: String,
@@ -320,7 +331,7 @@ impl Default for MqttTransportConfig {
 }
 
 /// Transport configuration (tag-based enum for pluggable transports)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum TransportConfig {
     /// TCP transport (AMS/TCP on port 48898)
@@ -335,8 +346,24 @@ impl Default for TransportConfig {
     }
 }
 
+impl TransportConfig {
+    fn as_mqtt_mut(&mut self) -> Option<&mut MqttTransportConfig> {
+        match self {
+            TransportConfig::Mqtt(mqtt) => Some(mqtt),
+            _ => None,
+        }
+    }
+
+    fn as_mqtt(&self) -> Option<&MqttTransportConfig> {
+        match self {
+            TransportConfig::Mqtt(mqtt) => Some(mqtt),
+            _ => None,
+        }
+    }
+}
+
 /// Receiver configuration (OTEL listener)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReceiverConfig {
     /// HTTP/gRPC listening address
     pub host: String,
@@ -501,7 +528,7 @@ impl ReceiverConfig {
 }
 
 /// Output plugin configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OutputConfig {
     #[serde(rename = "Type")]
     pub output_type: String,
@@ -510,7 +537,7 @@ pub struct OutputConfig {
 }
 
 /// Export configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExportConfig {
     /// Export endpoint URL (e.g. "http://victoria-logs:9428/insert/jsonline")
     #[serde(default = "default_export_endpoint")]
@@ -558,7 +585,7 @@ impl Default for ExportConfig {
 }
 
 /// Web UI configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WebConfig {
     /// Enable the web UI (default: true)
     #[serde(default = "default_web_enabled")]
@@ -599,7 +626,7 @@ impl Default for WebConfig {
 }
 
 /// Metric kind for configuration (string representation)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricKindConfig {
     #[default]
@@ -620,7 +647,7 @@ impl MetricKindConfig {
 }
 
 /// Maps a PLC symbol to an OTEL metric definition
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CustomMetricDef {
     /// PLC symbol path (e.g., "GVL.motor.temperature")
     pub symbol: String,
@@ -641,7 +668,7 @@ pub struct CustomMetricDef {
 }
 
 /// Metrics configuration (cycle time tracking, custom metric definitions)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MetricsConfig {
     /// Enable task cycle time tracking (default: true)
     #[serde(default = "default_cycle_time_enabled")]
@@ -695,7 +722,7 @@ impl Default for MetricsConfig {
 }
 
 /// Service configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceConfig {
     /// Service name
     pub name: String,
@@ -727,7 +754,7 @@ impl Default for ServiceConfig {
 /// against each configured PLC target so runtime metrics (task cycle stats,
 /// RT usage + latency, cycle-exceed counter) are captured even when no
 /// engineering IDE is connected.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticsConfig {
     /// Enable the self-polling diagnostics collector.
     #[serde(default)]
@@ -738,7 +765,7 @@ pub struct DiagnosticsConfig {
 }
 
 /// One PLC to poll for diagnostics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticsTargetConfig {
     /// AMS Net ID of the PLC, e.g. `172.28.41.37.1.1`.
     pub ams_net_id: String,
@@ -783,6 +810,8 @@ fn default_diagnostics_rt_port() -> u16 {
 }
 
 impl AppSettings {
+    pub const MASKED_SENTINEL: &'static str = "***MASKED***";
+
     /// Load configuration from a JSON file
     pub fn from_json_file(path: &std::path::Path) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -795,6 +824,127 @@ impl AppSettings {
         let content = std::fs::read_to_string(path)?;
         toml::from_str(&content)
             .map_err(|e| crate::error::Error::ConfigError(format!("Failed to parse config: {}", e)))
+    }
+
+    /// Return config as JSON with secrets masked for safe display in UI.
+    pub fn to_masked_json(&self) -> serde_json::Value {
+        let mut val = serde_json::to_value(self).unwrap_or(serde_json::json!({}));
+
+        if let Some(receiver) = val.get_mut("receiver") {
+            if let Some(transport) = receiver.get_mut("transport") {
+                if let Some(type_str) = transport.get("type") {
+                    if type_str.as_str() == Some("mqtt") {
+                        if let Some(password) = transport.get_mut("password") {
+                            if password.is_string() && !password.as_str().unwrap_or("").is_empty() {
+                                *password = serde_json::json!(Self::MASKED_SENTINEL);
+                            }
+                        }
+                        if let Some(username) = transport.get_mut("username") {
+                            if username.is_string() && !username.as_str().unwrap_or("").is_empty() {
+                                *username = serde_json::json!(Self::MASKED_SENTINEL);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val
+    }
+
+    /// Replace masked sentinel values in `self` with the real values from `current`.
+    /// Sentinel: the string "***MASKED***".
+    /// Empty string = explicit clear, keep as-is.
+    pub fn merge_secrets_from(&mut self, current: &AppSettings) {
+        if let Some(mqtt) = self.receiver.transport.as_mqtt_mut() {
+            if let Some(password_str) = &mqtt.password {
+                if password_str == Self::MASKED_SENTINEL {
+                    if let Some(current_mqtt) = current.receiver.transport.as_mqtt() {
+                        mqtt.password = current_mqtt.password.clone();
+                    }
+                }
+            }
+            if let Some(username_str) = &mqtt.username {
+                if username_str == Self::MASKED_SENTINEL {
+                    if let Some(current_mqtt) = current.receiver.transport.as_mqtt() {
+                        mqtt.username = current_mqtt.username.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Aggregate validation across all sections. Returns list of human-readable errors.
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Err(e) = self.receiver.validate() {
+            errors.extend(e);
+        }
+
+        let valid_ports = 1..=65535u16;
+
+        if !valid_ports.contains(&self.receiver.http_port) {
+            errors.push(format!("receiver.http_port {} out of range [1, 65535]", self.receiver.http_port));
+        }
+        if !valid_ports.contains(&self.receiver.grpc_port) {
+            errors.push(format!("receiver.grpc_port {} out of range [1, 65535]", self.receiver.grpc_port));
+        }
+        if !valid_ports.contains(&self.receiver.ams_tcp_port) {
+            errors.push(format!("receiver.ams_tcp_port {} out of range [1, 65535]", self.receiver.ams_tcp_port));
+        }
+        if !valid_ports.contains(&self.receiver.ads_port) {
+            errors.push(format!("receiver.ads_port {} out of range [1, 65535]", self.receiver.ads_port));
+        }
+
+        match &self.receiver.transport {
+            TransportConfig::Tcp(tcp) => {
+                if !valid_ports.contains(&tcp.port) {
+                    errors.push(format!("receiver.transport.tcp.port {} out of range [1, 65535]", tcp.port));
+                }
+            }
+            TransportConfig::Mqtt(_mqtt) => {}
+        }
+
+        if !valid_ports.contains(&self.web.port) {
+            errors.push(format!("web.port {} out of range [1, 65535]", self.web.port));
+        }
+
+        if self.export.batch_size == 0 {
+            errors.push("export.batch_size must be > 0".to_string());
+        }
+        if self.export.flush_interval_ms == 0 {
+            errors.push("export.flush_interval_ms must be > 0".to_string());
+        }
+        if self.export.timeout_secs == 0 {
+            errors.push("export.timeout_secs must be > 0".to_string());
+        }
+
+        if self.service.channel_capacity == 0 {
+            errors.push("service.channel_capacity must be > 0".to_string());
+        }
+
+        if let Some(worker_threads) = self.service.worker_threads {
+            if worker_threads == 0 {
+                errors.push("service.worker_threads must be > 0 if set".to_string());
+            }
+        }
+
+        if self.metrics.cycle_time_window == 0 {
+            errors.push("metrics.cycle_time_window must be > 0".to_string());
+        }
+        if self.metrics.export_batch_size == 0 {
+            errors.push("metrics.export_batch_size must be > 0".to_string());
+        }
+        if self.metrics.export_flush_interval_ms == 0 {
+            errors.push("metrics.export_flush_interval_ms must be > 0".to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 }
 
@@ -1063,5 +1213,145 @@ mod tests {
         assert_eq!(config.settings["host"], "localhost");
         assert_eq!(config.settings["port"], 5000);
         assert_eq!(config.settings["retry"]["max_attempts"], 3);
+    }
+
+    #[test]
+    fn test_to_masked_json_masks_mqtt_password() {
+        let mut settings = AppSettings::default();
+        settings.receiver.transport = TransportConfig::Mqtt(MqttTransportConfig {
+            broker: "localhost".to_string(),
+            password: Some("secret-password".to_string()),
+            username: Some("user".to_string()),
+            ..MqttTransportConfig::default()
+        });
+
+        let masked = settings.to_masked_json();
+        let transport = &masked["receiver"]["transport"];
+
+        assert_eq!(transport["password"].as_str().unwrap(), AppSettings::MASKED_SENTINEL);
+        assert_eq!(transport["username"].as_str().unwrap(), AppSettings::MASKED_SENTINEL);
+    }
+
+    #[test]
+    fn test_to_masked_json_preserves_unset_fields() {
+        let mut settings = AppSettings::default();
+        settings.receiver.transport = TransportConfig::Mqtt(MqttTransportConfig {
+            broker: "localhost".to_string(),
+            password: None,
+            username: None,
+            ..MqttTransportConfig::default()
+        });
+
+        let masked = settings.to_masked_json();
+        let transport = &masked["receiver"]["transport"];
+
+        assert!(transport["password"].is_null());
+        assert!(transport["username"].is_null());
+    }
+
+    #[test]
+    fn test_merge_secrets_restores_masked_password() {
+        let mut new_settings = AppSettings::default();
+        new_settings.receiver.transport = TransportConfig::Mqtt(MqttTransportConfig {
+            broker: "localhost".to_string(),
+            password: Some(AppSettings::MASKED_SENTINEL.to_string()),
+            username: Some(AppSettings::MASKED_SENTINEL.to_string()),
+            ..MqttTransportConfig::default()
+        });
+
+        let current_settings = AppSettings {
+            receiver: ReceiverConfig {
+                transport: TransportConfig::Mqtt(MqttTransportConfig {
+                    broker: "localhost".to_string(),
+                    password: Some("real-password".to_string()),
+                    username: Some("real-user".to_string()),
+                    ..MqttTransportConfig::default()
+                }),
+                ..ReceiverConfig::default()
+            },
+            ..AppSettings::default()
+        };
+
+        new_settings.merge_secrets_from(&current_settings);
+
+        if let TransportConfig::Mqtt(mqtt) = &new_settings.receiver.transport {
+            assert_eq!(mqtt.password, Some("real-password".to_string()));
+            assert_eq!(mqtt.username, Some("real-user".to_string()));
+        } else {
+            panic!("Expected Mqtt transport");
+        }
+    }
+
+    #[test]
+    fn test_merge_secrets_preserves_explicit_new_value() {
+        let mut new_settings = AppSettings::default();
+        new_settings.receiver.transport = TransportConfig::Mqtt(MqttTransportConfig {
+            broker: "localhost".to_string(),
+            password: Some("new-password".to_string()),
+            username: Some("new-user".to_string()),
+            ..MqttTransportConfig::default()
+        });
+
+        let current_settings = AppSettings {
+            receiver: ReceiverConfig {
+                transport: TransportConfig::Mqtt(MqttTransportConfig {
+                    broker: "localhost".to_string(),
+                    password: Some("old-password".to_string()),
+                    username: Some("old-user".to_string()),
+                    ..MqttTransportConfig::default()
+                }),
+                ..ReceiverConfig::default()
+            },
+            ..AppSettings::default()
+        };
+
+        new_settings.merge_secrets_from(&current_settings);
+
+        if let TransportConfig::Mqtt(mqtt) = &new_settings.receiver.transport {
+            assert_eq!(mqtt.password, Some("new-password".to_string()));
+            assert_eq!(mqtt.username, Some("new-user".to_string()));
+        } else {
+            panic!("Expected Mqtt transport");
+        }
+    }
+
+    #[test]
+    fn test_validate_catches_port_zero() {
+        let mut settings = AppSettings::default();
+        settings.receiver.http_port = 0;
+
+        let result = settings.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e: &String| e.contains("http_port")));
+    }
+
+
+    #[test]
+    fn test_validate_catches_empty_batch_size() {
+        let mut settings = AppSettings::default();
+        settings.export.batch_size = 0;
+
+        let result = settings.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e: &String| e.contains("batch_size")));
+    }
+
+    #[test]
+    fn test_validate_catches_empty_channel_capacity() {
+        let mut settings = AppSettings::default();
+        settings.service.channel_capacity = 0;
+
+        let result = settings.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e: &String| e.contains("channel_capacity")));
+    }
+
+    #[test]
+    fn test_validate_passes_valid_config() {
+        let settings = AppSettings::default();
+        assert!(settings.validate().is_ok());
     }
 }
