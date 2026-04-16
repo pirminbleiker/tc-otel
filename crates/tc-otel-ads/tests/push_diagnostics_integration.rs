@@ -416,13 +416,22 @@ async fn unknown_version_is_dropped_silently() {
     buf.extend_from_slice(&task.task_name);
     full_payload.extend_from_slice(&buf);
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_SNAPSHOT, &full_payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_SNAPSHOT,
+        &full_payload,
+    );
 
     let resp = router.dispatch(&frame).await.unwrap();
     assert!(resp.is_some(), "dispatch should still return ACK");
 
     // Verify push_rx is empty (event was dropped)
-    assert!(push_rx.try_recv().is_err(), "unknown version should be dropped");
+    assert!(
+        push_rx.try_recv().is_err(),
+        "unknown version should be dropped"
+    );
 }
 
 #[tokio::test]
@@ -481,7 +490,10 @@ async fn malformed_truncated_snapshot_is_dropped_silently() {
     assert!(resp.is_some(), "dispatch should still return ACK");
 
     // Verify push_rx is empty (truncated event was dropped)
-    assert!(push_rx.try_recv().is_err(), "truncated snapshot should be dropped");
+    assert!(
+        push_rx.try_recv().is_err(),
+        "truncated snapshot should be dropped"
+    );
 }
 
 #[tokio::test]
@@ -506,7 +518,10 @@ async fn non_push_write_still_reaches_log_parser() {
     assert!(resp.is_some(), "dispatch should return ACK");
 
     // Verify push_rx is empty (not a push-diagnostic write)
-    assert!(push_rx.try_recv().is_err(), "non-push write should not trigger push channel");
+    assert!(
+        push_rx.try_recv().is_err(),
+        "non-push write should not trigger push channel"
+    );
 
     // Log dispatch should have tried to parse, but since our payload is dummy,
     // log_rx will be empty too. The important invariant is that we didn't crash
