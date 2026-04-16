@@ -639,6 +639,96 @@ impl MetricKindConfig {
     }
 }
 
+/// Source of custom metric values: push (mapping only), poll (ADS reads), or notification (ADS subscriptions)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CustomMetricSource {
+    /// PLC pushes the metric via push-diagnostics (mapping only; default)
+    Push,
+    /// tc-otel issues periodic ADS reads by symbol name
+    Poll,
+    /// tc-otel opens an AddDeviceNotification subscription; PLC pushes on-change
+    Notification,
+}
+
+impl Default for CustomMetricSource {
+    fn default() -> Self {
+        Self::Push
+    }
+}
+
+/// Poll configuration for custom metrics (poll_interval_ms)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PollConfig {
+    /// Polling interval in milliseconds (default: 1000)
+    #[serde(default = "default_poll_interval_ms")]
+    pub interval_ms: u64,
+}
+
+fn default_poll_interval_ms() -> u64 {
+    1000
+}
+
+impl Default for PollConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: default_poll_interval_ms(),
+        }
+    }
+}
+
+/// Notification configuration for custom metrics (ADS subscriptions)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NotificationConfig {
+    /// Minimum period in milliseconds between notifications (default: 0)
+    #[serde(default)]
+    pub min_period_ms: u32,
+    /// Maximum period in milliseconds between notifications (default: 10000)
+    #[serde(default = "default_max_period_ms")]
+    pub max_period_ms: u32,
+    /// Maximum delay in milliseconds for subscription (default: 5000)
+    #[serde(default = "default_max_delay_ms")]
+    pub max_delay_ms: u32,
+    /// Transmission mode: "on_change" (default) or "cyclic"
+    #[serde(default)]
+    pub transmission_mode: NotificationTransmissionMode,
+}
+
+fn default_max_period_ms() -> u32 {
+    10000
+}
+
+fn default_max_delay_ms() -> u32 {
+    5000
+}
+
+/// Transmission mode for ADS notifications
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationTransmissionMode {
+    /// Send notification on value change only
+    OnChange,
+    /// Send notification periodically
+    Cyclic,
+}
+
+impl Default for NotificationTransmissionMode {
+    fn default() -> Self {
+        Self::OnChange
+    }
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            min_period_ms: 0,
+            max_period_ms: default_max_period_ms(),
+            max_delay_ms: default_max_delay_ms(),
+            transmission_mode: NotificationTransmissionMode::OnChange,
+        }
+    }
+}
+
 /// Maps a PLC symbol to an OTEL metric definition
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CustomMetricDef {
@@ -658,6 +748,39 @@ pub struct CustomMetricDef {
     /// For Sum kind: whether monotonic (counter vs up-down counter)
     #[serde(default)]
     pub is_monotonic: bool,
+    /// Source of metric values: push (default), poll, or notification
+    #[serde(default)]
+    pub source: CustomMetricSource,
+    /// AMS Net ID of the target PLC (required for non-push sources)
+    #[serde(default)]
+    pub ams_net_id: Option<String>,
+    /// AMS port of the target PLC (required for non-push sources; default: 851)
+    #[serde(default)]
+    pub ams_port: Option<u16>,
+    /// Poll configuration (required if source == "poll")
+    #[serde(default)]
+    pub poll: Option<PollConfig>,
+    /// Notification configuration (required if source == "notification")
+    #[serde(default)]
+    pub notification: Option<NotificationConfig>,
+}
+
+impl Default for CustomMetricDef {
+    fn default() -> Self {
+        Self {
+            symbol: String::new(),
+            metric_name: String::new(),
+            description: String::new(),
+            unit: String::new(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+            source: CustomMetricSource::Push,
+            ams_net_id: None,
+            ams_port: None,
+            poll: None,
+            notification: None,
+        }
+    }
 }
 
 /// Metrics configuration (cycle time tracking, custom metric definitions)
