@@ -57,6 +57,7 @@ For MQTT setup details, see [MQTT Transport Setup](GETTING_STARTED.md#mqtt-trans
 - **Simple PLC API** -- `F_Log(E_LogLevel.eInfo, 'Motor {0} started').WithAnyArg(sMotorName).CreateLog()`
 - **Structured logging** -- Positional placeholders `{0}`, `{1}` with any IEC 61131-3 type
 - **Context properties** -- Attach metadata at task, scope, and logger level
+- **Push-based diagnostics** -- Real-time task cycle time and RT-violation monitoring via active ADS writes; see [Push Diagnostics Setup](docs/push-diagnostics-setup.md)
 - **OpenTelemetry native** -- Exports via OTLP HTTP/gRPC to any OTEL-compatible backend
 - **High performance** -- Zero-alloc hot path, handles thousands of entries per second
 - **Cross-platform** -- Linux (amd64/arm64), Windows, Docker
