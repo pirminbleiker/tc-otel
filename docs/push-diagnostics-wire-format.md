@@ -2,150 +2,172 @@
 
 ## Overview
 
-Push diagnostics allow PLC runtimes to proactively emit task snapshots and edge events (cycle-exceed, RT-violation) via ADS Write instead of relying on 5 Hz polling. This approach captures transient conditions that would be lost or invisible to the polled diagnostic subsystem:
+Push diagnostics let the PLC emit per-task execution data to tc-otel on every
+cycle. Each task runs its own sampler (`FB_Log4TcTaskDiag` — one instance per
+task, driven from `PRG_TaskLog.Call()`). Samples are collected into a
+1024-entry ring buffer and flushed as a single **batch frame** whenever the
+per-task aggregation window expires.
 
-- **Cycle-exceed edges**: High-frequency sampling (every cycle) detects spikes that disappear within the polling interval (~200 ms at 5 Hz).
-- **RT-violation edges**: RT violations are not exposed by the polling interface at all; only push diagnostics can surface them.
-- **Task names**: Names are baked into PLC configuration and sent with every push, avoiding async GVL lookups.
+Why per-task oversampling:
+
+- **No cycle loss.** Every cycle is captured with `cycle_count` + `dc_time`,
+  so cycle-exceed and RT-violation events that happen on the same cycle as
+  an unrelated sample cannot overwrite each other.
+- **1:1 log correlation.** Each sample carries the same timestamp the
+  logger writes into log entries — tc-otel can match a flagged cycle to
+  the exact log line produced on that cycle.
+- **Pre-aggregated.** Min/max/avg exec time and exceed/rtv counts for the
+  window are computed on the PLC and shipped in the batch header.
+- **Runtime-tunable window.** tc-otel writes back to
+  `PRG_TaskLog.aTaskDiagConfig[n]` via standard ADS symbol access to
+  adjust the window, enable flag, and divider on the fly.
 
 ## Transport
 
 All push-diagnostic events are sent as ADS Write commands to:
 
-- **Index group**: `IG_PUSH_DIAG = 0x4D42_4301` (ASCII "MBC\1" in little-endian; chosen for debug-friendliness and collision safety)
+- **Index group**: `IG_PUSH_DIAG = 0x4D42_4301` (ASCII "MBC\1" in
+  little-endian; chosen for debug-friendliness and collision safety)
 - **Target port**: The dedicated tc-otel listener port (default 16150)
-- **Index offset**: Determines event type:
-  - `IO_PUSH_SNAPSHOT = 0` — task snapshot
-  - `IO_PUSH_CYCLE_EXCEED_EDGE = 1` — cycle-exceed edge
-  - `IO_PUSH_RT_VIOLATION_EDGE = 2` — RT-violation edge
+- **Index offset**: `IO_PUSH_BATCH = 0` — per-task diagnostic batch
+
+A sibling index group `IG_PUSH_CONFIG = 0x4D42_4302` is reserved for
+outbound writes from tc-otel back to the PLC; the PLC does not need a
+custom handler for these — tc-otel writes per-task config slots by
+symbol name (`PRG_TaskLog.aTaskDiagConfig[n]`).
 
 ## Wire Format
 
-All offsets and sizes are in bytes. All integers are **little-endian**.
+All offsets and sizes are in bytes. All integers are **little-endian**. The
+on-wire layout is declared in the PLC DUTs with `{attribute 'pack_mode' := '1'}`
+so the structs serialize exactly as laid out.
 
-### Task Snapshot (IO_PUSH_SNAPSHOT)
+### Batch (IO_PUSH_BATCH)
 
-Sent at every PLC cycle (or on demand). Contains configuration and current state for all tasks in a single message. Total size is **16 + (72 × num_tasks)** bytes.
+Total size: **80 + (24 × sample_count)** bytes. Maximum sample_count is
+**1024** (ring depth).
 
-```
-+0x00  u8    version                = 1
-+0x01  u8    event_type             = 0  (snapshot)
-+0x02  u16   num_tasks              (number of per-task records)
-+0x04  u64   plc_timestamp_ns       (DC clock nanoseconds; 0 if not available)
-+0x0C  u32   reserved = 0           (padding / future use)
-+0x10  per-task record × num_tasks, 72 B each:
-  +0x00  u32   task_obj_id          (PLC internal task object ID)
-  +0x04  u32   ads_port             (AMS port of this task, e.g. 350, 351)
-  +0x08  u32   priority             (configured task priority)
-  +0x0C  u32   cycle_time_us        (configured cycle time, microseconds)
-  +0x10  u32   last_exec_time_us    (measured exec time, microseconds)
-  +0x14  u32   reserved = 0         (alignment / future use)
-  +0x18  u64   cycle_count          (monotonic cycle counter since boot)
-  +0x20  u64   cycle_exceed_count   (monotonic counter, increments on exceed)
-  +0x28  u64   rt_violation_count   (monotonic counter, increments on RT violation)
-  +0x30  u32   flags                (see Flags section below)
-  +0x34  char  task_name[20]        (null-padded UTF-8, e.g. "PlcTask\0\0\0\0...")
-```
-
-**Flags field (+0x30):**
-- Bit 0: `PUSH_FLAG_CYCLE_EXCEED_NOW = 1 << 0` — cycle exceeded on this cycle
-- Bit 1: `PUSH_FLAG_RT_VIOLATION_NOW = 1 << 1` — RT violation on this cycle
-- Bit 2: `PUSH_FLAG_FIRST_CYCLE = 1 << 2` — first cycle after PLC start
-
-### Cycle-Exceed Edge (IO_PUSH_CYCLE_EXCEED_EDGE)
-
-Sent when a task's execution time exceeds its configured cycle time. Total size is **44 bytes**.
+#### Batch header — 80 bytes
 
 ```
-+0x00  u8    version       = 1
-+0x01  u8    event_type    = 1  (cycle-exceed edge)
-+0x02  u16   reserved = 0
-+0x04  u32   ads_port      (AMS port of the task)
-+0x08  u64   cycle_count   (cycle counter at the triggering cycle)
-+0x10  u32   last_exec_time_us
-+0x14  u32   reserved = 0
-+0x18  char  task_name[20] (null-padded UTF-8)
++0x00  u8    version               = 2
++0x01  u8    event_type            = 10  (batch)
++0x02  u16   reserved0             = 0
++0x04  u32   task_obj_id           (PLC internal task object ID)
++0x08  u16   task_port             (AMS port of this task, e.g. 350, 351)
++0x0A  u16   window_ms             (aggregation window used for this batch)
++0x0C  u16   sample_count          (≤ 1024)
++0x0E  u16   reserved1             = 0
++0x10  u32   cycle_count_start     (cycle at the first sample)
++0x14  u32   cycle_count_end       (cycle at the last sample)
++0x18  i64   dc_time_start         (FILETIME ticks, first sample)
++0x20  i64   dc_time_end           (FILETIME ticks, last sample)
++0x28  u32   exec_time_min_us      (min observed exec time)
++0x2C  u32   exec_time_max_us      (max observed exec time)
++0x30  u32   exec_time_avg_us      (mean exec time)
++0x34  u32   cycle_exceed_count    (cycles with CycleTimeExceeded in window)
++0x38  u32   rt_violation_count    (cycles with RTViolation in window)
++0x3C  char  task_name[20]         (null-padded UTF-8)
 ```
 
-### RT-Violation Edge (IO_PUSH_RT_VIOLATION_EDGE)
-
-Sent when a task violates real-time guarantees (e.g., missed deadline, preemption by higher-priority work). Total size is **44 bytes**.
+#### Sample record — 24 bytes each
 
 ```
-+0x00  u8    version       = 1
-+0x01  u8    event_type    = 2  (RT-violation edge)
-+0x02  u16   reserved = 0
-+0x04  u32   ads_port      (AMS port of the task)
-+0x08  u64   cycle_count   (cycle counter at the triggering cycle)
-+0x10  u32   last_exec_time_us
-+0x14  u32   reserved = 0
-+0x18  char  task_name[20] (null-padded UTF-8)
++0x00  u32   cycle_count           (task cycle counter at this sample)
++0x04  u32   exec_time_us          (cycle exec time, microseconds)
++0x08  i64   dc_time               (FILETIME — 100 ns ticks since 1601; same
+                                     format log entries use for plc_timestamp
+                                     so a flagged cycle is byte-identical to
+                                     its log line's timestamp)
++0x10  u8    flags                 (see below)
++0x11  u8[7] reserved              (pad to 24-byte record)
 ```
+
+#### Sample flag bits
+
+- Bit 0: `SAMPLE_FLAG_CYCLE_EXCEED = 1 << 0` — cycle-exceed this cycle
+- Bit 1: `SAMPLE_FLAG_RT_VIOLATION = 1 << 1` — rt-violation this cycle
+- Bit 2: `SAMPLE_FLAG_FIRST_CYCLE = 1 << 2` — first cycle after task start
+- Bit 3: `SAMPLE_FLAG_OVERFLOW = 1 << 3` — ring overflowed before this sample
 
 ## Size and Bandwidth Estimation
 
-For a typical PLC with **3 tasks** pushing snapshots at **1 Hz** (one per second):
+Frames are per-task and emitted once per window. Window is configurable
+per task via `aTaskDiagConfig[n].window_ms`.
 
-- Snapshot: 16 + (72 × 3) = **232 bytes per message**
-- Interval: 1000 ms
-- Bandwidth: 232 B / 1000 ms ≈ **0.23 KB/s per PLC**
+| Task cycle | Window  | Samples/batch | Batch size | Per-sec rate |
+| ---------- | ------- | ------------- | ---------- | ------------ |
+| 1 ms       | 100 ms  | 100           | 2 480 B    | 10 batches   |
+| 1 ms       | 1000 ms | 1000          | 24 080 B   | 1 batch      |
+| 100 µs     | 100 ms  | 1024 (cap)    | 24 656 B   | 10 batches   |
 
-Edge events are asynchronous and typically low-frequency; bandwidth depends on task behavior.
+Worst case per task (1024 samples): **24 656 bytes**, well below the ADS
+write limit (~8 MB). The ring stores at most 1024 samples; once full,
+the oldest slot is overwritten and the next stored sample carries
+`SAMPLE_FLAG_OVERFLOW`.
 
 ## Versioning
 
-The `version` field (byte +0x00) is set to **1** for the current format. Decoders must:
+The `version` field at `+0x00` identifies the wire format. Current value
+is **2** (batch format). Version **1** was the earlier snapshot+edge
+format and is no longer emitted or decoded. Decoders must:
 
-1. **Check version on entry**: If `version != 1`, drop the entire message and log a warning.
-2. **Ignore unknown versions**: Do not attempt to parse messages with unrecognized version numbers.
-3. **Forward compatibility**: Reserved fields must be ignored (set to 0 by senders, read but not interpreted by receivers).
+1. **Check version on entry.** If `version != 2`, drop the whole frame.
+2. **Check event_type.** Must equal `10` for batch frames.
+3. **Treat reserved fields as opaque.** Senders set them to 0; receivers
+   must not interpret them.
 
-This ensures safe evolution when new fields are added in future versions.
-
-## Rust DiagEvent Variants
-
-The decoder produces these variant types (in addition to existing polling-based variants):
+## Rust DiagEvent Variant
 
 ```rust
-DiagEvent::TaskSnapshot {
+DiagEvent::TaskDiagBatch {
     task_port: u16,
     task_name: String,
-    priority: u32,
-    cycle_time_configured_us: u32,
-    last_exec_time_us: u32,
-    cycle_count: u64,
-    cycle_exceed_count: u64,
-    rt_violation_count: u64,
-    flags: u32,
-    plc_timestamp_ns: u64,
+    task_obj_id: u32,
+    window_ms: u16,
+    cycle_count_start: u32,
+    cycle_count_end: u32,
+    dc_time_start: i64,
+    dc_time_end: i64,
+    exec_time_min_us: u32,
+    exec_time_max_us: u32,
+    exec_time_avg_us: u32,
+    cycle_exceed_count: u32,
+    rt_violation_count: u32,
+    samples: Vec<DiagSample>,
 }
 
-DiagEvent::CycleExceedEdge {
-    task_port: u16,
-    task_name: String,
-    cycle_count: u64,
-    last_exec_time_us: u32,
-}
-
-DiagEvent::RtViolationEdge {
-    task_port: u16,
-    task_name: String,
-    cycle_count: u64,
-    last_exec_time_us: u32,
+struct DiagSample {
+    cycle_count: u32,
+    exec_time_us: u32,
+    dc_time: i64,
+    flags: u8,
 }
 ```
 
 ## Metric Emission
 
-Decoders emit the following metrics from push-diagnostic events (metric names and types are listed for reference; emission happens in the metrics pipeline):
+Each batch fans out to the following metrics. Per-task metrics carry
+`task_port` and `task_name` attributes plus `ams_net_id`.
 
-- `tc.task.last_exec_time_us` (gauge) — last measured execution time
-- `tc.task.cycle_time_configured_us` (gauge) — configured cycle time
-- `tc.task.priority` (gauge) — task priority value
-- `tc.task.cycle_count` (sum, monotonic) — cumulative cycle counter
-- `tc.task.cycle_exceed_counter` (sum, monotonic, per-task) — cumulative exceed count
-- `tc.rt.rt_violation_counter` (sum, monotonic) — cumulative RT violation count
-- `tc.task.cycle_exceed_edge_total` (sum, monotonic) — edge occurrence counter
-- `tc.rt.rt_violation_edge_total` (sum, monotonic) — edge occurrence counter
+Window aggregates:
 
-Metrics carry tags: `task_name`, `task_port`, `plc_net_id`, etc. (set by the metrics aggregator).
+- `tc.task.exec_time_min_us` (gauge)
+- `tc.task.exec_time_max_us` (gauge)
+- `tc.task.exec_time_avg_us` (gauge)
+- `tc.task.window_ms` (gauge)
+- `tc.task.sample_count` (gauge)
+- `tc.task.cycle_count` (sum, monotonic) — end-of-window value
+- `tc.task.cycle_exceed_window` (sum, non-monotonic) — exceeds in this window
+- `tc.task.rt_violation_window` (sum, non-monotonic) — rt-violations in this window
+- `tc.task.sample_buffer_overflow` (gauge) — 1 if any sample carried overflow flag
+
+Per-flagged-sample edge events (one metric per flagged sample, carrying
+`cycle_count`, `dc_time_ft`, `exec_time_us` attributes for log correlation):
+
+- `tc.task.cycle_exceed_edge` (sum, non-monotonic, value = 1)
+- `tc.task.rt_violation_edge` (sum, non-monotonic, value = 1)
+
+Prometheus `rate()` over the edge metrics gives a clean per-task
+exceed/violation rate; the attributes let a user jump from a spike to the
+exact log line (`plc.cycle_count` / `plc.timestamp`) produced on that cycle.

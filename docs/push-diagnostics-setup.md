@@ -2,206 +2,202 @@
 
 ## Why Push?
 
-Push-based diagnostics offer significant advantages over polling:
+Push-based diagnostics collect per-cycle execution data on the PLC and ship it
+to tc-otel in batches. Compared to 5 Hz polling this buys:
 
-- **No missed edges**: Polling at 5 Hz (every 200 ms) misses transient cycle-exceed spikes and RT violations that occur and resolve within the sampling interval. Push captures every edge as it happens.
-- **RT violations visible**: The ADS polling interface does not expose real-time violation flags; only push diagnostics can surface RT violations.
-- **Rich metadata**: Task names, priorities, and configured cycle times are baked into PLC configuration and sent with every push event, avoiding asynchronous symbol lookups.
-- **Efficient**: One snapshot per second per PLC is far more efficient than 5 Hz polling across all tasks.
+- **No missed events.** Every cycle is sampled with its own `cycle_count` and
+  `dc_time`; cycle-exceed and RT-violation cannot overwrite each other even
+  when they happen on the same cycle.
+- **RT violations visible.** The polled diagnostics interface does not expose
+  `RTViolation`. The push samples do.
+- **1:1 log correlation.** Each sample carries the same timestamp that log
+  entries use — a flagged cycle can be matched to the log line written on
+  that cycle.
+- **Runtime-tunable.** The aggregation window is a plain PLC variable
+  (`PRG_TaskLog.aTaskDiagConfig[n].window_ms`) that tc-otel can rewrite via
+  ADS symbol access — no PLC rebuild needed to change the sampling rate or
+  disable a task.
 
 ## Architecture
 
-Push diagnostics flow through the system as follows:
-
 ```
-┌──────────────────────────────────────┐
-│ PLC (with FB_PushDiag)               │
-│  • Monitor all tasks                 │
-│  • Detect cycle/RT violations        │
-│  • Marshal binary snapshots+edges    │
-└──────────────────┬───────────────────┘
-                   │
-                   │ ADSWRITE
+┌──────────────────────────────────────────────┐
+│ PLC task cycle                               │
+│   PRG_TaskLog.Call()                         │
+│     → aTaskLogger[nIdx].Call()               │
+│     → aTaskRtcTime[nIdx].Call()              │
+│     → aTaskDiag[nIdx].Call()                 │
+│         • store sample in 1024-slot ring     │
+│         • update min/max/avg + exceed/rtv    │
+│         • on window expiry: flush batch      │
+└──────────────────┬───────────────────────────┘
+                   │ ADSWRITE (non-blocking)
                    │ IG=0x4D42_4301 (MBC\1)
-                   │ IO=0 (snapshot), 1 (cycle edge), 2 (RT edge)
+                   │ IO=0 (batch)
                    ↓
-┌──────────────────────────────────────┐
-│ tc-otel Router (ADS receiver)        │
-│  • Port 16150 (default)              │
-│  • Listens for push writes           │
-└──────────────────┬───────────────────┘
-                   │
+┌──────────────────────────────────────────────┐
+│ tc-otel router (port 16150)                  │
+│   decode_batch → DiagEvent::TaskDiagBatch    │
+└──────────────────┬───────────────────────────┘
                    ↓
-┌──────────────────────────────────────┐
-│ diagnostics_push Decoder             │
-│  • Parse binary format (v1)          │
-│  • Extract task data + edges         │
-└──────────────────┬───────────────────┘
-                   │
+┌──────────────────────────────────────────────┐
+│ diagnostics_bridge                           │
+│   • aggregate gauges / counters              │
+│   • per-flagged-sample edge metrics with     │
+│     cycle_count + dc_time attributes         │
+└──────────────────┬───────────────────────────┘
                    ↓
-┌──────────────────────────────────────┐
-│ Metrics Aggregator (OTel Bridge)     │
-│  • Emit OTel metrics                 │
-│  • Attach labels (task_name, etc)    │
-└──────────────────┬───────────────────┘
-                   │
+          Prometheus / VictoriaMetrics
                    ↓
-┌──────────────────────────────────────┐
-│ Prometheus                           │
-│  (time-series database)              │
-└──────────────────────────────────────┘
-        ↓
-    Grafana Dashboard
+              Grafana dashboard
 ```
 
-## Installing the PLC Function Block
+## Using Push Diagnostics on the PLC
 
-The push-diagnostics function block is provided in the mbc_log4tc library.
+Push diagnostics ride along with the Log4TC library — there is no separate
+FB to instantiate. Every task that already calls `PRG_TaskLog.Call()` gets a
+per-task sampler for free.
 
-**Steps:**
-
-1. Ensure `library/mbc_log4tc_diag` is available in your project (see [FB_PushDiag README](../plc/mbc_log4tc_diag/README.md)).
-2. Import `FB_PushDiag.TcPOU` and the three data type definitions into your TwinCAT 3 PLC project.
-3. Add an instance of `FB_PushDiag` to your PLC's main program or a background task.
-4. Configure:
-   - `sTcOtelNetId` — AMS Net ID of the tc-otel service.
-   - `nTcOtelPort` — ADS port (default 16150).
-   - `nSnapshotIntervalMs` — Snapshot frequency (e.g., 1000 ms for 1 Hz).
-   - `bEnabled` — Set to `TRUE` to activate push diagnostics.
-
-**Example:**
+**Minimum setup:**
 
 ```structured-text
-VAR
-    fbPushDiag : FB_PushDiag;
-    stTcOtelNetId : T_AmsNetId := (
-        ipaddr := [192, 168, 1, 100],
-        netid := 1,
-        port := 1
-    );
-END_VAR
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    PRG_TaskLog.Init('127.0.0.1.1.1'); // tc-otel AMS net id
+END_IF
 
-// In your main cycle:
-fbPushDiag(
-    sTcOtelNetId := stTcOtelNetId,
-    nTcOtelPort := 16150,
-    nSnapshotIntervalMs := 1000,
-    bEnabled := TRUE
-);
+PRG_TaskLog.Call();
 ```
 
-For full details on the FB, see [FB_PushDiag README](../plc/mbc_log4tc_diag/README.md).
+`Init` wires the push-diagnostic collector to the tc-otel endpoint on the
+default port (16150) with default config (`window_ms=100`, `enabled=TRUE`,
+`divider=1`).
+
+**Custom window / port:**
+
+```structured-text
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    PRG_TaskLog.InitDiag(
+        sAmsNetId  := '127.0.0.1.1.1',
+        nPort      := 16150,
+        nWindowMs  := 250,   // flush every 250 ms
+        bEnabled   := TRUE,
+        nDivider   := 1      // sample every cycle
+    );
+END_IF
+```
+
+On a sub-100 µs task that would fill the 1024-slot ring in <100 ms, set
+`nDivider` to e.g. `10` so the sampler keeps every tenth cycle.
+
+## Runtime Reconfiguration from tc-otel
+
+tc-otel (or any ADS client) can update the config slot for task *n* by
+writing the `ST_PushDiagConfig` struct at
+`PRG_TaskLog.aTaskDiagConfig[n]`. Fields:
+
+| Offset | Field       | Type  | Meaning                                |
+| ------ | ----------- | ----- | -------------------------------------- |
+| 0x00   | `window_ms` | UDINT | flush interval; 0 disables             |
+| 0x04   | `enabled`   | BOOL  | TRUE = collect and push                |
+| 0x05   | `divider`   | USINT | 0/1 = every cycle, N = keep every N-th |
+| 0x06   | reserved    | UINT  | always 0                               |
+
+Changes take effect on the next task cycle — the collector reads the slot
+every call.
 
 ## Wire Format
 
-Push diagnostics use a binary wire format over ADS Write with Index Group `0x4D42_4301` (ASCII "MBC\1").
+Push diagnostics use a binary wire format over ADS Write with index group
+`0x4D42_4301` (ASCII "MBC\1") and index offset `0` (batch). Wire version is
+`2`; batches are 80-byte header + N × 24-byte samples, with N ≤ 1024.
 
-Three event types are supported:
-
-- **IO=0** — Task snapshot (periodic batched state)
-- **IO=1** — Cycle-exceed edge (when execution time exceeds configured cycle time)
-- **IO=2** — RT-violation edge (real-time violation detected)
-
-For complete wire-format details including byte layouts, field descriptions, and size calculations, see [Push Diagnostics Wire Format](push-diagnostics-wire-format.md).
+For complete byte-level layout, field descriptions, and bandwidth math, see
+[Push Diagnostics Wire Format](push-diagnostics-wire-format.md).
 
 ## Coexistence with Polling
 
-tc-otel automatically manages the transition from polling to push diagnostics. **Polling is not disabled by default**, but the poller includes auto-detect logic:
+tc-otel still supports 5 Hz polling as a fallback. The poller includes
+auto-detect logic:
 
-- When a push event (snapshot or edge) is received from a target, an internal timer starts.
-- If no push events are received within the **10-second window**, polling resumes automatically for that target.
-- If push events arrive again within the window, polling is suspended and the timer resets.
+- When a push event arrives from a target, an internal timer starts.
+- If no push events are received within 10 seconds, polling resumes
+  automatically for that target.
+- If push events arrive again, polling suspends and the timer resets.
 
-This allows seamless fallback: if the PLC's `FB_PushDiag` is disabled or crashes, the poller silently takes over without reconfiguration.
+Seamless fallback: if the PLC library is updated, paused, or crashes, the
+poller silently takes over without reconfiguration.
 
-**To fully disable polling**, explicitly set `poll_interval_ms: 0` or remove the target from the diagnostics config once you confirm push data is flowing steadily.
+To fully disable polling, set `poll_interval_ms: 0` on the target or remove
+it from the diagnostics config once push data is flowing steadily.
 
 ## Dashboard Panels
 
-The tc-otel Grafana dashboard includes the following new panels for push-diagnostic metrics:
+Push-diagnostic metrics emitted by `diagnostics_bridge`:
 
-### New Panels (Push Diagnostics)
+**Per-window aggregates** (one data point per task per window):
 
-1. **Actual Last-Exec-Time per Task (µs)**
-   - Metric: `tc_task_last_exec_time_us`
-   - Type: timeseries
-   - Shows measured execution time per task; useful to detect transient overruns.
+- `tc_task_exec_time_min_us`, `tc_task_exec_time_max_us`,
+  `tc_task_exec_time_avg_us` (gauges)
+- `tc_task_window_ms` (gauge) — the effective window length
+- `tc_task_sample_count` (gauge) — samples in the last batch
+- `tc_task_cycle_count_total` (monotonic counter) — `rate()` gives cycles/sec
+- `tc_task_cycle_exceed_window_total` and `tc_task_rt_violation_window_total`
+  (non-monotonic counters) — window deltas; use `sum_over_time()` for
+  cumulative totals
+- `tc_task_sample_buffer_overflow` (gauge) — 1 if any sample carried the
+  overflow flag (data gap occurred)
 
-2. **Per-Task Cycle-Exceed Counter (lifetime)**
-   - Metric: `tc_task_cycle_exceed_counter_total`
-   - Type: timeseries / stat
-   - Monotonic counter; increments each time a task exceeds its cycle time.
+**Per-flagged-sample edge events** (one data point per exceed / rtv cycle):
 
-3. **Cycle-Exceed Events Rate (events/min)**
-   - PromQL: `rate(tc_task_cycle_exceed_edge_total[1m]) * 60`
-   - Type: timeseries
-   - High-frequency edge events; rate-normalized to events per minute.
+- `tc_task_cycle_exceed_edge_total` — each emission carries `cycle_count`,
+  `dc_time_ft`, `exec_time_us` attributes. `dc_time_ft` is FILETIME ticks
+  (100 ns since 1601), byte-identical to log entry `plc_timestamp`.
+- `tc_task_rt_violation_edge_total` — same attribute set
 
-4. **RT Violations (lifetime)** and **RT Violations Rate (events/min)**
-   - Metrics: `tc_rt_rt_violation_counter_total` (stat) and `tc_rt_rt_violation_edge_total` (timeseries with rate)
-   - Exclusive to push diagnostics; not available from polling.
-
-5. **Configured vs Actual Cycle Time (µs)**
-   - Metrics: `tc_task_cycle_time_configured_us` and `tc_task_last_exec_time_us` overlaid
-   - Type: timeseries (two series per panel)
-   - Overlay to visually compare expected vs. observed execution time.
-
-### Annotations
-
-The dashboard includes two annotation types:
-
-- **Cycle exceeds** (red): Marks when cycle-exceed edges occur.
-- **RT violations** (orange): Marks when RT-violation edges occur.
-
-Both are sourced from the push-diagnostic edge counters and provide instant visual cues on the dashboard timeline.
+The `cycle_count` + `dc_time_ns` attributes make it possible to jump from a
+spike on the dashboard directly to the log line produced on that exact
+cycle.
 
 ## Troubleshooting
 
 ### No push data appearing in Prometheus
 
-**Check:**
-
-1. **tc-otel logs for decode errors:**
+1. Check tc-otel logs for decode errors:
    ```bash
    docker logs tc-otel | grep -i "push\|decode\|0x4D42"
    ```
-   Look for error messages indicating malformed push packets or unhandled versions.
-
-2. **MQTT broker traffic (if using MQTT transport):**
+2. For MQTT transport, tail broker traffic:
    ```bash
-   mosquitto_sub -h <broker_ip> -t '$SYS/#' | grep -i traffic
-   # or inspect raw publish events with:
    mosquitto_sub -h <broker_ip> -t '#' -v
    ```
-   Verify that writes with IG `0x4D42_4301` are arriving.
-
-3. **PLC FB status:**
-   - Confirm `FB_PushDiag.bEnabled = TRUE`.
-   - Check that the ADS route to tc-otel is configured and active.
-   - Monitor the snapshot timer to verify it's incrementing.
+   Verify writes with `IG=0x4D42_4301` are arriving.
+3. Inspect PLC state:
+   - `PRG_TaskLog.aTaskDiagConfig[n].enabled` is TRUE.
+   - `PRG_TaskLog.aTaskDiagConfig[n].window_ms` > 0.
+   - ADS route to tc-otel is configured and active.
 
 ### Empty or null `task_name` in metrics
 
-**Cause:** The PLC function block is not writing the task name field, or is writing null bytes that are not being converted to empty strings.
+The collector pulls `task_name` from `TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName`
+and null-pads to 20 bytes. If the metric label is empty:
 
-**Fix:**
-
-1. Dump a raw frame using `mosquitto_sub` (or tcpdump if using TCP):
+1. Dump a raw frame (MQTT):
    ```bash
-   mosquitto_sub -h <broker_ip> -t '#' --output-format=p --show-hidden | hexdump -C | grep "4D42"
+   mosquitto_sub -h <broker_ip> -t '#' --output-format=p --show-hidden | hexdump -C | grep 4D42
    ```
-2. Inspect the task name bytes (offset +0x34, 20 bytes) in the snapshot payload.
-3. Ensure the PLC's `ST_PushDiagTaskRecord` is properly null-padded and that the task name is correctly copied from `TaskInfo.sTaskName`.
+2. Inspect bytes at header offset `+0x3C` (20 bytes).
+3. Confirm the PLC task has a non-empty name configured in the system manager.
+
+### `tc_task_sample_buffer_overflow = 1`
+
+The ring filled up before the window flushed — either the window is too
+large for the task's cycle rate, or ADSWRITE is backed up. Shorten
+`window_ms`, raise `divider`, or check the network path to tc-otel.
 
 ### Dashboard panels show no data
 
-**Check:**
-
-1. Verify push events are arriving: inspect tc-otel logs and confirm decode success.
-2. Confirm Prometheus is scraping the metrics endpoint and ingesting the data:
-   ```
-   # In Prometheus UI: http://localhost:9090
-   # Query: up{job="tc-otel"}
-   ```
-3. Verify the correct datasource (VictoriaMetrics or Prometheus) is configured in Grafana.
-4. Check metric names match the Prometheus naming convention (e.g., `tc_task_last_exec_time_us`, not `tc.task.last_exec_time_us`).
+1. Verify push events arrive: check tc-otel logs for successful decodes.
+2. In Prometheus UI, query `up{job="tc-otel"}` and one of the new metric
+   names (Prometheus converts dots to underscores:
+   `tc_task_exec_time_avg_us`, not `tc.task.exec_time_avg_us`).
+3. Confirm Grafana points at the right datasource.
