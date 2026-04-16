@@ -47,7 +47,10 @@ impl Log4TcService {
     pub async fn run(&self) -> Result<()> {
         tracing::info!("Log4TC Service starting");
 
-        let (log_tx, mut log_rx) = mpsc::channel(self.settings.service.channel_capacity);
+        let (log_tx, mut log_rx) =
+            mpsc::channel::<tc_otel_core::LogEntry>(self.settings.service.channel_capacity);
+        let (raw_log_tx, mut raw_log_rx) =
+            mpsc::channel::<tc_otel_core::LogEntry>(self.settings.service.channel_capacity);
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
         // Start config watcher if a config path was provided, and get the
@@ -139,7 +142,7 @@ impl Log4TcService {
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,
-                log_tx.clone(),
+                raw_log_tx.clone(),
                 metric_tx.clone(),
                 task_registry.clone(),
             )
@@ -455,6 +458,56 @@ impl Log4TcService {
                 }
             });
 
+            // Log-to-trace enrichment: for each raw LogEntry arriving from
+            // the ADS router, look up the current open span for that task
+            // and stamp trace_id / span_id onto the entry before forwarding
+            // to the LogDispatcher. Zero-cost when no span is open.
+            let span_disp_enrich = span_disp.clone();
+            let enrich_log_tx = log_tx.clone();
+            let mut shutdown_rx_enrich = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(mut le) = raw_log_rx.recv() => {
+                            // Only enrich when the log entry carries no prior
+                            // trace context (all-zero fixed arrays).
+                            let no_trace = le.trace_id.iter().all(|&b| b == 0)
+                                && le.span_id.iter().all(|&b| b == 0);
+                            if no_trace {
+                                // Parse the AmsNetId up front and drop the
+                                // (non-Send) Err variant before awaiting the
+                                // dispatcher lock. Otherwise the generated
+                                // future is !Send and tokio::spawn rejects it.
+                                let net_id_opt =
+                                    tc_otel_ads::AmsNetId::from_str(&le.ams_net_id).ok();
+                                if let Some(net_id) = net_id_opt {
+                                    let disp = span_disp_enrich.lock().await;
+                                    if let Some((tid_hex, sid_hex)) =
+                                        disp.current_context(&net_id, le.task_index as u8)
+                                    {
+                                        if let (Ok(tid_bytes), Ok(sid_bytes)) =
+                                            (hex::decode(&tid_hex), hex::decode(&sid_hex))
+                                        {
+                                            if tid_bytes.len() == 16 && sid_bytes.len() == 8 {
+                                                le.trace_id.copy_from_slice(&tid_bytes);
+                                                le.span_id.copy_from_slice(&sid_bytes);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if enrich_log_tx.send(le).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ = shutdown_rx_enrich.recv() => {
+                            tracing::info!("Log enrichment task stopped");
+                            break;
+                        }
+                    }
+                }
+            });
+
             // Periodic TTL sweep task
             let span_disp_sweep = span_disp.clone();
             let mut shutdown_rx_sweep = shutdown_tx.subscribe();
@@ -476,6 +529,25 @@ impl Log4TcService {
 
             Some((event_handle, sweep_handle))
         } else {
+            // Traces disabled → no enrichment. Spawn a pass-through forwarder
+            // so raw_log_rx still drains into log_tx.
+            let forward_log_tx = log_tx.clone();
+            let mut shutdown_rx_forward = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(le) = raw_log_rx.recv() => {
+                            if forward_log_tx.send(le).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ = shutdown_rx_forward.recv() => {
+                            tracing::info!("Raw log forwarder stopped");
+                            break;
+                        }
+                    }
+                }
+            });
             None
         };
 
