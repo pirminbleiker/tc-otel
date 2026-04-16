@@ -103,6 +103,19 @@ pub fn diag_event_to_metrics(
                 ),
             ]
         }
+        // Push-diagnostic events. Unit 4 will implement the actual metric conversion.
+        DiagEvent::TaskSnapshot { .. } => {
+            // TODO: Unit 4 will implement metric emission for TaskSnapshot.
+            Vec::new()
+        }
+        DiagEvent::CycleExceedEdge { .. } => {
+            // TODO: Unit 4 will implement metric emission for CycleExceedEdge.
+            Vec::new()
+        }
+        DiagEvent::RtViolationEdge { .. } => {
+            // TODO: Unit 4 will implement metric emission for RtViolationEdge.
+            Vec::new()
+        }
     }
 }
 
