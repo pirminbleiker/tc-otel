@@ -19,11 +19,28 @@
     "rate_limit_per_sec_per_ip": 10,
     "keepalive_interval_secs": 60,
     "send_buffer_size": 1048576,
+    "https_only": false,
+    "tls": {
+      "enabled": false,
+      "cert_path": null,
+      "key_path": null,
+      "ca_cert_path": null,
+      "require_client_cert": false,
+      "client_cert_path": null,
+      "client_key_path": null,
+      "insecure_skip_verify": false,
+      "min_version": "TLSv1_2",
+      "max_version": "TLSv1_3",
+      "ciphers": []
+    },
     "transport": {
       "type": "mqtt",
       "broker": "mosquitto:1883",
       "topic_prefix": "AdsOverMqtt",
-      "client_id": "tc-otel-compose"
+      "client_id": "tc-otel-compose",
+      "username": null,
+      "password": null,
+      "tls": null
     }
   },
   "export": {
@@ -44,14 +61,14 @@
   "web": {
     "enabled": true,
     "host": "0.0.0.0",
-    "port": 8080,
-    "max_subscriptions": 500
+    "port": 8080
   },
   "metrics": {
     "cycle_time_enabled": true,
     "cycle_time_window": 1000,
     "custom_metrics": [],
     "export_enabled": true,
+    "export_endpoint": null,
     "export_batch_size": 100,
     "export_flush_interval_ms": 1000
   },
@@ -63,12 +80,16 @@
         "poll_interval_ms": 200,
         "exceed_counter": true,
         "rt_usage": true,
-        "task_ports": [340, 350, 351],
+        "task_ports": [
+          340,
+          350,
+          351
+        ],
         "rt_port": 200,
         "task_names": {
           "340": "IO Idle",
-          "350": "PlcTask",
-          "351": "PlcTask1"
+          "351": "PlcTask1",
+          "350": "PlcTask"
         }
       }
     ]

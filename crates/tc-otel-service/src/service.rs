@@ -17,7 +17,7 @@ use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
 use crate::system_metrics::PlcSystemMetricsCollector;
-use crate::web::{self, DiagnosticStats, SubscriptionManager, SymbolStore, WebState};
+use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
 /// Main Log4TC Service
 pub struct Log4TcService {
@@ -452,9 +452,6 @@ impl Log4TcService {
                 stats: diagnostic_stats,
                 conn_manager,
                 task_registry,
-                subscriptions: Arc::new(SubscriptionManager::new(
-                    self.settings.web.max_subscriptions,
-                )),
                 symbols: Arc::new(SymbolStore::new()),
                 cycle_tracker,
                 service_name: self.settings.service.name.clone(),

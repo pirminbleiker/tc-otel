@@ -596,9 +596,6 @@ pub struct WebConfig {
     /// Web UI listening port (default: 8080)
     #[serde(default = "default_web_port")]
     pub port: u16,
-    /// Maximum number of tag subscriptions (default: 500)
-    #[serde(default = "default_max_subscriptions")]
-    pub max_subscriptions: usize,
 }
 
 fn default_web_enabled() -> bool {
@@ -610,9 +607,6 @@ fn default_web_host() -> String {
 fn default_web_port() -> u16 {
     8080
 }
-fn default_max_subscriptions() -> usize {
-    500
-}
 
 impl Default for WebConfig {
     fn default() -> Self {
@@ -620,7 +614,6 @@ impl Default for WebConfig {
             enabled: default_web_enabled(),
             host: default_web_host(),
             port: default_web_port(),
-            max_subscriptions: default_max_subscriptions(),
         }
     }
 }

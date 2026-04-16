@@ -5,8 +5,11 @@
 //! HTTP overhead and CPU usage.
 
 use anyhow::Result;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tc_otel_core::{AppSettings, LogEntry, LogRecord, MessageFormatter, MetricEntry, MetricRecord};
+use tc_otel_core::{
+    AppSettings, LogEntry, LogRecord, MessageFormatter, MetricEntry, MetricMapper, MetricRecord,
+};
 use tc_otel_export::OtelExporter;
 use tokio::sync::{mpsc, watch};
 
@@ -280,6 +283,7 @@ impl LogDispatcher {
 #[derive(Clone)]
 pub struct MetricDispatcher {
     export_tx: mpsc::Sender<MetricRecord>,
+    mapper: Arc<RwLock<MetricMapper>>,
 }
 
 impl MetricDispatcher {
@@ -294,6 +298,8 @@ impl MetricDispatcher {
         let (export_tx, export_rx) =
             mpsc::channel::<MetricRecord>(settings.service.channel_capacity);
 
+        let mapper = Arc::new(RwLock::new(MetricMapper::from_config(&settings.metrics)));
+
         tokio::spawn(Self::batch_worker(
             export_rx,
             endpoint,
@@ -302,15 +308,17 @@ impl MetricDispatcher {
             settings.export.max_retries,
             settings.export.timeout_secs,
             config_rx,
+            mapper.clone(),
         ));
 
         tracing::info!(
-            "MetricDispatcher ready (batch={}, flush={}ms)",
+            "MetricDispatcher ready (batch={}, flush={}ms, custom_metrics={})",
             batch_size,
-            flush_interval.as_millis()
+            flush_interval.as_millis(),
+            mapper.read().unwrap().len()
         );
 
-        Ok(Self { export_tx })
+        Ok(Self { export_tx, mapper })
     }
 
     /// Resolve the metrics export endpoint from config.
@@ -328,8 +336,10 @@ impl MetricDispatcher {
             .replace("/insert/jsonline", "/v1/metrics")
     }
 
-    /// Dispatch a metric entry - converts to MetricRecord and sends to export worker
-    pub async fn dispatch(&self, entry: MetricEntry) -> Result<()> {
+    /// Dispatch a metric entry - applies custom-metric mapping, converts to
+    /// MetricRecord, and sends to the export worker.
+    pub async fn dispatch(&self, mut entry: MetricEntry) -> Result<()> {
+        self.mapper.read().unwrap().apply(&mut entry);
         let record = MetricRecord::from_metric_entry(entry);
 
         if self.export_tx.try_send(record).is_err() {
@@ -340,6 +350,7 @@ impl MetricDispatcher {
     }
 
     /// Background worker that batches metric records and flushes to the OTLP endpoint.
+    #[allow(clippy::too_many_arguments)]
     async fn batch_worker(
         mut rx: mpsc::Receiver<MetricRecord>,
         initial_endpoint: String,
@@ -348,6 +359,7 @@ impl MetricDispatcher {
         max_retries: usize,
         timeout_secs: u64,
         config_rx: Option<watch::Receiver<AppSettings>>,
+        mapper: Arc<RwLock<MetricMapper>>,
     ) {
         let exporter = OtelExporter::new(initial_endpoint.clone(), initial_batch_size, max_retries);
         // Keep exporter config in sync — for now we rebuild on endpoint change
@@ -422,6 +434,10 @@ impl MetricDispatcher {
                         flush_interval = new_flush_interval;
                         interval = tokio::time::interval(flush_interval);
                     }
+                    let new_mapper = MetricMapper::from_config(&new_settings.metrics);
+                    let len = new_mapper.len();
+                    *mapper.write().unwrap() = new_mapper;
+                    tracing::info!("Hot-reload: custom_metrics mapper rebuilt ({} symbols)", len);
                 }
                 else => {
                     if !batch.is_empty() {
@@ -827,6 +843,121 @@ mod tests {
         assert!(
             counter.load(Ordering::SeqCst) > 0,
             "should still flush after watch channel closes"
+        );
+    }
+
+    /// Capture exported request bodies in a shared buffer.
+    async fn start_capturing_metrics_server(
+    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::{routing::post, Router};
+
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let b = bodies.clone();
+
+        let app = Router::new().route(
+            "/v1/metrics",
+            post(move |body: String| {
+                let b = b.clone();
+                async move {
+                    b.lock().unwrap().push(body);
+                    ""
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        (addr, bodies)
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_applies_custom_metric_mapping() {
+        let (addr, bodies) = start_capturing_metrics_server().await;
+        let mut settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        settings.metrics.custom_metrics = vec![CustomMetricDef {
+            symbol: "GVL.fMotorTemp".to_string(),
+            metric_name: "plc.motor.temperature".to_string(),
+            description: "Motor 1 bearing temperature".to_string(),
+            unit: "Cel".to_string(),
+            kind: MetricKindConfig::Gauge,
+            is_monotonic: false,
+        }];
+
+        let dispatcher = MetricDispatcher::new(&settings, None).await.unwrap();
+
+        let mut entry = MetricEntry::gauge("raw.plc.symbol".to_string(), 72.5);
+        entry.attributes.insert(
+            "plc.symbol".to_string(),
+            serde_json::Value::String("GVL.fMotorTemp".to_string()),
+        );
+        dispatcher.dispatch(entry).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let captured = bodies.lock().unwrap().join("");
+        assert!(
+            captured.contains("plc.motor.temperature"),
+            "exported body should contain mapped metric name; got: {captured}"
+        );
+        assert!(
+            captured.contains("\"Cel\""),
+            "exported body should contain mapped unit; got: {captured}"
+        );
+        assert!(
+            !captured.contains("raw.plc.symbol"),
+            "exported body should not contain the pre-mapping name"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metric_dispatcher_hot_reload_rebuilds_mapper() {
+        let (addr, bodies) = start_capturing_metrics_server().await;
+        let settings = test_settings_with_metrics(&format!("http://{}/v1/metrics", addr));
+        let (tx, rx) = watch::channel(settings.clone());
+
+        let dispatcher = MetricDispatcher::new(&settings, Some(rx)).await.unwrap();
+
+        // Before reload: no mapping, entry goes through unchanged.
+        let mut e1 = MetricEntry::gauge("initial.name".to_string(), 1.0);
+        e1.attributes.insert(
+            "plc.symbol".to_string(),
+            serde_json::Value::String("GVL.nCount".to_string()),
+        );
+        dispatcher.dispatch(e1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Push a new config with a mapping.
+        let mut updated = settings.clone();
+        updated.metrics.custom_metrics = vec![CustomMetricDef {
+            symbol: "GVL.nCount".to_string(),
+            metric_name: "plc.parts.produced".to_string(),
+            description: "Parts produced".to_string(),
+            unit: "{parts}".to_string(),
+            kind: MetricKindConfig::Sum,
+            is_monotonic: true,
+        }];
+        tx.send(updated).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // After reload: same symbol now maps to new name/unit.
+        let mut e2 = MetricEntry::gauge("initial.name".to_string(), 2.0);
+        e2.attributes.insert(
+            "plc.symbol".to_string(),
+            serde_json::Value::String("GVL.nCount".to_string()),
+        );
+        dispatcher.dispatch(e2).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let captured = bodies.lock().unwrap().join("");
+        assert!(
+            captured.contains("plc.parts.produced"),
+            "body after hot-reload should contain remapped name; got: {captured}"
+        );
+        assert!(
+            captured.contains("initial.name"),
+            "body before hot-reload should still contain original (unmapped) name; got: {captured}"
         );
     }
 }

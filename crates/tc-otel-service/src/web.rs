@@ -1,20 +1,18 @@
-//! Web UI server for status, diagnostics, and PLC tag browsing
+//! Web UI server for status, diagnostics, and configuration
 //!
 //! Provides a REST API and embedded SPA dashboard for monitoring the tc-otel
-//! service. Users can browse PLC tags and subscribe to up to 500 variables
-//! for real-time metric collection.
+//! service and browsing PLC symbols.
 
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use chrono;
 use schemars;
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use serde::Serialize;
 #[allow(unused_imports)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -51,74 +49,6 @@ impl DiagnosticStats {
 impl Default for DiagnosticStats {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Manages tag subscriptions with a configurable maximum
-#[derive(Debug)]
-pub struct SubscriptionManager {
-    subscriptions: RwLock<HashSet<String>>,
-    max_subscriptions: usize,
-}
-
-impl SubscriptionManager {
-    pub fn new(max_subscriptions: usize) -> Self {
-        Self {
-            subscriptions: RwLock::new(HashSet::new()),
-            max_subscriptions,
-        }
-    }
-
-    pub fn subscribe(&self, tag: &str) -> Result<(), SubscriptionError> {
-        let mut subs = self.subscriptions.write().unwrap();
-        if subs.contains(tag) {
-            return Ok(()); // Already subscribed
-        }
-        if subs.len() >= self.max_subscriptions {
-            return Err(SubscriptionError::LimitReached {
-                max: self.max_subscriptions,
-            });
-        }
-        subs.insert(tag.to_string());
-        Ok(())
-    }
-
-    pub fn unsubscribe(&self, tag: &str) -> bool {
-        self.subscriptions.write().unwrap().remove(tag)
-    }
-
-    pub fn list(&self) -> Vec<String> {
-        let subs = self.subscriptions.read().unwrap();
-        let mut tags: Vec<String> = subs.iter().cloned().collect();
-        tags.sort();
-        tags
-    }
-
-    pub fn count(&self) -> usize {
-        self.subscriptions.read().unwrap().len()
-    }
-
-    pub fn max(&self) -> usize {
-        self.max_subscriptions
-    }
-
-    pub fn clear(&self) {
-        self.subscriptions.write().unwrap().clear();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SubscriptionError {
-    LimitReached { max: usize },
-}
-
-impl std::fmt::Display for SubscriptionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SubscriptionError::LimitReached { max } => {
-                write!(f, "subscription limit reached (max {})", max)
-            }
-        }
     }
 }
 
@@ -174,7 +104,6 @@ pub struct WebState {
     pub stats: Arc<DiagnosticStats>,
     pub conn_manager: Arc<ConnectionManager>,
     pub task_registry: Arc<TaskRegistry>,
-    pub subscriptions: Arc<SubscriptionManager>,
     pub symbols: Arc<SymbolStore>,
     pub cycle_tracker: Arc<CycleTimeTracker>,
     pub service_name: String,
@@ -204,8 +133,6 @@ struct StatusResponse {
     connections_accepted: u64,
     connections_rejected: u64,
     registered_tasks: usize,
-    subscriptions_active: usize,
-    subscriptions_max: usize,
 }
 
 #[derive(Serialize)]
@@ -223,38 +150,6 @@ struct TaskInfo {
     app_name: String,
     project_name: String,
     online_change_count: u32,
-}
-
-#[derive(Serialize)]
-struct SubscriptionsResponse {
-    count: usize,
-    max: usize,
-    tags: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct SubscribeRequest {
-    pub tags: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct UnsubscribeRequest {
-    pub tags: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct SubscribeResponse {
-    subscribed: Vec<String>,
-    count: usize,
-    max: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    errors: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct UnsubscribeResponse {
-    unsubscribed: Vec<String>,
-    count: usize,
 }
 
 #[derive(Serialize)]
@@ -308,8 +203,6 @@ async fn status(State(state): State<WebState>) -> Json<StatusResponse> {
         connections_accepted: state.stats.connections_accepted.load(Ordering::Relaxed),
         connections_rejected: state.stats.connections_rejected.load(Ordering::Relaxed),
         registered_tasks: state.task_registry.len(),
-        subscriptions_active: state.subscriptions.count(),
-        subscriptions_max: state.subscriptions.max(),
     })
 }
 
@@ -340,68 +233,6 @@ async fn tasks(State(state): State<WebState>) -> Json<Vec<TaskInfo>> {
             })
             .collect(),
     )
-}
-
-async fn get_subscriptions(State(state): State<WebState>) -> Json<SubscriptionsResponse> {
-    Json(SubscriptionsResponse {
-        count: state.subscriptions.count(),
-        max: state.subscriptions.max(),
-        tags: state.subscriptions.list(),
-    })
-}
-
-async fn subscribe(
-    State(state): State<WebState>,
-    Json(req): Json<SubscribeRequest>,
-) -> Result<Json<SubscribeResponse>, (StatusCode, Json<serde_json::Value>)> {
-    if req.tags.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "tags array must not be empty"})),
-        ));
-    }
-
-    let mut subscribed = Vec::new();
-    let mut errors = Vec::new();
-
-    for tag in &req.tags {
-        if tag.is_empty() {
-            errors.push("empty tag name skipped".to_string());
-            continue;
-        }
-        match state.subscriptions.subscribe(tag) {
-            Ok(()) => subscribed.push(tag.clone()),
-            Err(SubscriptionError::LimitReached { max }) => {
-                errors.push(format!(
-                    "subscription limit reached (max {}), '{}' not added",
-                    max, tag
-                ));
-            }
-        }
-    }
-
-    Ok(Json(SubscribeResponse {
-        subscribed,
-        count: state.subscriptions.count(),
-        max: state.subscriptions.max(),
-        errors,
-    }))
-}
-
-async fn unsubscribe(
-    State(state): State<WebState>,
-    Json(req): Json<UnsubscribeRequest>,
-) -> Json<UnsubscribeResponse> {
-    let mut unsubscribed = Vec::new();
-    for tag in &req.tags {
-        if state.subscriptions.unsubscribe(tag) {
-            unsubscribed.push(tag.clone());
-        }
-    }
-    Json(UnsubscribeResponse {
-        unsubscribed,
-        count: state.subscriptions.count(),
-    })
 }
 
 async fn get_symbols(State(state): State<WebState>) -> Json<SymbolsResponse> {
@@ -612,9 +443,6 @@ pub fn router(state: WebState) -> Router {
         .route("/api/status", get(status))
         .route("/api/connections", get(connections))
         .route("/api/tasks", get(tasks))
-        .route("/api/subscriptions", get(get_subscriptions))
-        .route("/api/subscriptions", post(subscribe))
-        .route("/api/subscriptions", delete(unsubscribe))
         .route("/api/symbols", get(get_symbols))
         .route("/api/symbols/:name", get(get_symbol_by_name))
         .route("/api/cycle-metrics", get(cycle_metrics))
@@ -670,14 +498,8 @@ th,td{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #334155}
 th{color:#94a3b8;font-weight:500;font-size:.8rem;text-transform:uppercase}
 td{font-size:.9rem}
 .section{margin-bottom:2rem}
-.tag-input{display:flex;gap:.5rem;margin-bottom:1rem}
-.tag-input input{flex:1;padding:.5rem;background:#0f172a;border:1px solid #475569;border-radius:.25rem;color:#e2e8f0;font-size:.9rem}
-.tag-input button,.btn{padding:.5rem 1rem;background:#2563eb;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.9rem}
-.tag-input button:hover,.btn:hover{background:#1d4ed8}
-.btn-danger{background:#dc2626}.btn-danger:hover{background:#b91c1c}
-.tag-list{display:flex;flex-wrap:wrap;gap:.5rem}
-.tag{background:#334155;padding:.25rem .75rem;border-radius:1rem;font-size:.85rem;display:flex;align-items:center;gap:.5rem}
-.tag .remove{cursor:pointer;color:#ef4444;font-weight:700}
+.btn{padding:.5rem 1rem;background:#2563eb;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.9rem}
+.btn:hover{background:#1d4ed8}
 .status-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;color:#64748b;font-size:.8rem}
 #error{color:#ef4444;margin-bottom:1rem;display:none}
 </style>
@@ -706,16 +528,6 @@ td{font-size:.9rem}
 <div class="section">
 <h2>Task Cycle Time</h2>
 <table><thead><tr><th>AMS Net ID</th><th>Task</th><th>Avg (&mu;s)</th><th>Min (&mu;s)</th><th>Max (&mu;s)</th><th>Jitter (&mu;s)</th><th>Samples</th><th>Total Cycles</th></tr></thead><tbody id="cycle-body"></tbody></table>
-</div>
-
-<div class="section">
-<h2>Tag Subscriptions <span id="sub-count"></span></h2>
-<div class="tag-input">
-<input id="tag-input" placeholder="Enter tag name (e.g. GVL.bMotorRunning)" onkeydown="if(event.key==='Enter')addTag()">
-<button onclick="addTag()">Subscribe</button>
-<button class="btn-danger" onclick="clearTags()">Clear All</button>
-</div>
-<div class="tag-list" id="tag-list"></div>
 </div>
 </div>
 
@@ -998,10 +810,9 @@ function fmtUptime(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s
 
 async function refresh(){
   try{
-    const[st,cn,tk,sb,cy]=await Promise.all([
+    const[st,cn,tk,cy]=await Promise.all([
       fetchJson('/api/status'),fetchJson('/api/connections'),
-      fetchJson('/api/tasks'),fetchJson('/api/subscriptions'),
-      fetchJson('/api/cycle-metrics')
+      fetchJson('/api/tasks'),fetchJson('/api/cycle-metrics')
     ]);
     document.getElementById('stats').innerHTML=`
       <div class="card"><div class="label">Status</div><div class="value ok">${st.status}</div></div>
@@ -1010,43 +821,13 @@ async function refresh(){
       <div class="card"><div class="label">Logs Dispatched</div><div class="value">${st.logs_dispatched.toLocaleString()}</div></div>
       <div class="card"><div class="label">Logs Failed</div><div class="value ${st.logs_failed>0?'warn':''}">${st.logs_failed.toLocaleString()}</div></div>
       <div class="card"><div class="label">Active Connections</div><div class="value">${st.connections_active}</div></div>
-      <div class="card"><div class="label">Registered Tasks</div><div class="value">${st.registered_tasks}</div></div>
-      <div class="card"><div class="label">Subscriptions</div><div class="value">${st.subscriptions_active}/${st.subscriptions_max}</div></div>`;
+      <div class="card"><div class="label">Registered Tasks</div><div class="value">${st.registered_tasks}</div></div>`;
     document.getElementById('uptime').textContent='Uptime: '+fmtUptime(st.uptime_secs);
     document.getElementById('conn-body').innerHTML=cn.length?cn.map(c=>`<tr><td>${c.ip}</td><td>${c.count}</td></tr>`).join(''):'<tr><td colspan="2" style="color:#64748b">No active connections</td></tr>';
     document.getElementById('task-body').innerHTML=tk.length?tk.map(t=>`<tr><td>${t.ams_net_id}</td><td>${t.ams_source_port}</td><td>${t.task_name}</td><td>${t.app_name}</td><td>${t.project_name}</td><td>${t.online_change_count}</td></tr>`).join(''):'<tr><td colspan="6" style="color:#64748b">No registered tasks</td></tr>';
     document.getElementById('cycle-body').innerHTML=cy.length?cy.map(c=>`<tr><td>${c.ams_net_id}</td><td>${c.task_name} [${c.task_index}]</td><td>${c.avg_us.toFixed(1)}</td><td>${c.min_us.toFixed(1)}</td><td>${c.max_us.toFixed(1)}</td><td>${c.jitter_us.toFixed(1)}</td><td>${c.sample_count}</td><td>${c.total_cycles.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="8" style="color:#64748b">No cycle data yet</td></tr>';
-    document.getElementById('sub-count').textContent=`(${sb.count}/${sb.max})`;
-    document.getElementById('tag-list').innerHTML=sb.tags.map(t=>`<span class="tag">${t}<span class="remove" onclick="removeTag('${t}')">&times;</span></span>`).join('');
     document.getElementById('last-update').textContent='Last update: '+new Date().toLocaleTimeString();
   }catch(e){showError('Refresh failed: '+e.message)}
-}
-
-async function addTag(){
-  const input=document.getElementById('tag-input');
-  const tag=input.value.trim();
-  if(!tag)return;
-  try{
-    await fetchJson('/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:[tag]})});
-    input.value='';
-    refresh();
-  }catch(e){showError('Subscribe failed: '+e.message)}
-}
-
-async function removeTag(tag){
-  try{
-    await fetchJson('/api/subscriptions',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:[tag]})});
-    refresh();
-  }catch(e){showError('Unsubscribe failed: '+e.message)}
-}
-
-async function clearTags(){
-  const sb=await fetchJson('/api/subscriptions');
-  if(sb.tags.length===0)return;
-  try{
-    await fetchJson('/api/subscriptions',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:sb.tags})});
-    refresh();
-  }catch(e){showError('Clear failed: '+e.message)}
 }
 
 refresh();
@@ -1070,7 +851,6 @@ mod tests {
                 tc_otel_ads::ConnectionConfig::default(),
             )),
             task_registry: Arc::new(TaskRegistry::new()),
-            subscriptions: Arc::new(SubscriptionManager::new(500)),
             symbols: Arc::new(SymbolStore::new()),
             cycle_tracker: Arc::new(CycleTimeTracker::new(1000)),
             service_name: "test-service".to_string(),
@@ -1171,88 +951,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subscribe_and_list() {
-        let state = test_state();
-        let app = router(state);
-
-        // Subscribe
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::post("/api/subscriptions")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"tags":["GVL.bMotorRunning","GVL.nCycleCount"]}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["subscribed"].as_array().unwrap().len(), 2);
-        assert_eq!(json["count"], 2);
-
-        // List
-        let resp = app
-            .oneshot(
-                Request::get("/api/subscriptions")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["count"], 2);
-        assert_eq!(json["max"], 500);
-    }
-
-    #[tokio::test]
-    async fn test_unsubscribe() {
-        let state = test_state();
-        state.subscriptions.subscribe("GVL.bTest").unwrap();
-
-        let app = router(state);
-        let resp = app
-            .oneshot(
-                Request::delete("/api/subscriptions")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"tags":["GVL.bTest"]}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["count"], 0);
-        assert_eq!(json["unsubscribed"].as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_empty_tags_rejected() {
-        let app = router(test_state());
-        let resp = app
-            .oneshot(
-                Request::post("/api/subscriptions")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"tags":[]}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn test_dashboard_returns_html() {
         let app = router(test_state());
         let resp = app
@@ -1267,67 +965,6 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(ct.contains("text/html"));
-    }
-
-    // --- Unit tests for SubscriptionManager ---
-
-    #[test]
-    fn test_subscription_manager_basic() {
-        let mgr = SubscriptionManager::new(3);
-        assert_eq!(mgr.count(), 0);
-        assert!(mgr.subscribe("tag1").is_ok());
-        assert!(mgr.subscribe("tag2").is_ok());
-        assert_eq!(mgr.count(), 2);
-    }
-
-    #[test]
-    fn test_subscription_manager_limit() {
-        let mgr = SubscriptionManager::new(2);
-        assert!(mgr.subscribe("tag1").is_ok());
-        assert!(mgr.subscribe("tag2").is_ok());
-        assert_eq!(
-            mgr.subscribe("tag3"),
-            Err(SubscriptionError::LimitReached { max: 2 })
-        );
-        assert_eq!(mgr.count(), 2);
-    }
-
-    #[test]
-    fn test_subscription_manager_duplicate() {
-        let mgr = SubscriptionManager::new(2);
-        assert!(mgr.subscribe("tag1").is_ok());
-        assert!(mgr.subscribe("tag1").is_ok()); // duplicate OK
-        assert_eq!(mgr.count(), 1);
-    }
-
-    #[test]
-    fn test_subscription_manager_unsubscribe() {
-        let mgr = SubscriptionManager::new(10);
-        mgr.subscribe("tag1").unwrap();
-        mgr.subscribe("tag2").unwrap();
-        assert!(mgr.unsubscribe("tag1"));
-        assert!(!mgr.unsubscribe("tag1")); // already removed
-        assert_eq!(mgr.count(), 1);
-    }
-
-    #[test]
-    fn test_subscription_manager_clear() {
-        let mgr = SubscriptionManager::new(10);
-        mgr.subscribe("a").unwrap();
-        mgr.subscribe("b").unwrap();
-        mgr.subscribe("c").unwrap();
-        mgr.clear();
-        assert_eq!(mgr.count(), 0);
-    }
-
-    #[test]
-    fn test_subscription_manager_list_sorted() {
-        let mgr = SubscriptionManager::new(10);
-        mgr.subscribe("zebra").unwrap();
-        mgr.subscribe("alpha").unwrap();
-        mgr.subscribe("middle").unwrap();
-        let list = mgr.list();
-        assert_eq!(list, vec!["alpha", "middle", "zebra"]);
     }
 
     #[test]
