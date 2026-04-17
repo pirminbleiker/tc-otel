@@ -170,7 +170,7 @@ jobs:
           WantedBy=multi-user.target
           EOF
 
-          cp config.example.json "${PKG_DIR}/etc/tc-otel/config.json"
+          cp examples/config/minimal.json "${PKG_DIR}/etc/tc-otel/config.json"
 
           cat > "${PKG_DIR}/DEBIAN/postinst" << 'POSTINST'
           #!/bin/sh
