@@ -801,6 +801,21 @@ impl LogRecord {
             log_attributes.insert(format!("arg.{}", idx), val);
         }
 
+        // Emit a lowercase `level` attribute alongside the OTLP severityText.
+        // Grafana's VictoriaLogs datasource colours log rows and populates the
+        // level-breakdown volume chart from a field literally named `level`;
+        // `severityText` alone renders everything as "unknown".
+        log_attributes.insert(
+            "level".to_string(),
+            serde_json::Value::String(severity_text.to_ascii_lowercase()),
+        );
+
+        // The body suffix "[trace_id=... span_id=...]" — which Grafana's
+        // derivedFields regex turns into a clickable Tempo link — is added
+        // in the LogDispatcher after message formatting. Done there so both
+        // templated and raw messages carry the suffix consistently.
+        let body = entry.message;
+
         // clock_timestamp carries the cycle-accurate DC time from the PLC
         // (ns-precise, same source the push-diag samples use). plc_timestamp
         // is the ~100 ms FILETIME from GETSYSTEMTIME kept for compatibility.
@@ -808,7 +823,7 @@ impl LogRecord {
         // with push-diag exceed dots on the Grafana axis cycle-by-cycle.
         Self {
             timestamp: entry.clock_timestamp,
-            body: serde_json::Value::String(entry.message),
+            body: serde_json::Value::String(body),
             severity_number,
             severity_text,
             trace_id,

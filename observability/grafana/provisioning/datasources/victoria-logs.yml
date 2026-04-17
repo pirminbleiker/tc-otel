@@ -9,3 +9,18 @@ datasources:
     editable: true
     jsonData:
       maxLines: 1000
+      # Make the server-side-enriched trace context clickable. tc-otel's log
+      # enrichment task stamps trace_id / span_id onto every LogEntry that
+      # flew through an open span on the same task cycle, and the LogRecord
+      # builder appends "[trace_id=... span_id=...]" to the rendered body
+      # so Grafana's derivedFields (which only see the body text, not
+      # indexed fields) can match it and turn it into a Tempo link.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'trace_id=([0-9a-f]{32})'
+          url: '$${__value.raw}'
+          datasourceUid: tempo
+          urlDisplayLabel: 'View trace'
+        - name: SpanID
+          matcherRegex: 'span_id=([0-9a-f]{16})'
+          url: '$${__value.raw}'

@@ -62,6 +62,16 @@ impl LogDispatcher {
         };
 
         let mut record = LogRecord::from_log_entry(entry);
+        // Preserve the trace suffix that from_log_entry appended, if any,
+        // so Grafana's derivedFields regex still finds trace_id in the body.
+        let body = if !record.trace_id.is_empty() {
+            format!(
+                "{} [trace_id={} span_id={}]",
+                body, record.trace_id, record.span_id
+            )
+        } else {
+            body
+        };
         record.body = serde_json::Value::String(body);
 
         // Non-blocking send - drops if channel full (backpressure)
