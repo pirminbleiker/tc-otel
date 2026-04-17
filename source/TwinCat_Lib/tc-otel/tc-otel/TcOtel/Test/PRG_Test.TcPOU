@@ -20,7 +20,7 @@ END_VAR
       <ST><![CDATA[TcUnit.RUN();
 
 IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
-	// For Remote Log4TC Server change the AMS net ID and configure a route
+	// For Remote TC-OTel Server change the AMS net ID and configure a route
 	PRG_TaskLog.Init('10.10.10.10.1.1');
 	F_Log(E_LogLevel.eInfo, 'SPS Task gestartet.').CreateLog();
 END_IF

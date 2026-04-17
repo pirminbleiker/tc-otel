@@ -7,7 +7,7 @@ END_VAR
 ]]></Declaration>
     <Implementation>
       <ST><![CDATA[IF TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
-	// For Remote Log4TC Server change the AMS net ID and configure a route
+	// For Remote TC-OTel Server change the AMS net ID and configure a route
 	PRG_TaskLog.Init('127.0.0.1.1.1');
 	F_Log(E_LogLevel.eInfo, 'F_Log');
 END_IF

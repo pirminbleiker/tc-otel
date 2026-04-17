@@ -17,8 +17,8 @@
     <LibraryReferences>{b74f17a3-49cb-46e0-b639-d8e1c2b0c59a}</LibraryReferences>
     <Company>AVM Engineering</Company>
     <Released>false</Released>
-    <Title>tc-otel</Title>
-    <ProjectVersion>0.2.4</ProjectVersion>
+    <Title>TcOtel</Title>
+    <ProjectVersion>0.0.2</ProjectVersion>
     <CompilerDefines>DEBUG</CompilerDefines>
     <DocFormat>reStructuredText</DocFormat>
     <Author>Pirmin Bleiker</Author>
@@ -226,8 +226,8 @@
     <SelectedLibraryCategories>
       <Id xmlns="">{d77c10e0-9dc6-46ed-bea1-c259418a1863}</Id>
     </SelectedLibraryCategories>
-    <DefaultNamespace>log4tc</DefaultNamespace>
-    <Placeholder>log4tc</Placeholder>
+    <DefaultNamespace>TcOtel</DefaultNamespace>
+    <Placeholder>TcOtel</Placeholder>
     <CompilerVersion>
     </CompilerVersion>
     <Licenses>
@@ -431,11 +431,6 @@
     </PlaceholderReference>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Log4TC.tmc">
-      <SubType>Content</SubType>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
     <LibraryReference Include="Base Interfaces,newest,System">
       <Namespace>IBaseLibrary</Namespace>
     </LibraryReference>
@@ -460,12 +455,15 @@
     <Content Include="POUs\Diagnostic\README.md">
       <SubType>Content</SubType>
     </Content>
+    <None Include="TcOtel.tmc">
+      <SubType>Content</SubType>
+    </None>
   </ItemGroup>
   <ProjectExtensions>
     <PlcProjectOptions>
       <XmlArchive>
-  <Data>
-    <o xml:space="preserve" t="OptionKey">
+        <Data>
+          <o xml:space="preserve" t="OptionKey">
       <v n="Name">"&lt;ProjectRoot&gt;"</v>
       <d n="SubKeys" t="Hashtable" ckt="String" cvt="OptionKey">
         <v>{192FAD59-8248-4824-A8DE-9177C94C195A}</v>
@@ -605,15 +603,15 @@
       </d>
       <d n="Values" t="Hashtable" />
     </o>
-  </Data>
-  <TypeList>
-    <Type n="Boolean">System.Boolean</Type>
-    <Type n="Hashtable">System.Collections.Hashtable</Type>
-    <Type n="NewestVersionConstraintToSave">{af9bafe2-ba31-4b15-a2b9-48a0f2cd09fb}</Type>
-    <Type n="OptionKey">{54dd0eac-a6d8-46f2-8c27-2f43c7e49861}</Type>
-    <Type n="String">System.String</Type>
-  </TypeList>
-</XmlArchive>
+        </Data>
+        <TypeList>
+          <Type n="Boolean">System.Boolean</Type>
+          <Type n="Hashtable">System.Collections.Hashtable</Type>
+          <Type n="NewestVersionConstraintToSave">{af9bafe2-ba31-4b15-a2b9-48a0f2cd09fb}</Type>
+          <Type n="OptionKey">{54dd0eac-a6d8-46f2-8c27-2f43c7e49861}</Type>
+          <Type n="String">System.String</Type>
+        </TypeList>
+      </XmlArchive>
     </PlcProjectOptions>
   </ProjectExtensions>
 </Project>
