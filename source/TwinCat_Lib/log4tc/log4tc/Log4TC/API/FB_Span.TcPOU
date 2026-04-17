@@ -25,17 +25,17 @@ VAR
        NULL (default) → route through the task-global tracer
        (PRG_TaskLog.Span) — identical behaviour to Phase 5.
        Non-NULL → this FB_Span participates in the bound tracer's
-       own open-span list for parent resolution and
+       own open-span stack for parent resolution and
        CurrentTraceParent, isolating it from parallel FB_Spans on
        the same task. Set once via BindTracer before first Begin. *)
-    _pTracer      : POINTER TO FB_Log4TcTracer;
+    _pTracer    : POINTER TO FB_Log4TcTracer;
 
-    (* Doubly-linked list pointers maintained by the tracer while
-       this span is registered with it. Not user-visible; accessed
-       only by FB_Log4TcTracer via the _Get/_SetTracerPrev/Next
-       helpers below. *)
-    _pTracerPrev  : POINTER TO FB_Span;
-    _pTracerNext  : POINTER TO FB_Span;
+    (* Pointer to the span that was the tracer's innermost-open span
+       at the moment THIS span's Begin() ran. Forms the outer-chain
+       used by FB_Log4TcTracer's LIFO stack. NULL when this is the
+       outermost open span on the bound tracer (or when unbound).
+       Accessed only via _GetOuterSpan / _SetOuterSpan below. *)
+    _pOuterSpan : POINTER TO FB_Span;
 END_VAR
 (*
 Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
@@ -228,9 +228,9 @@ END_IF;
 (* End the span *)
 PRG_TaskLog.Span.End(_hSpan);
 
-(* Unregister from the bound tracer's open list BEFORE clearing state,
-   so the tracer's _UnregisterOpen can still read our _pTracerPrev /
-   _pTracerNext. *)
+(* Unregister from the bound tracer's open stack BEFORE clearing
+   state, so the tracer's _UnregisterOpen can still read our
+   _pOuterSpan to splice the LIFO chain. *)
 IF _pTracer <> 0 THEN
     _pTracer^._UnregisterOpen(ADR(THIS^));
 END_IF;
@@ -351,57 +351,31 @@ BindTracer := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_GetTracerPrev" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
+    <Method Name="_GetOuterSpan" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
       <Declaration><![CDATA[(*
-:Description: Internal accessor used by FB_Log4TcTracer's
-linked-list bookkeeping. Not user-visible.
+:Description: Internal accessor used by FB_Log4TcTracer to walk its
+LIFO stack. Returns the span that was innermost-open when THIS span
+began — or 0 if this is the outermost / unbound. Not user-visible.
 *)
-METHOD INTERNAL _GetTracerPrev : POINTER TO FB_Span
+METHOD INTERNAL _GetOuterSpan : POINTER TO FB_Span
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_GetTracerPrev := _pTracerPrev;
+        <ST><![CDATA[_GetOuterSpan := _pOuterSpan;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_GetTracerNext" Id="{a5b6c7d8-e9f0-4a1b-2c3d-4e5f6a7b8c9d}">
+    <Method Name="_SetOuterSpan" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
       <Declaration><![CDATA[(*
-:Description: Internal accessor used by FB_Log4TcTracer's
-linked-list bookkeeping. Not user-visible.
+:Description: Internal mutator used by FB_Log4TcTracer to attach
+and detach this span from its LIFO stack. Not user-visible.
 *)
-METHOD INTERNAL _GetTracerNext : POINTER TO FB_Span
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[_GetTracerNext := _pTracerNext;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_SetTracerPrev" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
-      <Declaration><![CDATA[(*
-:Description: Internal mutator used by FB_Log4TcTracer's
-linked-list bookkeeping. Not user-visible.
-*)
-METHOD INTERNAL _SetTracerPrev
+METHOD INTERNAL _SetOuterSpan
 VAR_INPUT
-    pPrev : POINTER TO FB_Span;
+    pOuter : POINTER TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_pTracerPrev := pPrev;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_SetTracerNext" Id="{c7d8e9f0-a1b2-4c3d-4e5f-6a7b8c9d0e1f}">
-      <Declaration><![CDATA[(*
-:Description: Internal mutator used by FB_Log4TcTracer's
-linked-list bookkeeping. Not user-visible.
-*)
-METHOD INTERNAL _SetTracerNext
-VAR_INPUT
-    pNext : POINTER TO FB_Span;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[_pTracerNext := pNext;
+        <ST><![CDATA[_pOuterSpan := pOuter;
 ]]></ST>
       </Implementation>
     </Method>

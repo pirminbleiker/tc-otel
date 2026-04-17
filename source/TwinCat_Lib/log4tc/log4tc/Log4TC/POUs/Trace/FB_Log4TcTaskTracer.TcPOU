@@ -1072,7 +1072,13 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
 END_IF;
 
 (* Pop from stack if on top *)
-IF nStackDepth > 0 AND aStack[nStackDepth - 1] = hSpan THEN
+(* AND_THEN required: `AND` in TwinCAT evaluates both sides, so
+   when nStackDepth = 0 the array index `nStackDepth - 1` wraps
+   via USINT underflow to 255, producing `aStack[255]` — out of
+   bounds on ARRAY[0..15]. Short-circuit skips the lookup entirely
+   when the stack is empty. Triggerable by isolated Begins that
+   never push. *)
+IF nStackDepth > 0 AND_THEN aStack[nStackDepth - 1] = hSpan THEN
     nStackDepth := nStackDepth - 1;
 END_IF;
 

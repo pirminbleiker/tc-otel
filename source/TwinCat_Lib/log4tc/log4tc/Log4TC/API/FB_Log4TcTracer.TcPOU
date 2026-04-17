@@ -8,7 +8,7 @@ controller's span tree from parallel controllers on the same task.
 Phase 6 — Stage 1. The task-scoped ``FB_Log4TcTaskTracer``
 (accessed via ``PRG_TaskLog.Span``) remains the default. Bind an
 instance of ``FB_Log4TcTracer`` to an ``FB_Span`` via
-``FB_Span.BindTracer(pTracer := ADR(myTracer))`` to get:
+``FB_Span.BindTracer(ADR(myTracer))`` to get:
 
 * **Isolated nesting.** Nested ``FB_Span.Begin`` under this tracer
   picks its parent from THIS tracer's own innermost-open span, not
@@ -23,8 +23,14 @@ instance of ``FB_Log4TcTracer`` to an ``FB_Span`` via
 Wire emission still flows through the task tracer's log buffer
 (we need a single outbound pipeline per task). local_ids are still
 allocated task-wide. What differs is *which parent_local_id the
-child cites* — that's driven by the tracer's own linked-list of
-open spans, not the task-global stack.
+child cites* — that's driven by the tracer's own open-span stack,
+not the task-global stack.
+
+Internal structure: a single-linked LIFO stack of FB_Span pointers.
+The tracer holds the innermost-open span; each span knows the one
+it nested under (``_pOuterSpan`` on FB_Span). Begin pushes, End
+pops. This matches the natural call-order guarantee users give:
+Begin/End pairs are properly nested within any one controller.
 
 Lifecycle:
 
@@ -40,46 +46,47 @@ Lifecycle:
     // ... work ...
     spn.End();
 
-``FB_exit`` on either the tracer or any FB_Span bound to it is
-safe — the linked list is traversed and any still-open spans are
-force-ended with ``status = eError``.
+``FB_exit`` on the tracer is a safety net — walks the remaining
+open stack and force-ends each span with ``status = eError`` so
+tc-otel doesn't wait out the TTL.
 *)
 FUNCTION_BLOCK FB_Log4TcTracer
 VAR
-    (* Head of the doubly-linked list of currently-open FB_Spans
-       bound to this tracer. The most recently opened span sits at
-       the head (treat as stack top). Parent resolution and
-       CurrentTraceParent both read from here. *)
-    _pHead : POINTER TO FB_Span;
+    (* Innermost (most-recently-begun) span bound to this tracer.
+       NULL when no span is open. The chain walks via each span's
+       _pOuterSpan pointer back to the first Begin. *)
+    _pInnermost : POINTER TO FB_Span;
 END_VAR
 ]]></Declaration>
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
-    <Method Name="CurrentTraceParent" Id="{e6f7a8b9-c0d1-4e2f-9a3b-4c5d6e7f8a9b}">
+    <Property Name="CurrentTraceParent" Id="{28ef3f74-5ef1-043a-31b9-fe787251ccc3}">
       <Declaration><![CDATA[(*
-:Description: Format a W3C traceparent header for the innermost
-open span bound to THIS tracer.
+:Description: W3C traceparent header for the innermost open span
+bound to THIS tracer. '' when no span is open.
 
-Returns '' when no span is open under this tracer.
-
-Unlike ``PRG_TaskLog.Span.CurrentTraceParent()`` (task-global),
-this property is scoped to this tracer instance. Two parallel
-controllers on the same task each calling their OWN tracer's
-``CurrentTraceParent`` get their own context — no race.
+Unlike ``PRG_TaskLog.Span.CurrentTraceParent`` (task-global) this
+property is scoped to the tracer instance. Two parallel controllers
+each reading THEIR OWN tracer's CurrentTraceParent see their own
+context — no race.
 *)
-METHOD PUBLIC CurrentTraceParent : STRING(60)
+PROPERTY PUBLIC CurrentTraceParent : STRING(60)]]></Declaration>
+      <Get Name="Get" Id="{2cb861d5-bd5a-0f00-1e86-b27b7f81b4d0}">
+        <Declaration><![CDATA[VAR
+END_VAR
 ]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF _pHead <> 0 THEN
-    CurrentTraceParent := _pHead^.TraceParent;
+        <Implementation>
+          <ST><![CDATA[
+IF _pInnermost <> 0 THEN
+    CurrentTraceParent := _pInnermost^.TraceParent;
 ELSE
     CurrentTraceParent := '';
 END_IF;
 ]]></ST>
-      </Implementation>
-    </Method>
+        </Implementation>
+      </Get>
+    </Property>
     <Property Name="IsAnyOpen" Id="{f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c}">
       <Declaration><![CDATA[(*
 :Description: TRUE when at least one FB_Span bound to this tracer
@@ -92,7 +99,7 @@ PROPERTY PUBLIC IsAnyOpen : BOOL]]></Declaration>
 END_VAR
 ]]></Declaration>
         <Implementation>
-          <ST><![CDATA[IsAnyOpen := _pHead <> 0;
+          <ST><![CDATA[IsAnyOpen := _pInnermost <> 0;
 ]]></ST>
         </Implementation>
       </Get>
@@ -100,8 +107,8 @@ END_VAR
     <Method Name="_RegisterOpen" Id="{b9c0d1e2-f3a4-4b5c-8d6e-7f8a9b0c1d2e}">
       <Declaration><![CDATA[(*
 :Description: Internal — called by FB_Span.Begin right after the
-wire BEGIN frame is emitted, to push this span onto the tracer's
-open list. Must not be called by user code.
+wire BEGIN frame is emitted to push this span onto the tracer's
+open stack. Must not be called by user code.
 *)
 METHOD INTERNAL _RegisterOpen
 VAR_INPUT
@@ -114,31 +121,28 @@ IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-(* Push onto head of doubly-linked list.
-   New head's prev := NULL, new head's next := old head,
-   old head (if any) prev := new head. *)
-pSpan^._SetTracerPrev(0);
-pSpan^._SetTracerNext(_pHead);
-IF _pHead <> 0 THEN
-    _pHead^._SetTracerPrev(pSpan);
-END_IF;
-_pHead := pSpan;
+(* Push: new span's outer = current top. New top = this span. *)
+pSpan^._SetOuterSpan(_pInnermost);
+_pInnermost := pSpan;
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="_UnregisterOpen" Id="{c0d1e2f3-a4b5-4c6d-8e7f-8a9b0c1d2e3f}">
       <Declaration><![CDATA[(*
-:Description: Internal — called by FB_Span.End / FB_exit to remove
-this span from the tracer's open list. Safe to call on a span not
-currently in the list (no-op). Must not be called by user code.
+:Description: Internal — called by FB_Span.End / FB_exit to pop this
+span off the tracer's open stack. LIFO invariant: the span being
+closed must be the innermost. Out-of-order closes are tolerated by
+walking the outer-chain to detach the span; the remaining outer
+spans keep their parents.
+
+Must not be called by user code.
 *)
 METHOD INTERNAL _UnregisterOpen
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
-    pPrev : POINTER TO FB_Span;
-    pNext : POINTER TO FB_Span;
+    pCur : POINTER TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -147,24 +151,24 @@ IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-pPrev := pSpan^._GetTracerPrev();
-pNext := pSpan^._GetTracerNext();
-
-(* Detach: rewire neighbours. *)
-IF pPrev <> 0 THEN
-    pPrev^._SetTracerNext(pNext);
-END_IF;
-IF pNext <> 0 THEN
-    pNext^._SetTracerPrev(pPrev);
+IF _pInnermost = pSpan THEN
+    (* Common path: closing the innermost span. Pop. *)
+    _pInnermost := pSpan^._GetOuterSpan();
+    pSpan^._SetOuterSpan(0);
+    RETURN;
 END_IF;
 
-(* If removing head, advance head to next. *)
-IF _pHead = pSpan THEN
-    _pHead := pNext;
-END_IF;
-
-pSpan^._SetTracerPrev(0);
-pSpan^._SetTracerNext(0);
+(* Out-of-order close: find the span whose outer is pSpan, splice
+   it out. If not found (pSpan is not on our stack), quiet no-op. *)
+pCur := _pInnermost;
+WHILE pCur <> 0 DO
+    IF pCur^._GetOuterSpan() = pSpan THEN
+        pCur^._SetOuterSpan(pSpan^._GetOuterSpan());
+        pSpan^._SetOuterSpan(0);
+        RETURN;
+    END_IF;
+    pCur := pCur^._GetOuterSpan();
+END_WHILE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -174,10 +178,10 @@ pSpan^._SetTracerNext(0);
 (online change, program stop) while spans are still open, flush
 them with status = eError so tc-otel doesn't wait out the TTL.
 
-Traverses the head list and force-ends each registered FB_Span.
-Each span's own FB_exit would normally do this, but the order of
-FB destruction is undefined; if the tracer gets destroyed first,
-the spans lose their registration anchor. This is the safety net.
+Walks the outer-chain from innermost outwards and force-ends each
+registered FB_Span. Each span's own FB_exit would normally do this,
+but the order of FB destruction is undefined; if the tracer is
+destroyed first, the spans lose their registration anchor.
 *)
 METHOD FB_exit : BOOL
 VAR_INPUT
@@ -195,14 +199,16 @@ IF bInCopyCode THEN
     RETURN;
 END_IF;
 
-pCur := _pHead;
+pCur := _pInnermost;
 WHILE pCur <> 0 DO
-    pNext := pCur^._GetTracerNext();
+    (* End() modifies the tracer's stack (pops pCur). Capture the
+       outer pointer BEFORE calling End so we can iterate safely. *)
+    pNext := pCur^._GetOuterSpan();
     pCur^.MarkError('FB_Log4TcTracer destroyed while span open');
     pCur^.End();
     pCur := pNext;
 END_WHILE;
-_pHead := 0;
+_pInnermost := 0;
 
 FB_exit := TRUE;
 ]]></ST>
