@@ -22,6 +22,9 @@ _Libraries/
 *.tsproj.bak
 *.xti.bak
 *.tclrs
+*~u~
+*.tmcRefac
+*.bak
 
 # OS
 .DS_Store
@@ -59,6 +62,4 @@ __pycache__/
 # VS upgrade logs
 UpgradeLog*.htm
 UpgradeLog*.XML
-*.tmcRefac
 tests/*
-*.bak
