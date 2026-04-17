@@ -77,7 +77,7 @@ max_body_size = 4194304
 request_timeout_secs = 30
 
 [service]
-name = "Log4TcService"
+name = "TcOtelService"
 display_name = "TC-OTel Logging Service"
 worker_threads = 4
 channel_capacity = 10000
@@ -95,7 +95,7 @@ Type = "otel"
     assert_eq!(config.receiver.host, "0.0.0.0");
     assert_eq!(config.receiver.http_port, 4318);
     assert_eq!(config.receiver.grpc_port, 4317);
-    assert_eq!(config.service.name, "Log4TcService");
+    assert_eq!(config.service.name, "TcOtelService");
     assert_eq!(config.service.worker_threads, Some(4));
     assert_eq!(config.outputs.len(), 1);
 }

@@ -22,13 +22,13 @@ use crate::trace_dispatcher::TraceDispatcher;
 use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
 /// Main TC-OTel Service
-pub struct Log4TcService {
+pub struct TcOtelService {
     settings: AppSettings,
     config_path: Option<PathBuf>,
     current_settings: Arc<std::sync::RwLock<AppSettings>>,
 }
 
-impl Log4TcService {
+impl TcOtelService {
     pub async fn new(settings: AppSettings) -> Result<Self> {
         let current = settings.clone();
         Ok(Self {
