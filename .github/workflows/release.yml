@@ -102,7 +102,7 @@ jobs:
           fi
 
       - name: Upload artifact for deb job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.name }}
           path: tc-otel${{ matrix.os == 'windows-latest' && '.exe' || '' }}
