@@ -693,13 +693,13 @@ END_IF
 
 // Statistic
 IF bError THEN
-	IncUDINT(Log4TcInfo.aTaskInfo[nActTaskIndex].nAddLogToBufferErrorCount);
+	IncUDINT(TcOtelInfo.aTaskInfo[nActTaskIndex].nAddLogToBufferErrorCount);
 ELSE
-	IncUDINT(Log4TcInfo.aTaskInfo[nActTaskIndex].nAddLogToBuffer);
+	IncUDINT(TcOtelInfo.aTaskInfo[nActTaskIndex].nAddLogToBuffer);
 END_IF
 
-IF Log4TcInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize < pWriteBuffer^.BufferUsed THEN
-	Log4TcInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize := pWriteBuffer^.BufferUsed;
+IF TcOtelInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize < pWriteBuffer^.BufferUsed THEN
+	TcOtelInfo.aTaskInfo[nActTaskIndex].nMaxUsedBufferSize := pWriteBuffer^.BufferUsed;
 END_IF
 
 End := NOT bError;

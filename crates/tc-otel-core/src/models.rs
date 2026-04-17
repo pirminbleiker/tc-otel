@@ -1,4 +1,4 @@
-//! Core data models for Log4TC
+//! Core data models for TC-OTel
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -548,7 +548,7 @@ impl TraceRecord {
 }
 
 /// Log severity level, mapped from ADS binary protocol
-/// Values match the .NET Log4Tc.Model.LogLevel enumeration
+/// Values match the PLC TcOtel.LogLevel enumeration
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 pub enum LogLevel {

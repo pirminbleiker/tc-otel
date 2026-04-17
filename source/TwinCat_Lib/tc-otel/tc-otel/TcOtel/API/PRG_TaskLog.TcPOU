@@ -4,8 +4,8 @@
     <Declaration><![CDATA[{attribute 'no_explicit_call' := 'no direct call necessary'}
 PROGRAM PRG_TaskLog
 VAR
-	aTaskLogger			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTask;
-	aTaskDiag			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTaskDiag;
+	aTaskLogger			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_TcOtelTask;
+	aTaskDiag			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_TcOtelTaskDiag;
 	(* Per-task push-diagnostic config. Element-level defaults come from the
 	   ST_PushDiagConfig declaration (window_ms=100, enabled=TRUE, divider=1).
 	   Writable at runtime from tc-otel via ADS symbol access
@@ -14,7 +14,7 @@ VAR
 	aTaskDiagConfig		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF ST_PushDiagConfig;
 	(* Per-task OpenTelemetry trace emitter. One instance per task, driven
 	   once per cycle by PRG_TaskLog.Call(). *)
-	aTaskTracer			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_Log4TcTaskTracer;
+	aTaskTracer			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_TcOtelTaskTracer;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -148,7 +148,7 @@ or as the backing implementation for FB_Span (Patterns 1 and 2).
     PRG_TaskLog.Span.End(hSpan);
 
 *)
-PROPERTY PUBLIC Span : REFERENCE TO FB_Log4TcTaskTracer]]></Declaration>
+PROPERTY PUBLIC Span : REFERENCE TO FB_TcOtelTaskTracer]]></Declaration>
       <Get Name="Get" Id="{a7b8c9d0-e1f2-51b4-c5d6-e7f8a9b0c1d2}">
         <Declaration><![CDATA[VAR
 END_VAR
@@ -191,7 +191,7 @@ END_VAR
       </Get>
     </Property>
     <Property Name="TaskLogger" Id="{e5ae713c-f421-49cb-9871-258b1113ba41}">
-      <Declaration><![CDATA[PROPERTY INTERNAL TaskLogger : REFERENCE TO FB_Log4TcTask]]></Declaration>
+      <Declaration><![CDATA[PROPERTY INTERNAL TaskLogger : REFERENCE TO FB_TcOtelTask]]></Declaration>
       <Get Name="Get" Id="{2041d993-1b63-44b0-b94c-7510408823c4}">
         <Declaration><![CDATA[VAR
 END_VAR

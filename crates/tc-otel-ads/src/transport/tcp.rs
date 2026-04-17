@@ -141,7 +141,7 @@ impl TcpAmsTransport {
                 u32::from_le_bytes([read_buf[2], read_buf[3], read_buf[4], read_buf[5]]) as usize;
 
             // 16 MB matches MQTT transport limit. Batched log WRITE frames
-            // from log4tc can exceed 1 MB; a hard break here caused the PLC
+            // from tc-otel can exceed 1 MB; a hard break here caused the PLC
             // to time out every ~5 s with adsErrId=6 and reconnect.
             if reserved != 0 || data_len == 0 || data_len > 16 * 1_048_576 {
                 tracing::warn!(

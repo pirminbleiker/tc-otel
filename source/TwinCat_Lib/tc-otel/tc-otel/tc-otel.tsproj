@@ -15,9 +15,9 @@
 			</Tasks>
 		</System>
 		<Plc>
-			<Project File="Log4TC.xti"/>
-			<Project File="log4Tc_Tester.xti"/>
-			<Project File="log4Tc_SmokeTest.xti"/>
+			<Project File="TcOtel.xti"/>
+			<Project File="TcOtel_Tester.xti"/>
+			<Project File="TcOtel_SmokeTest.xti"/>
 		</Plc>
 	</Project>
 </TcSmProject>

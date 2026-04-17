@@ -1,4 +1,4 @@
-//! Error types for Log4TC
+//! Error types for TC-OTel
 
 use thiserror::Error;
 

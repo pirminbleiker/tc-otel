@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="FB_Log4TcTaskTracer" Id="{294f80cd-71bb-4a49-ab79-358e75196d66}" SpecialFunc="None">
+  <POU Name="FB_TcOtelTaskTracer" Id="{294f80cd-71bb-4a49-ab79-358e75196d66}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: Per-task low-level OpenTelemetry trace emitter.
 
@@ -12,7 +12,7 @@ Wire format documented in docs/traces-design.md Section "Wire Format".
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
-FUNCTION_BLOCK FB_Log4TcTaskTracer
+FUNCTION_BLOCK FB_TcOtelTaskTracer
 VAR
     (* Slot allocation and parent tracking. hSpan is USINT (0..254) per the
        wire format; 0xFF is reserved for 'no parent'. *)
@@ -723,9 +723,9 @@ END_IF;
 task-global ``aStack`` interactions entirely. The new span is
 treated as a root (no parent_local_id lookup, no trace_id
 inheritance from the task stack, no push onto aStack). Used by
-FB_Span instances bound to an FB_Log4TcTracer — their parent
+FB_Span instances bound to an FB_TcOtelTracer — their parent
 relationship is driven exclusively by ``sTraceParent`` (which the
-FB_Log4TcTracer fills in from its own nesting chain). Default FALSE
+FB_TcOtelTracer fills in from its own nesting chain). Default FALSE
 preserves Phase-5 behaviour for unbound FB_Span callers.
 *)
 METHOD PUBLIC Begin : USINT

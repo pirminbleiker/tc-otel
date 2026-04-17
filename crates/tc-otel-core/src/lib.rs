@@ -1,6 +1,6 @@
-//! Core data models and types for Log4TC logging bridge
+//! Core data models and types for TC-OTel logging bridge
 //!
-//! This crate defines the fundamental types and structures used throughout Log4TC,
+//! This crate defines the fundamental types and structures used throughout TC-OTel,
 //! including LogEntry, LogLevel, LogRecord, and configuration structures.
 
 pub mod config;

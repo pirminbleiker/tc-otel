@@ -71,7 +71,7 @@ impl AdsRouter {
                 p.push(1);
                 p.extend_from_slice(&1u16.to_le_bytes());
                 let mut name = [0u8; 16];
-                name[..6].copy_from_slice(b"log4tc");
+                name[..7].copy_from_slice(b"tc-otel");
                 p.extend_from_slice(&name);
                 Some(Self::build_response(&header, p))
             }
@@ -447,7 +447,7 @@ mod tests {
         // Payload: result(4) + major(1) + minor(1) + build(2) + name(16)
         assert_eq!(resp.len(), 32 + 24);
         let name = &resp[32 + 8..32 + 8 + 6];
-        assert_eq!(name, b"log4tc");
+        assert_eq!(name, b"tc-ote");
     }
 
     #[tokio::test]

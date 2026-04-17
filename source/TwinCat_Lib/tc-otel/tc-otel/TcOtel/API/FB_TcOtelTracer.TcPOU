@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="FB_Log4TcTracer" Id="{d5e6f7a8-b9c0-4d1e-8f2a-3b4c5d6e7f8a}" SpecialFunc="None">
+  <POU Name="FB_TcOtelTracer" Id="{d5e6f7a8-b9c0-4d1e-8f2a-3b4c5d6e7f8a}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: Instance-scoped trace emitter for isolating a
 controller's span tree from parallel controllers on the same task.
 
-Phase 6 — Stage 1. The task-scoped ``FB_Log4TcTaskTracer``
+Phase 6 — Stage 1. The task-scoped ``FB_TcOtelTaskTracer``
 (accessed via ``PRG_TaskLog.Span``) remains the default. Bind an
-instance of ``FB_Log4TcTracer`` to an ``FB_Span`` via
+instance of ``FB_TcOtelTracer`` to an ``FB_Span`` via
 ``FB_Span.BindTracer(ADR(myTracer))`` to get:
 
 * **Isolated nesting.** Nested ``FB_Span.Begin`` under this tracer
   picks its parent from THIS tracer's own innermost-open span, not
   from the task-global ``aStack``. Two parallel controllers each
-  with their own ``FB_Log4TcTracer`` can't poison each other's
+  with their own ``FB_TcOtelTracer`` can't poison each other's
   span trees.
 
 * **Per-controller ``CurrentTraceParent``.** Reads the innermost
@@ -37,7 +37,7 @@ Lifecycle:
 .. code-block:: pascal
 
     VAR
-        myTracer : FB_Log4TcTracer;
+        myTracer : FB_TcOtelTracer;
         spn      : FB_Span;
     END_VAR
 
@@ -50,7 +50,7 @@ Lifecycle:
 open stack and force-ends each span with ``status = eError`` so
 tc-otel doesn't wait out the TTL.
 *)
-FUNCTION_BLOCK FB_Log4TcTracer
+FUNCTION_BLOCK FB_TcOtelTracer
 VAR
     (* Innermost (most-recently-begun) span bound to this tracer.
        NULL when no span is open. The chain walks via each span's
@@ -204,7 +204,7 @@ WHILE pCur <> 0 DO
     (* End() modifies the tracer's stack (pops pCur). Capture the
        outer pointer BEFORE calling End so we can iterate safely. *)
     pNext := pCur^._GetOuterSpan();
-    pCur^.MarkError('FB_Log4TcTracer destroyed while span open');
+    pCur^.MarkError('FB_TcOtelTracer destroyed while span open');
     pCur^.End();
     pCur := pNext;
 END_WHILE;

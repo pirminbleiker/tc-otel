@@ -7,7 +7,7 @@
     <DownloadApplicationInfo>true</DownloadApplicationInfo>
     <WriteProductVersion>true</WriteProductVersion>
     <GenerateTpy>false</GenerateTpy>
-    <Name>Log4TC</Name>
+    <Name>TcOtel</Name>
     <ProgramVersion>3.1.4026.22</ProgramVersion>
     <Application>{27d1f106-c41a-4b9a-a7ee-188b391db3f7}</Application>
     <TypeSystem>{e596c1dd-8124-4a1a-bf40-bb2ad03cf4cb}</TypeSystem>
@@ -17,7 +17,7 @@
     <LibraryReferences>{b74f17a3-49cb-46e0-b639-d8e1c2b0c59a}</LibraryReferences>
     <Company>AVM Engineering</Company>
     <Released>false</Released>
-    <Title>log4tc</Title>
+    <Title>tc-otel</Title>
     <ProjectVersion>0.2.4</ProjectVersion>
     <CompilerDefines>DEBUG</CompilerDefines>
     <DocFormat>reStructuredText</DocFormat>
@@ -264,7 +264,7 @@
     <Compile Include="API\FB_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\FB_Log4TcTracer.TcPOU">
+    <Compile Include="API\FB_TcOtelTracer.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="API\FB_Span.TcPOU">
@@ -297,7 +297,7 @@
     <Compile Include="DUTs\E_Scope.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DUTs\ST_Log4TcTaskInfo.TcDUT">
+    <Compile Include="DUTs\ST_TcOtelTaskInfo.TcDUT">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="DUTs\ST_ScopedContextStack.TcDUT">
@@ -317,7 +317,7 @@
       <SubType>Code</SubType>
       <LinkAlways>true</LinkAlways>
     </Compile>
-    <Compile Include="GVLs\Log4TcInfo.TcGVL">
+    <Compile Include="GVLs\TcOtelInfo.TcGVL">
       <SubType>Code</SubType>
       <LinkAlways>true</LinkAlways>
     </Compile>
@@ -327,7 +327,7 @@
     <Compile Include="ITFs\I_LogEntryAdder.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Diagnostic\FB_Log4TcTaskDiag.TcPOU">
+    <Compile Include="POUs\Diagnostic\FB_TcOtelTaskDiag.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\Diagnostic\ST_PushDiagBatchHeader.TcDUT">
@@ -354,13 +354,13 @@
     <Compile Include="POUs\Trace\ST_SpanSlot.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Trace\FB_Log4TcTaskTracer.TcPOU">
+    <Compile Include="POUs\Trace\FB_TcOtelTaskTracer.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_ContextBuilder.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\FB_Log4TcTask.TcPOU">
+    <Compile Include="POUs\FB_TcOtelTask.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_LogBuilder.TcPOU">

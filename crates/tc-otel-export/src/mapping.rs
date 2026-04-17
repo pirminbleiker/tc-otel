@@ -1,8 +1,8 @@
-//! Mapping utilities between Log4TC and OTEL formats
+//! Mapping utilities between TC-OTel and OTEL formats
 
 use tc_otel_core::{LogEntry, LogRecord, MetricEntry, MetricRecord, SpanEntry, TraceRecord};
 
-/// Helper for mapping Log4TC types to OTEL types
+/// Helper for mapping TC-OTel types to OTEL types
 pub struct OtelMapping;
 
 impl OtelMapping {

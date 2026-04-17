@@ -78,7 +78,7 @@ request_timeout_secs = 30
 
 [service]
 name = "Log4TcService"
-display_name = "Log4TC Logging Service"
+display_name = "TC-OTel Logging Service"
 worker_threads = 4
 channel_capacity = 10000
 shutdown_timeout_secs = 30

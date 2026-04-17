@@ -21,7 +21,7 @@ use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
 use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
-/// Main Log4TC Service
+/// Main TC-OTel Service
 pub struct Log4TcService {
     settings: AppSettings,
     config_path: Option<PathBuf>,
@@ -45,7 +45,7 @@ impl Log4TcService {
     }
 
     pub async fn run(&self) -> Result<()> {
-        tracing::info!("Log4TC Service starting");
+        tracing::info!("TC-OTel Service starting");
 
         let (log_tx, mut log_rx) =
             mpsc::channel::<tc_otel_core::LogEntry>(self.settings.service.channel_capacity);
@@ -643,7 +643,7 @@ impl Log4TcService {
         })
         .await;
 
-        tracing::info!("Log4TC Service stopped");
+        tracing::info!("TC-OTel Service stopped");
         Ok(())
     }
 
