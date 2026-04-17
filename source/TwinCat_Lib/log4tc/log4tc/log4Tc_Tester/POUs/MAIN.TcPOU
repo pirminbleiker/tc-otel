@@ -26,6 +26,7 @@ END_IF
 
 PRG_TestSimpleApi();
 PRG_TestTraceApi();
+PRG_TestTracePropagation();
 
 PRG_TaskLog.Call();
 

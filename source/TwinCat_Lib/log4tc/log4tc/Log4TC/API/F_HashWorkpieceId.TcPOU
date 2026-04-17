@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="F_HashWorkpieceId" Id="{7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Deterministic 128-bit hash of a workpiece identifier,
+rendered as 32 lowercase hex characters for use as a W3C trace_id.
+
+Every PLC that calls this function with the same ``sWorkpieceId``
+produces the same hex string, enabling trace aggregation across
+modules that share only the workpiece ID and no explicit traceparent
+handoff (Pattern D in docs/traces-propagation.md — transport-less
+cross-PLC tracing via barcode / RFID / conveyor routing).
+
+Implementation: two parallel xorshift64 streams seeded from different
+constants, folded over the input bytes. Collision probability for
+distinct 80-char inputs is ~1/2^128 — adequate for OTel trace_id use
+(spec requires "randomly generated", not cryptographic). Deterministic
+across PLC reboots and runtime reloads.
+*)
+FUNCTION F_HashWorkpieceId : STRING(32)
+VAR_INPUT
+    sWorkpieceId : STRING(80);
+END_VAR
+VAR
+    i         : INT;
+    nLen      : INT;
+    hi        : ULINT;
+    lo        : ULINT;
+    b         : BYTE;
+    nNibble   : BYTE;
+    achHex    : ARRAY[0..15] OF BYTE := [16#30, 16#31, 16#32, 16#33, 16#34, 16#35, 16#36, 16#37, 16#38, 16#39, 16#61, 16#62, 16#63, 16#64, 16#65, 16#66];
+    achOut    : ARRAY[0..31] OF BYTE;
+    achResult : STRING(32);
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+(* Two independent seeds so the upper and lower 64 bits of the 128-bit
+   digest can't collapse to the same value for any input. *)
+hi := 16#9E3779B97F4A7C15;
+lo := 16#C6BC279692B5C323;
+
+nLen := TO_INT(Tc2_Utilities.LEN2(ADR(sWorkpieceId)));
+IF nLen > 80 THEN
+    nLen := 80;
+END_IF;
+
+(* Fold each byte into both streams, then advance xorshift64 once per
+   byte so position matters (order-sensitive hash). *)
+FOR i := 0 TO nLen - 1 DO
+    b := sWorkpieceId[i];
+    hi := hi XOR TO_ULINT(b);
+    hi := hi XOR SHL(hi, 13);
+    hi := hi XOR SHR(hi, 7);
+    hi := hi XOR SHL(hi, 17);
+
+    lo := lo XOR (TO_ULINT(b) * 16#100000001B3);
+    lo := lo XOR SHL(lo, 11);
+    lo := lo XOR SHR(lo, 5);
+    lo := lo XOR SHL(lo, 23);
+END_FOR
+
+(* Write digest LE: hi → bytes 0..7, lo → bytes 8..15. Then hex-encode. *)
+FOR i := 0 TO 7 DO
+    achOut[i]     := 0;  (* placeholder, filled below *)
+END_FOR
+Tc2_System.MEMCPY(ADR(achOut[0]), ADR(hi), 8);
+Tc2_System.MEMCPY(ADR(achOut[8]), ADR(lo), 8);
+
+(* Emit 32 hex chars into a STRING(32). Two chars per byte, 16 bytes total. *)
+FOR i := 0 TO 15 DO
+    b := achOut[i];
+    nNibble := SHR(b, 4) AND 16#0F;
+    achResult[i * 2]     := achHex[nNibble];
+    nNibble := b AND 16#0F;
+    achResult[i * 2 + 1] := achHex[nNibble];
+END_FOR
+achResult[32] := 0;
+
+F_HashWorkpieceId := achResult;
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

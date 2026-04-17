@@ -710,9 +710,15 @@ pipeline at it (currently file-only). Grafana datasource for the
 trace backend, dashboard links from log rows / exceed events to span
 views via `trace_id`.
 
-**Phase 5 — Cross-PLC / cross-task propagation.** Verify W3C
-traceparent round-trip end-to-end. Document how users pass the header
-over ADS-RPC / MQTT / their transport of choice.
+**Phase 5 — Cross-PLC / cross-task propagation.** Done. PLC-local
+trace_id / span_id minting (xorshift64 seeded from DC time XOR
+task_index), new `flag_local_ids` (bit 3) on SPAN_BEGIN carries 24
+trailing bytes (trace_id + span_id), `CurrentTraceParent()` formats
+the W3C header from the innermost open slot, `FB_Span.Begin` gains an
+optional `sTraceParent` input, `F_HashWorkpieceId` provides a
+deterministic trace_id for transport-less handoffs. See
+[`traces-propagation.md`](traces-propagation.md) for patterns and the
+live test in `PRG_TestTracePropagation`.
 
 ## Decisions taken
 
@@ -727,9 +733,33 @@ over ADS-RPC / MQTT / their transport of choice.
    later — PLC code unaffected. The `flag_sampled` bit in the BEGIN
    frame is reserved now so this can be introduced without a wire
    break.
+4. **Local ID minting** (Phase 5): the PLC mints trace_id and span_id
+   locally at `Begin()` time and ships them in-frame under
+   `flag_local_ids` (bit 3). Rust honours these verbatim instead of
+   minting UUIDs. This keeps `CurrentTraceParent()` honest (the
+   string it returns cites the bytes tc-otel actually stores) and
+   needs no return channel from tc-otel back to the PLC. External
+   W3C traceparent (bit 1) still wins over pregenerated IDs for
+   upstream propagation.
+
+## Wire format updates
+
+SPAN_BEGIN payload (after the 12-byte header):
+
+```
+parent_local_id (1) + kind (1) + name_len (1) + reserved (1)
+[if flag_local_ids (0x08): trace_id (16) + span_id (8)]
+name (name_len bytes)
+[if flag_has_external_parent (0x02): tp_len (1) + traceparent (tp_len bytes)]
+```
+
+`flag_local_ids` is set unconditionally by `FB_Log4TcTaskTracer.Begin`
+in Phase 5 and later — older PLC builds that omit it still parse
+correctly (the 24-byte section is skipped).
 
 ## Open questions
 
 1. Cardinality guidance for `name` / `key` values — OTel best
    practice says names and keys should be finite, values can vary.
-   Worth a short how-to in the setup doc when the feature ships.
+   Resolved: documented in
+   [`traces-propagation.md`](traces-propagation.md#cardinality-guidance).

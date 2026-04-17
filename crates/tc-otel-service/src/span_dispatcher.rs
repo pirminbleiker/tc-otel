@@ -79,6 +79,8 @@ impl SpanDispatcher {
                 kind,
                 name,
                 traceparent,
+                pregenerated_trace_id,
+                pregenerated_span_id,
             } => {
                 self.on_begin(
                     net_id,
@@ -89,6 +91,8 @@ impl SpanDispatcher {
                     kind,
                     name,
                     traceparent,
+                    pregenerated_trace_id,
+                    pregenerated_span_id,
                 );
             }
             TraceWireEvent::Attr {
@@ -135,6 +139,8 @@ impl SpanDispatcher {
         kind: u8,
         name: String,
         traceparent: Option<String>,
+        pregenerated_trace_id: Option<[u8; 16]>,
+        pregenerated_span_id: Option<[u8; 8]>,
     ) {
         let key = SpanKey {
             ams_net_id: net_id,
@@ -142,13 +148,24 @@ impl SpanDispatcher {
             local_id,
         };
 
-        // Determine trace_id and parent_span_id
+        // Resolution order for trace_id + parent_span_id:
+        //   1. External W3C traceparent  — upstream propagation wins
+        //   2. PLC-local parent lookup    — nested-span stack (inherits trace_id)
+        //   3. Fresh mint                 — root span without upstream context
+        //
+        // For span_id specifically, the PLC-minted ID (when present) is
+        // preferred over a fresh UUID so `CurrentTraceParent()` on the
+        // producer side can cite the exact bytes that tc-otel stores and
+        // downstream consumers can set parent_span_id accordingly.
         let (trace_id, parent_span_id) = if let Some(tp) = &traceparent {
             match parse_w3c_traceparent(tp) {
                 Some((tid, sid)) => (tid, Some(sid)),
                 None => {
                     tracing::warn!("Failed to parse W3C traceparent: {}", tp);
-                    (self.new_trace_id(), None)
+                    (
+                        pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
+                        None,
+                    )
                 }
             }
         } else if parent_local_id != 0xFF {
@@ -165,15 +182,24 @@ impl SpanDispatcher {
                         "parent span not found for local_id {}, treating as root",
                         parent_local_id
                     );
-                    (self.new_trace_id(), None)
+                    (
+                        pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
+                        None,
+                    )
                 }
             }
         } else {
-            // Root span
-            (self.new_trace_id(), None)
+            // Root span — use PLC-minted trace_id when offered.
+            (
+                pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
+                None,
+            )
         };
 
-        let span_id = self.new_span_id();
+        // Honour PLC-minted span_id when offered. External traceparent
+        // identifies the PARENT, so pregenerated local span_id is still
+        // the right identifier for THIS span.
+        let span_id = pregenerated_span_id.unwrap_or_else(|| self.new_span_id());
 
         // Check capacity and evict if needed
         if self.pending.len() >= self.max_pending {
@@ -574,7 +600,18 @@ mod tests {
         let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "test_span".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test_span".to_string(),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(dispatcher.pending_count(), 1);
     }
@@ -587,11 +624,33 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // First BEGIN
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "first_span".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "first_span".to_string(),
+            None,
+            None,
+            None,
+        );
         assert_eq!(dispatcher.pending_count(), 1);
 
         // Second BEGIN with same key — should flush first
-        dispatcher.on_begin(net_id, 1, 0, 100, 0xFF, 0, "second_span".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            100,
+            0xFF,
+            0,
+            "second_span".to_string(),
+            None,
+            None,
+            None,
+        );
         assert_eq!(dispatcher.pending_count(), 1);
 
         // Should have received the timed-out first span
@@ -606,7 +665,18 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "test".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test".to_string(),
+            None,
+            None,
+            None,
+        );
         dispatcher.on_attr(net_id, 1, 0, "key1".to_string(), AttrValue::I64(42));
 
         let span_key = SpanKey {
@@ -626,7 +696,18 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "test".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test".to_string(),
+            None,
+            None,
+            None,
+        );
         assert_eq!(dispatcher.pending_count(), 1);
 
         dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
@@ -647,7 +728,18 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // Parent span
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "parent".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "parent".to_string(),
+            None,
+            None,
+            None,
+        );
 
         let parent_key = SpanKey {
             ams_net_id: net_id,
@@ -658,7 +750,18 @@ mod tests {
         let parent_span_id = dispatcher.pending.get(&parent_key).unwrap().span_id;
 
         // Child span with parent_local_id pointing to parent
-        dispatcher.on_begin(net_id, 2, 0, 100, 1, 0, "child".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            2,
+            0,
+            100,
+            1,
+            0,
+            "child".to_string(),
+            None,
+            None,
+            None,
+        );
 
         let child_key = SpanKey {
             ams_net_id: net_id,
@@ -677,7 +780,18 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
-        dispatcher.on_begin(net_id, 1, 0, 0, 0xFF, 0, "test".to_string(), None);
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test".to_string(),
+            None,
+            None,
+            None,
+        );
         assert_eq!(dispatcher.pending_count(), 1);
 
         // Manually set deadline to past

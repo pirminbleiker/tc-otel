@@ -292,3 +292,20 @@ Checklist:
    ADS route to tc-otel, and confirm `PRG_TaskLog.Call()` is wired into a task.
 5. **Router logs:** `docker logs tc-otel | grep -i "span\|trace"`. Look for decode
    errors or dispatcher warnings.
+
+## Distributed tracing
+
+Spans created on separate PLC tasks, across PLC instances, or received
+via external transports (ADS-RPC, MQTT, OPC UA, Fieldbus, RFID-tagged
+workpieces) can be linked into a single trace via a W3C traceparent
+header. The producer calls `PRG_TaskLog.Span.CurrentTraceParent()`
+to get the string; the consumer passes it to `FB_Span.Begin(...,
+sTraceParent := ...)`. Transport-less handoffs (barcode / conveyor,
+no data bus) use `F_HashWorkpieceId()` to derive a deterministic
+trace_id from the workpiece identifier so every station aggregates
+under one trace.
+
+See [`traces-propagation.md`](traces-propagation.md) for patterns,
+cross-PLC clock-sync guidance, and the live test
+(`PRG_TestTracePropagation`) that exercises all three handoff
+mechanisms on the `log4Tc_Tester` project.

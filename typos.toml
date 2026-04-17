@@ -1,4 +1,4 @@
-[default.extend-words]
 # German strings in UI toasts / docs — not typos.
-Prozess = "Prozess"
-Änderungen = "Änderungen"
+[default.extend-words]
+"Prozess" = "Prozess"
+"Änderungen" = "Änderungen"

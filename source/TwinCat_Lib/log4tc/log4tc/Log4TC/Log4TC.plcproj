@@ -267,6 +267,12 @@
     <Compile Include="API\F_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="API\F_HashWorkpieceId.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\F_TraceParentFromWorkpieceId.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="API\I_LogBuilder.TcIO">
       <SubType>Code</SubType>
     </Compile>

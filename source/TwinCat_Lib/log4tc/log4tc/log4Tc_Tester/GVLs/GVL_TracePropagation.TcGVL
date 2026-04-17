@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <GVL Name="GVL_TracePropagation" Id="{5a2b7c8d-9e1f-4a3b-8c5d-6e7f8a9b0c1d}">
+    <Declaration><![CDATA[(*
+Shared state for the Phase-5 cross-task propagation live test
+(PRG_TestTracePropagation). Kept in a GVL so one PRG can produce a
+traceparent string and another — or a later scenario in the same PRG
+— can consume it across cycles.
+*)
+{attribute 'qualified_only'}
+VAR_GLOBAL
+    (* Pattern A: explicit W3C traceparent handed off between producer
+       and consumer. 55 chars is enough for 00-<32hex>-<16hex>-01. *)
+    sCurrentTraceParent : STRING(60);
+
+    (* Pattern D: workpiece-centric trace_id derived via hash of the
+       physical workpiece identifier. Modules that can see the ID but
+       not a data bus can still aggregate their spans under one
+       trace_id. *)
+    sWorkpieceId        : STRING(40);
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>
