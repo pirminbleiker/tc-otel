@@ -265,6 +265,82 @@ chain works only when:
 For pure aggregation (siblings under a trace_id) these rules don't
 apply — leave `sParentId` empty on both sides.
 
+## Pattern E — per-controller isolation via `FB_Log4TcTracer`
+
+A and D keep each FB_Span's span_id consistent across the producer
+and consumer. Pattern E solves a different problem: **two logically
+independent controllers on the same PLC task**.
+
+By default every `FB_Span` in the process funnels through the
+task-global tracer (`PRG_TaskLog.Span`). Its `aStack` records
+nesting but it is shared state — if `FB_Motion` opens `spnOuter`
+and before it ends `FB_Pump` opens `spnUnrelated`, the two spans
+end up stacked together. Any nested `FB_Span.Begin` on either
+controller thereafter picks the wrong parent, and
+`PRG_TaskLog.Span.CurrentTraceParent()` returns whichever FB
+pushed most recently.
+
+Phase 6 Stage 1 adds `FB_Log4TcTracer` — an instance-scoped
+tracer that keeps its own open-span list. Bind an `FB_Span` to
+one of these via `FB_Span.BindTracer(ADR(tracer))` before the
+first `Begin()`, and:
+
+* Nested `FB_Span.Begin` under the same tracer automatically picks
+  the tracer's innermost span as parent (via the empty-traceparent
+  auto-chain).
+* `tracer.CurrentTraceParent` returns THIS tracer's innermost
+  span, ignoring every other tracer on the same task.
+* Two controllers each with their own tracer instance are fully
+  isolated — no cross-contamination even when they interleave
+  Begin / End calls.
+
+Wire emission still goes through the task's log buffer; `local_id`
+allocation is still task-wide (one shared counter). What Stage 1
+changes is *parent resolution only*. The Rust side (`SpanDispatcher`)
+is untouched — it keys spans by `(task_index, local_id)` as before.
+
+```pascal
+FUNCTION_BLOCK FB_MotionController
+VAR
+    _tracer  : FB_Log4TcTracer;      // one tracer per controller
+    _spnMove : FB_Span;
+    _spnSub  : FB_Span;
+    _bInit   : BOOL;
+END_VAR
+
+IF NOT _bInit THEN
+    _spnMove.BindTracer(ADR(_tracer));
+    _spnSub.BindTracer(ADR(_tracer));
+    _bInit := TRUE;
+END_IF
+
+_spnMove.Begin('move_to_pos');
+// ... outer work ...
+_spnSub.Begin('check_bounds');     // auto-nests under _spnMove,
+                                   // regardless of any FB_Pump
+                                   // span open in a sibling FB
+// ...
+_spnSub.End();
+// ...
+_spnMove.End();
+```
+
+Use this when:
+* Multiple independent controllers live on the same PLC task.
+* You care about correct parent-child nesting per controller.
+* `tracer.CurrentTraceParent` is the right scope for your outbound
+  propagation — not "whatever is innermost on the whole task".
+
+Don't use it when:
+* Your controller has exactly one `FB_Span` at a time → default
+  task tracer is fine, simpler.
+* You want task-level nesting across multiple helper functions in
+  one call chain → default task tracer's `aStack` is exactly that.
+
+`PRG_TestTracerInstance` in the `log4Tc_Tester` project exercises
+this pattern with two parallel controllers in an interleaved
+Begin/End sequence.
+
 ## Cross-PLC clock synchronisation
 
 Span `startTimeUnixNano` comes from `F_GetActualDcTime64()`, which

@@ -20,6 +20,22 @@ VAR
     _bOpen   : BOOL;
     _eStatus : E_SpanStatus := E_SpanStatus.eOk;
     _sMsg    : STRING(80);
+
+    (* Phase 6 — Stage 1: optional instance tracer binding.
+       NULL (default) → route through the task-global tracer
+       (PRG_TaskLog.Span) — identical behaviour to Phase 5.
+       Non-NULL → this FB_Span participates in the bound tracer's
+       own open-span list for parent resolution and
+       CurrentTraceParent, isolating it from parallel FB_Spans on
+       the same task. Set once via BindTracer before first Begin. *)
+    _pTracer      : POINTER TO FB_Log4TcTracer;
+
+    (* Doubly-linked list pointers maintained by the tracer while
+       this span is registered with it. Not user-visible; accessed
+       only by FB_Log4TcTracer via the _Get/_SetTracerPrev/Next
+       helpers below. *)
+    _pTracerPrev  : POINTER TO FB_Span;
+    _pTracerNext  : POINTER TO FB_Span;
 END_VAR
 (*
 Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
@@ -136,6 +152,12 @@ AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
 Pass `sTraceParent` to chain this span onto an incoming W3C traceparent
 header — used for cross-task, cross-PLC, or cross-process propagation.
 Leave empty for locally-rooted spans (the common case).
+
+When this FB_Span is bound to an ``FB_Log4TcTracer`` via
+``BindTracer`` and ``sTraceParent`` is empty, the tracer's
+innermost open span is auto-used as the parent. That gives each
+tracer its own isolated nesting chain, immune to parallel
+controllers on the same task.
 *)
 METHOD PUBLIC Begin : BOOL
 VAR_INPUT
@@ -153,15 +175,30 @@ IF _bOpen THEN
     End();
 END_IF;
 
-(* Begin a new span on the task tracer, forwarding the optional
-   traceparent. Empty string = locally rooted (Rust dispatcher picks
-   parent from stack or mints a fresh trace_id). *)
+(* Instance-tracer auto-nesting: if the user didn't pass an external
+   traceparent and this FB_Span is bound to an FB_Log4TcTracer that
+   already has an open span, inherit from it. Task-scoped behaviour
+   (default) is unchanged — no tracer → no override. *)
+IF sTraceParent = '' AND _pTracer <> 0 AND_THEN _pTracer^.IsAnyOpen THEN
+    sTraceParent := _pTracer^.CurrentTraceParent;
+END_IF;
+
+(* Begin a new span on the task tracer, forwarding the (possibly
+   tracer-derived) traceparent. Empty string = locally rooted — the
+   Rust dispatcher picks parent from the task stack or mints a fresh
+   trace_id. *)
 _hSpan := PRG_TaskLog.Span.Begin(sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
 _eStatus := E_SpanStatus.eOk;
 _sMsg := '';
+
+(* Register with the bound tracer (if any) so CurrentTraceParent and
+   future nested Begin calls can see us. *)
+IF _pTracer <> 0 THEN
+    _pTracer^._RegisterOpen(ADR(THIS^));
+END_IF;
 
 Begin := TRUE;
 ]]></ST>
@@ -184,6 +221,13 @@ END_IF;
 (* End the span *)
 PRG_TaskLog.Span.End(_hSpan);
 
+(* Unregister from the bound tracer's open list BEFORE clearing state,
+   so the tracer's _UnregisterOpen can still read our _pTracerPrev /
+   _pTracerNext. *)
+IF _pTracer <> 0 THEN
+    _pTracer^._UnregisterOpen(ADR(THIS^));
+END_IF;
+
 (* Clear state *)
 _bOpen := FALSE;
 _hSpan := 0;
@@ -204,7 +248,7 @@ END_VAR
         <ST><![CDATA[
 (* If the span is still open and we're not in copy code (i.e., the FB is
    being destroyed), close it with an error so tc-otel doesn't wait out
-   the TTL. *)
+   the TTL. End() handles unregistering from any bound tracer. *)
 IF _bOpen AND NOT bInCopyCode THEN
     _eStatus := E_SpanStatus.eError;
     _sMsg := 'FB_Span instance destroyed while open';
@@ -255,6 +299,102 @@ _eStatus := E_SpanStatus.eError;
 _sMsg := sMsg;
 
 MarkError := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="BindTracer" Id="{e3f4a5b6-c7d8-4e9f-0a1b-2c3d4e5f6a7b}">
+      <Declaration><![CDATA[(*
+:Description: Route this FB_Span through the supplied instance
+tracer instead of the task-global default.
+
+Must be called **before** the first ``Begin()``. Rebinding while the
+span is open is rejected (keeps the tracer's linked list consistent).
+
+Pass ``0`` (NULL) to unbind and revert to task-scoped behaviour.
+
+Typical usage — one tracer per controller:
+
+.. code-block:: pascal
+
+    FUNCTION_BLOCK FB_Motion
+    VAR
+        _tracer : FB_Log4TcTracer;
+        _spn    : FB_Span;
+    END_VAR
+
+    // in FB_init or first-cycle init:
+    _spn.BindTracer(ADR(_tracer));
+*)
+METHOD PUBLIC BindTracer : BOOL
+VAR_INPUT
+    pTracer : POINTER TO FB_Log4TcTracer;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF _bOpen THEN
+    (* Rebinding mid-span would strand this FB on the old tracer's
+       list. Reject to keep the invariant clean. *)
+    BindTracer := FALSE;
+    RETURN;
+END_IF;
+
+_pTracer := pTracer;
+BindTracer := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetTracerPrev" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
+      <Declaration><![CDATA[(*
+:Description: Internal accessor used by FB_Log4TcTracer's
+linked-list bookkeeping. Not user-visible.
+*)
+METHOD INTERNAL _GetTracerPrev : POINTER TO FB_Span
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_GetTracerPrev := _pTracerPrev;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetTracerNext" Id="{a5b6c7d8-e9f0-4a1b-2c3d-4e5f6a7b8c9d}">
+      <Declaration><![CDATA[(*
+:Description: Internal accessor used by FB_Log4TcTracer's
+linked-list bookkeeping. Not user-visible.
+*)
+METHOD INTERNAL _GetTracerNext : POINTER TO FB_Span
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_GetTracerNext := _pTracerNext;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_SetTracerPrev" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
+      <Declaration><![CDATA[(*
+:Description: Internal mutator used by FB_Log4TcTracer's
+linked-list bookkeeping. Not user-visible.
+*)
+METHOD INTERNAL _SetTracerPrev
+VAR_INPUT
+    pPrev : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_pTracerPrev := pPrev;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_SetTracerNext" Id="{c7d8e9f0-a1b2-4c3d-4e5f-6a7b8c9d0e1f}">
+      <Declaration><![CDATA[(*
+:Description: Internal mutator used by FB_Log4TcTracer's
+linked-list bookkeeping. Not user-visible.
+*)
+METHOD INTERNAL _SetTracerNext
+VAR_INPUT
+    pNext : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_pTracerNext := pNext;
 ]]></ST>
       </Implementation>
     </Method>

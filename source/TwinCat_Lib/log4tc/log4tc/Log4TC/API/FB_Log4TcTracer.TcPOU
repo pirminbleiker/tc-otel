@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_Log4TcTracer" Id="{d5e6f7a8-b9c0-4d1e-8f2a-3b4c5d6e7f8a}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Instance-scoped trace emitter for isolating a
+controller's span tree from parallel controllers on the same task.
+
+Phase 6 — Stage 1. The task-scoped ``FB_Log4TcTaskTracer``
+(accessed via ``PRG_TaskLog.Span``) remains the default. Bind an
+instance of ``FB_Log4TcTracer`` to an ``FB_Span`` via
+``FB_Span.BindTracer(pTracer := ADR(myTracer))`` to get:
+
+* **Isolated nesting.** Nested ``FB_Span.Begin`` under this tracer
+  picks its parent from THIS tracer's own innermost-open span, not
+  from the task-global ``aStack``. Two parallel controllers each
+  with their own ``FB_Log4TcTracer`` can't poison each other's
+  span trees.
+
+* **Per-controller ``CurrentTraceParent``.** Reads the innermost
+  span registered with this tracer, independent of any other
+  tracers on the same task.
+
+Wire emission still flows through the task tracer's log buffer
+(we need a single outbound pipeline per task). local_ids are still
+allocated task-wide. What differs is *which parent_local_id the
+child cites* — that's driven by the tracer's own linked-list of
+open spans, not the task-global stack.
+
+Lifecycle:
+
+.. code-block:: pascal
+
+    VAR
+        myTracer : FB_Log4TcTracer;
+        spn      : FB_Span;
+    END_VAR
+
+    spn.BindTracer(ADR(myTracer));   // once, before first Begin
+    spn.Begin('my_op');
+    // ... work ...
+    spn.End();
+
+``FB_exit`` on either the tracer or any FB_Span bound to it is
+safe — the linked list is traversed and any still-open spans are
+force-ended with ``status = eError``.
+*)
+FUNCTION_BLOCK FB_Log4TcTracer
+VAR
+    (* Head of the doubly-linked list of currently-open FB_Spans
+       bound to this tracer. The most recently opened span sits at
+       the head (treat as stack top). Parent resolution and
+       CurrentTraceParent both read from here. *)
+    _pHead : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="CurrentTraceParent" Id="{e6f7a8b9-c0d1-4e2f-9a3b-4c5d6e7f8a9b}">
+      <Declaration><![CDATA[(*
+:Description: Format a W3C traceparent header for the innermost
+open span bound to THIS tracer.
+
+Returns '' when no span is open under this tracer.
+
+Unlike ``PRG_TaskLog.Span.CurrentTraceParent()`` (task-global),
+this property is scoped to this tracer instance. Two parallel
+controllers on the same task each calling their OWN tracer's
+``CurrentTraceParent`` get their own context — no race.
+*)
+METHOD PUBLIC CurrentTraceParent : STRING(60)
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF _pHead <> 0 THEN
+    CurrentTraceParent := _pHead^.TraceParent;
+ELSE
+    CurrentTraceParent := '';
+END_IF;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="IsAnyOpen" Id="{f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c}">
+      <Declaration><![CDATA[(*
+:Description: TRUE when at least one FB_Span bound to this tracer
+is currently open. Useful for asserting a controller has cleanly
+ended all its spans before proceeding.
+*)
+PROPERTY PUBLIC IsAnyOpen : BOOL]]></Declaration>
+      <Get Name="Get" Id="{a8b9c0d1-e2f3-4a4b-9c5d-6e7f8a9b0c1d}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsAnyOpen := _pHead <> 0;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="_RegisterOpen" Id="{b9c0d1e2-f3a4-4b5c-8d6e-7f8a9b0c1d2e}">
+      <Declaration><![CDATA[(*
+:Description: Internal — called by FB_Span.Begin right after the
+wire BEGIN frame is emitted, to push this span onto the tracer's
+open list. Must not be called by user code.
+*)
+METHOD INTERNAL _RegisterOpen
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+(* Push onto head of doubly-linked list.
+   New head's prev := NULL, new head's next := old head,
+   old head (if any) prev := new head. *)
+pSpan^._SetTracerPrev(0);
+pSpan^._SetTracerNext(_pHead);
+IF _pHead <> 0 THEN
+    _pHead^._SetTracerPrev(pSpan);
+END_IF;
+_pHead := pSpan;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_UnregisterOpen" Id="{c0d1e2f3-a4b5-4c6d-8e7f-8a9b0c1d2e3f}">
+      <Declaration><![CDATA[(*
+:Description: Internal — called by FB_Span.End / FB_exit to remove
+this span from the tracer's open list. Safe to call on a span not
+currently in the list (no-op). Must not be called by user code.
+*)
+METHOD INTERNAL _UnregisterOpen
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
+VAR
+    pPrev : POINTER TO FB_Span;
+    pNext : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+pPrev := pSpan^._GetTracerPrev();
+pNext := pSpan^._GetTracerNext();
+
+(* Detach: rewire neighbours. *)
+IF pPrev <> 0 THEN
+    pPrev^._SetTracerNext(pNext);
+END_IF;
+IF pNext <> 0 THEN
+    pNext^._SetTracerPrev(pPrev);
+END_IF;
+
+(* If removing head, advance head to next. *)
+IF _pHead = pSpan THEN
+    _pHead := pNext;
+END_IF;
+
+pSpan^._SetTracerPrev(0);
+pSpan^._SetTracerNext(0);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FB_exit" Id="{d1e2f3a4-b5c6-4d7e-9f8a-9b0c1d2e3f4a}">
+      <Declaration><![CDATA[(*
+:Description: Safety net — when the tracer instance is destroyed
+(online change, program stop) while spans are still open, flush
+them with status = eError so tc-otel doesn't wait out the TTL.
+
+Traverses the head list and force-ends each registered FB_Span.
+Each span's own FB_exit would normally do this, but the order of
+FB destruction is undefined; if the tracer gets destroyed first,
+the spans lose their registration anchor. This is the safety net.
+*)
+METHOD FB_exit : BOOL
+VAR_INPUT
+    bInCopyCode : BOOL;
+END_VAR
+VAR
+    pCur  : POINTER TO FB_Span;
+    pNext : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF bInCopyCode THEN
+    FB_exit := TRUE;
+    RETURN;
+END_IF;
+
+pCur := _pHead;
+WHILE pCur <> 0 DO
+    pNext := pCur^._GetTracerNext();
+    pCur^.MarkError('FB_Log4TcTracer destroyed while span open');
+    pCur^.End();
+    pCur := pNext;
+END_WHILE;
+_pHead := 0;
+
+FB_exit := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>
