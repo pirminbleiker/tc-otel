@@ -40,6 +40,7 @@ pub struct PendingSpan {
     pub attrs: HashMap<String, AttrValue>,
     pub events: Vec<SpanEvent>,
     pub deadline: Instant,
+    #[allow(dead_code)]
     pub orphan_reason: Option<String>,
     #[allow(dead_code)]
     pub ams_net_id: AmsNetId,
@@ -73,6 +74,7 @@ impl SpanDispatcher {
     }
 
     /// Get the orphan span counter value for testing/observability
+    #[allow(dead_code)]
     pub fn orphan_counter(&self) -> u64 {
         self.orphan_counter.load(Ordering::SeqCst)
     }
