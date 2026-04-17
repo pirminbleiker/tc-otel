@@ -35,7 +35,7 @@ fn test_round_trip_begin_attr_event_end() {
     data.push(2);
     data.push(0);
     data.extend_from_slice(&1100i64.to_le_bytes());
-    data.extend_from_slice(&span_id[1..8]);  // Remaining 7 bytes of span_id
+    data.extend_from_slice(&span_id[1..8]); // Remaining 7 bytes of span_id
     data.push(1);
     data.push(5);
     data.push(0);
