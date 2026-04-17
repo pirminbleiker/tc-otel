@@ -128,6 +128,37 @@ InitDiag := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Property Name="Span" Id="{f6b8a9c0-d1e2-50a3-b4c5-d6e7f8a9b0c1}">
+      <Declaration><![CDATA[(*
+:Description: Returns a reference to the current task's OpenTelemetry trace emitter.
+
+Used for low-level imperative span control (Pattern 3 in the design doc),
+or as the backing implementation for FB_Span (Patterns 1 and 2).
+
+**Example**
+
+.. code::
+
+    VAR
+        hSpan : USINT;
+    END_VAR
+
+    hSpan := PRG_TaskLog.Span.Begin('operation', E_SpanKind.Internal);
+    PRG_TaskLog.Span.AddInt(hSpan, 'count', 42);
+    PRG_TaskLog.Span.End(hSpan);
+
+*)
+PROPERTY PUBLIC Span : REFERENCE TO FB_Log4TcTaskTracer]]></Declaration>
+      <Get Name="Get" Id="{a7b8c9d0-e1f2-51b4-c5d6-e7f8a9b0c1d2}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Span REF= aTaskTracer[GETCURTASKINDEXEX()];
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Property Name="TaskContextBuilder" Id="{37ede606-5a7a-4581-9bfb-710648eb6050}">
       <Declaration><![CDATA[(*
 :Description: Returns the ``I_ContextBuilder`` for task specific context
@@ -167,37 +198,6 @@ END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[TaskLogger REF= aTaskLogger[GETCURTASKINDEXEX()];
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Property Name="Span" Id="{f6b8a9c0-d1e2-50a3-b4c5-d6e7f8a9b0c1}">
-      <Declaration><![CDATA[(*
-:Description: Returns a reference to the current task's OpenTelemetry trace emitter.
-
-Used for low-level imperative span control (Pattern 3 in the design doc),
-or as the backing implementation for FB_Span (Patterns 1 and 2).
-
-**Example**
-
-.. code::
-
-    VAR
-        hSpan : USINT;
-    END_VAR
-
-    hSpan := PRG_TaskLog.Span.Begin('operation', E_SpanKind.Internal);
-    PRG_TaskLog.Span.AddInt(hSpan, 'count', 42);
-    PRG_TaskLog.Span.End(hSpan);
-
-*)
-PROPERTY PUBLIC Span : REFERENCE TO FB_Log4TcTaskTracer]]></Declaration>
-      <Get Name="Get" Id="{a7b8c9d0-e1f2-51b4-c5d6-e7f8a9b0c1d2}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[Span REF= aTaskTracer[GETCURTASKINDEXEX()];
 ]]></ST>
         </Implementation>
       </Get>
