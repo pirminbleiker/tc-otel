@@ -215,15 +215,22 @@
       "targets": [
         {
           "refId": "A",
-          "queryType": "metricsInstant",
-          "expr": "{} | rate()",
-          "legendFormat": "{{resource.service.name}}"
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceqlSearch",
+          "query": "{} | rate() by (resource.service.name)",
+          "metricsQueryType": "range",
+          "tableType": "traces",
+          "limit": 20,
+          "filters": []
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Trace duration (p95) \u2014 by root span",
+      "title": "Trace duration (avg) \u2014 by span name",
       "description": "95th percentile of root span duration. Rising indicates slower operations.",
       "datasource": "Tempo",
       "gridPos": {
@@ -248,9 +255,16 @@
       "targets": [
         {
           "refId": "A",
-          "queryType": "metricsInstant",
-          "expr": "{} | quantile_over_time(duration, 0.95)",
-          "legendFormat": "{{span.name}}"
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceqlSearch",
+          "query": "{} | avg_over_time(duration) by (name)",
+          "metricsQueryType": "range",
+          "tableType": "traces",
+          "limit": 20,
+          "filters": []
         }
       ]
     },
@@ -320,9 +334,15 @@
       "targets": [
         {
           "refId": "A",
-          "queryType": "search",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceqlSearch",
+          "query": "{}",
+          "tableType": "traces",
           "limit": 20,
-          "search": "{}"
+          "filters": []
         }
       ]
     },
@@ -349,7 +369,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 37
       },
       "id": 102,
       "collapsed": false,
@@ -364,7 +384,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 38
       },
       "id": 22,
       "fieldConfig": {
@@ -415,7 +435,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 18
+        "y": 38
       },
       "id": 23,
       "fieldConfig": {
@@ -462,7 +482,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 43
       },
       "id": 20,
       "interval": "5s",
@@ -499,7 +519,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 51
       },
       "id": 104,
       "collapsed": false,
@@ -517,7 +537,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 52
       },
       "id": 40,
       "options": {
@@ -545,7 +565,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 64
       },
       "id": 103,
       "collapsed": false,
@@ -560,7 +580,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 65
       },
       "id": 30,
       "interval": "1s",
@@ -592,7 +612,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 45
+        "y": 65
       },
       "id": 31,
       "fieldConfig": {
@@ -638,7 +658,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 45
+        "y": 65
       },
       "id": 32,
       "fieldConfig": {
@@ -683,6 +703,6 @@
   "timezone": "",
   "title": "tc-otel TwinCAT Diagnostics",
   "uid": "tc-otel-diag",
-  "version": 5,
+  "version": 7,
   "weekStart": ""
 }
