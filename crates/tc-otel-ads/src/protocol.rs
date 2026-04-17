@@ -40,8 +40,9 @@ pub enum TraceWireEvent {
         pregenerated_span_id: Option<[u8; 8]>,
     },
     /// SPAN_ATTR (event_type=6): adds an attribute to a pending span
+    /// Phase 6 Stage 3: span_id now identifies the span (not local_id)
     Attr {
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         flags: u8,
         dc_time: i64,
@@ -49,8 +50,9 @@ pub enum TraceWireEvent {
         value: AttrValue,
     },
     /// SPAN_EVENT (event_type=7): adds a timestamped event to a pending span
+    /// Phase 6 Stage 3: span_id now identifies the span (not local_id)
     Event {
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         flags: u8,
         dc_time: i64,
@@ -58,8 +60,9 @@ pub enum TraceWireEvent {
         attrs: Vec<(String, AttrValue)>,
     },
     /// SPAN_END (event_type=8): completes a pending span
+    /// Phase 6 Stage 3: span_id now identifies the span (not local_id)
     End {
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         flags: u8,
         dc_time: i64,

@@ -113,34 +113,34 @@ impl SpanDispatcher {
                 );
             }
             TraceWireEvent::Attr {
-                local_id,
+                span_id,
                 task_index,
                 flags: _,
                 dc_time: _,
                 key,
                 value,
             } => {
-                self.on_attr(net_id, local_id, task_index, key, value);
+                self.on_attr(net_id, span_id, task_index, key, value);
             }
             TraceWireEvent::Event {
-                local_id,
+                span_id,
                 task_index,
                 flags: _,
                 dc_time,
                 name,
                 attrs,
             } => {
-                self.on_event_ev(net_id, local_id, task_index, dc_time, name, attrs);
+                self.on_event_ev(net_id, span_id, task_index, dc_time, name, attrs);
             }
             TraceWireEvent::End {
-                local_id,
+                span_id,
                 task_index,
                 flags: _,
                 dc_time,
                 status,
                 message,
             } => {
-                self.on_end(net_id, local_id, task_index, dc_time, status, message);
+                self.on_end(net_id, span_id, task_index, dc_time, status, message);
             }
         }
     }
@@ -264,10 +264,8 @@ impl SpanDispatcher {
             task_index,
         };
 
-        // Insert into secondary index if pregenerated_span_id was provided.
-        if pregenerated_span_id.is_some() {
-            self.pending_by_span_id.insert(span_id, key);
-        }
+        // Phase 6 Stage 3: Always insert into secondary index (span_id is now primary)
+        self.pending_by_span_id.insert(span_id, key);
 
         self.pending.insert(key, pending);
     }
@@ -275,25 +273,22 @@ impl SpanDispatcher {
     fn on_attr(
         &mut self,
         net_id: AmsNetId,
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         key: String,
         value: AttrValue,
     ) {
-        let span_key = SpanKey {
-            ams_net_id: net_id,
-            task_index,
-            local_id,
-        };
-
-        if let Some(pending) = self.pending.get_mut(&span_key) {
-            pending.attrs.insert(key, value);
+        // Phase 6 Stage 3: Look up span by span_id via pending_by_span_id index
+        if let Some(&span_key) = self.pending_by_span_id.get(&span_id) {
+            if let Some(pending) = self.pending.get_mut(&span_key) {
+                pending.attrs.insert(key, value);
+            }
         } else {
             tracing::debug!(
-                "SPAN_ATTR for unknown span {}:{}:{}",
+                "SPAN_ATTR for unknown span {}:{}:{:?}",
                 net_id,
                 task_index,
-                local_id
+                span_id
             );
         }
     }
@@ -301,30 +296,27 @@ impl SpanDispatcher {
     fn on_event_ev(
         &mut self,
         net_id: AmsNetId,
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         dc_time: i64,
         name: String,
         attrs: Vec<(String, AttrValue)>,
     ) {
-        let span_key = SpanKey {
-            ams_net_id: net_id,
-            task_index,
-            local_id,
-        };
-
-        if let Some(pending) = self.pending.get_mut(&span_key) {
-            pending.events.push(SpanEvent {
-                time: dc_time_to_datetime(dc_time),
-                name,
-                attrs,
-            });
+        // Phase 6 Stage 3: Look up span by span_id via pending_by_span_id index
+        if let Some(&span_key) = self.pending_by_span_id.get(&span_id) {
+            if let Some(pending) = self.pending.get_mut(&span_key) {
+                pending.events.push(SpanEvent {
+                    time: dc_time_to_datetime(dc_time),
+                    name,
+                    attrs,
+                });
+            }
         } else {
             tracing::debug!(
-                "SPAN_EVENT for unknown span {}:{}:{}",
+                "SPAN_EVENT for unknown span {}:{}:{:?}",
                 net_id,
                 task_index,
-                local_id
+                span_id
             );
         }
     }
@@ -332,40 +324,37 @@ impl SpanDispatcher {
     fn on_end(
         &mut self,
         net_id: AmsNetId,
-        local_id: u8,
+        span_id: [u8; 8],
         task_index: u8,
         dc_time: i64,
         status: u8,
         message: String,
     ) {
-        let span_key = SpanKey {
-            ams_net_id: net_id,
-            task_index,
-            local_id,
-        };
+        // Phase 6 Stage 3: Look up span by span_id via pending_by_span_id index
+        if let Some(&span_key) = self.pending_by_span_id.get(&span_id) {
+            if let Some(pending) = self.pending.remove(&span_key) {
+                // Clean up span_id index entry
+                self.pending_by_span_id.remove(&span_id);
 
-        if let Some(pending) = self.pending.remove(&span_key) {
-            // Clean up span_id index entry if present
-            self.pending_by_span_id.remove(&pending.span_id);
+                let end_time = dc_time_to_datetime(dc_time);
+                let status_code = match status {
+                    0 => SpanStatusCode::Unset,
+                    1 => SpanStatusCode::Ok,
+                    2 => SpanStatusCode::Error,
+                    _ => {
+                        tracing::warn!("Unknown span status code: {}", status);
+                        SpanStatusCode::Unset
+                    }
+                };
 
-            let end_time = dc_time_to_datetime(dc_time);
-            let status_code = match status {
-                0 => SpanStatusCode::Unset,
-                1 => SpanStatusCode::Ok,
-                2 => SpanStatusCode::Error,
-                _ => {
-                    tracing::warn!("Unknown span status code: {}", status);
-                    SpanStatusCode::Unset
-                }
-            };
-
-            self.finalise(pending, end_time, status_code, message);
+                self.finalise(pending, end_time, status_code, message);
+            }
         } else {
             tracing::debug!(
-                "SPAN_END for unknown span {}:{}:{}",
+                "SPAN_END for unknown span {}:{}:{:?}",
                 net_id,
                 task_index,
-                local_id
+                span_id
             );
         }
     }
@@ -728,6 +717,7 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             1,
@@ -738,9 +728,9 @@ mod tests {
             "test".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
-        dispatcher.on_attr(net_id, 1, 0, "key1".to_string(), AttrValue::I64(42));
+        dispatcher.on_attr(net_id, span_id, 0, "key1".to_string(), AttrValue::I64(42));
 
         let span_key = SpanKey {
             ams_net_id: net_id,
@@ -759,6 +749,7 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             1,
@@ -769,11 +760,11 @@ mod tests {
             "test".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
-        dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
+        dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
         let record = rx.try_recv();
@@ -882,6 +873,7 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // BEGIN with parent_local_id=5 but no span with local_id=5 in pending
+        let span_id = [10u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             10,
@@ -892,7 +884,7 @@ mod tests {
             "orphan_span".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
 
         // Should create a pending span with orphan_reason set
@@ -922,7 +914,7 @@ mod tests {
         assert_eq!(dispatcher.orphan_counter(), 1);
 
         // END the span and verify it's finalized with the attribute intact
-        dispatcher.on_end(net_id, 10, 0, 1000, 1, "success".to_string());
+        dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
         let record = rx.try_recv();
@@ -1117,9 +1109,10 @@ mod tests {
         };
         let generated_id = dispatcher.pending.get(&span_key).unwrap().span_id;
 
-        // Should NOT be indexed by generated ID (only pregenerated are indexed)
+        // Phase 6 Stage 3: All span_ids (generated or pregenerated) are indexed
         let pending = dispatcher.pending_by_span_id(&generated_id);
-        assert!(pending.is_none());
+        assert!(pending.is_some());
+        assert_eq!(pending.unwrap().span_id, generated_id);
     }
 
     #[test]
@@ -1147,7 +1140,7 @@ mod tests {
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
 
         // END the span
-        dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
+        dispatcher.on_end(net_id, pregenerated_id, 0, 1000, 1, "success".to_string());
 
         // Should be removed from index and primary map
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_none());

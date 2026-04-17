@@ -656,7 +656,14 @@ impl AdsParser {
                 })
             }
             6 => {
-                // SPAN_ATTR: value_type, key_len, value_len, reserved, key, value
+                // SPAN_ATTR: Phase 6 Stage 3 — header now carries 8-byte span_id
+                // Read the remaining 7 bytes of span_id (first byte already in local_id position)
+                let span_id_byte0 = local_id;
+                let span_id_bytes_1_7 = reader.read_bytes(7)?;
+                let mut span_id = [0u8; 8];
+                span_id[0] = span_id_byte0;
+                span_id[1..8].copy_from_slice(span_id_bytes_1_7);
+
                 let value_type = reader.read_u8()?;
                 let key_len = reader.read_u8()? as usize;
                 let value_len = reader.read_u8()? as usize;
@@ -718,7 +725,7 @@ impl AdsParser {
                 };
 
                 Ok(TraceWireEvent::Attr {
-                    local_id,
+                    span_id,
                     task_index,
                     flags,
                     dc_time,
@@ -727,7 +734,14 @@ impl AdsParser {
                 })
             }
             7 => {
-                // SPAN_EVENT: name_len, attr_count, reserved(2), name, inline-attrs
+                // SPAN_EVENT: Phase 6 Stage 3 — header now carries 8-byte span_id
+                // Read the remaining 7 bytes of span_id (first byte already in local_id position)
+                let span_id_byte0 = local_id;
+                let span_id_bytes_1_7 = reader.read_bytes(7)?;
+                let mut span_id = [0u8; 8];
+                span_id[0] = span_id_byte0;
+                span_id[1..8].copy_from_slice(span_id_bytes_1_7);
+
                 let name_len = reader.read_u8()? as usize;
                 let attr_count = reader.read_u8()? as usize;
                 let _reserved = reader.read_u16()?;
@@ -792,7 +806,7 @@ impl AdsParser {
                 }
 
                 Ok(TraceWireEvent::Event {
-                    local_id,
+                    span_id,
                     task_index,
                     flags,
                     dc_time,
@@ -801,7 +815,14 @@ impl AdsParser {
                 })
             }
             8 => {
-                // SPAN_END: status, msg_len, reserved(2), status_msg
+                // SPAN_END: Phase 6 Stage 3 — header now carries 8-byte span_id
+                // Read the remaining 7 bytes of span_id (first byte already in local_id position)
+                let span_id_byte0 = local_id;
+                let span_id_bytes_1_7 = reader.read_bytes(7)?;
+                let mut span_id = [0u8; 8];
+                span_id[0] = span_id_byte0;
+                span_id[1..8].copy_from_slice(span_id_bytes_1_7);
+
                 let status = reader.read_u8()?;
                 let msg_len = reader.read_u8()? as usize;
                 let _reserved = reader.read_u16()?;
@@ -818,7 +839,7 @@ impl AdsParser {
                 })?;
 
                 Ok(TraceWireEvent::End {
-                    local_id,
+                    span_id,
                     task_index,
                     flags,
                     dc_time,

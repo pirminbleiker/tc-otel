@@ -12,24 +12,102 @@ Architecture and implementation details for distributed tracing in tc-otel. See 
 
 ## Wire Format
 
-All frames are little-endian with a 12-byte header:
+All frames are little-endian. Frame layout depends on type.
+
+### SPAN_BEGIN Frame (event_type=5)
+
+Traditional 12-byte header:
 
 ```
-+0x00  u8    event_type    1=BEGIN, 2=ATTR, 3=EVENT, 4=END
-+0x01  u8    local_id      0..=254 task-local span handle
-                           255 reserved for "no parent" sentinel
++0x00  u8    event_type    5 = SPAN_BEGIN
++0x01  u8    local_id      1-byte local_id (legacy; ignored by Stage 3+)
 +0x02  u8    task_index    output of GETCURTASKINDEXEX
 +0x03  u8    flags         per-event flags (see below)
 +0x04  i64   dc_time       ns since DC epoch 2000-01-01 UTC
-+0x0C  payload...
++0x0C  payload:
+         u8  parent_local_id  0xFF = root; else parent's local_id (Stage 2)
+                            or [reserved for parent_span_id in Stage 4]
+         u8  kind          E_SpanKind: 0=INTERNAL, 1=SERVER, 2=CLIENT, ...
+         u8  name_len      length of span name (0..127)
+         u8  reserved      unused
+       [16B trace_id]      if flag_local_ids (bit 3) set
+       [8B span_id]        if flag_local_ids (bit 3) set
+       name[name_len]
+       [1B tp_len + traceparent] if flag_has_external_parent (bit 1) set
 ```
 
-Flags (currently used):
-- `BEGIN.flag_is_root (1<<0)` — parent_local_id ignored, tc-otel mints new trace_id
-- `BEGIN.flag_has_external_parent (1<<1)` — payload contains W3C traceparent string; tc-otel parses for trace_id + parent_span_id
-- `BEGIN.flag_sampled (1<<2)` — reserved for future PLC-side sampling opt-out; currently always treated as sampled
+### SPAN_ATTR Frame (event_type=6) — Phase 6 Stage 3+
+
+Extended 20-byte header carrying 8-byte span_id:
+
+```
++0x00  u8    event_type    6 = SPAN_ATTR
++0x01  u8    span_id[0]    First byte of 8-byte span_id
++0x02  u8    task_index    output of GETCURTASKINDEXEX
++0x03  u8    flags         unused (always 0)
++0x04  i64   dc_time       ns since DC epoch 2000-01-01 UTC
++0x0C  7B    span_id[1..7] Remaining 7 bytes of span_id
++0x13  payload:
+         u8  value_type    1=i64, 2=f64, 3=bool, 4=string
+         u8  key_len       length of attribute key (0..31)
+         u8  value_len     length of value (depends on type)
+         u8  reserved
+       key[key_len]
+       value[value_len]
+```
+
+### SPAN_EVENT Frame (event_type=7) — Phase 6 Stage 3+
+
+Extended 20-byte header carrying 8-byte span_id:
+
+```
++0x00  u8    event_type    7 = SPAN_EVENT
++0x01  u8    span_id[0]    First byte of 8-byte span_id
++0x02  u8    task_index    output of GETCURTASKINDEXEX
++0x03  u8    flags         unused (always 0)
++0x04  i64   dc_time       ns since DC epoch 2000-01-01 UTC
++0x0C  7B    span_id[1..7] Remaining 7 bytes of span_id
++0x13  payload:
+         u8  name_len      length of event name (0..31)
+         u8  attr_count    number of inline attributes (0..4)
+         u16 reserved      unused
+       name[name_len]
+       [for each attr: value_type(1) + key_len(1) + _reserved(1) + key + value(8)]
+```
+
+### SPAN_END Frame (event_type=8) — Phase 6 Stage 3+
+
+Extended 20-byte header carrying 8-byte span_id:
+
+```
++0x00  u8    event_type    8 = SPAN_END
++0x01  u8    span_id[0]    First byte of 8-byte span_id
++0x02  u8    task_index    output of GETCURTASKINDEXEX
++0x03  u8    flags         unused (always 0)
++0x04  i64   dc_time       ns since DC epoch 2000-01-01 UTC
++0x0C  7B    span_id[1..7] Remaining 7 bytes of span_id
++0x13  payload:
+         u8  status        0=Unset, 1=Ok, 2=Error
+         u8  msg_len       length of status message (0..127)
+         u16 reserved
+       msg[msg_len]
+```
+
+### Flags (BEGIN frame only)
+
+- `flag_is_root (1<<0)` — parent_local_id ignored, tc-otel mints new trace_id
+- `flag_has_external_parent (1<<1)` — payload contains W3C traceparent string; tc-otel parses for trace_id + parent_span_id
+- `flag_sampled (1<<2)` — reserved for future PLC-side sampling opt-out; currently always treated as sampled
+- `flag_local_ids (1<<3)` — SPAN_BEGIN payload includes 16B trace_id + 8B span_id (Phase 5+)
 
 Unknown flags must be ignored by decoders.
+
+### Migration: Phase 2 to Phase 6 Stage 3
+
+- **Phase 2 (legacy)**: SPAN_ATTR/EVENT/END use 1-byte local_id, 12-byte header
+- **Phase 6 Stage 3 (current)**: SPAN_ATTR/EVENT/END use 8-byte span_id, 20-byte header
+- **SPAN_BEGIN**: unchanged (still carries local_id in header, though semantically deprecated)
+- **Breaking**: PLC and tc-otel must redeploy together. Mismatch → corrupted spans.
 
 ### Responsibility Split
 
