@@ -10,5 +10,5 @@ services:
     environment:
       - RUST_LOG=tc_otel_service=info,tc_otel_ads=info
     volumes:
-      - ./config.example.json:/etc/tc-otel/config.json:ro
+      - ./examples/config/minimal.json:/etc/tc-otel/config.json:ro
     restart: unless-stopped

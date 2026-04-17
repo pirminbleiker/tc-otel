@@ -61,7 +61,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/tc-otel /usr/local/bin/tc-otel
-COPY config.example.json /etc/tc-otel/config.json
+COPY examples/config/minimal.json /etc/tc-otel/config.json
 
 ENV TC_OTEL_CONFIG=/etc/tc-otel/config.json
 EXPOSE 48898 16150 4317 4318

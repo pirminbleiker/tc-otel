@@ -18,8 +18,8 @@ services:
       - "4318:4318"
       - "13133:13133"
     volumes:
-      - ./tests/runtime/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
-      - ./tests/runtime/otlp-output:/var/log
+      - ./examples/otel-collector/config.yml:/etc/otel-collector-config.yml:ro
+      - otel-test-output:/var/log
     networks:
       tc-otel-test:
         ipv4_address: 10.20.0.5
@@ -50,7 +50,7 @@ services:
     hostname: tc31-xar-base
     privileged: true
     volumes:
-      - ./tc31-StaticRoutes.xml:/etc/TwinCAT/3.1/Target/StaticRoutes.xml:ro
+      - ./examples/twincat/StaticRoutes.xml:/etc/TwinCAT/3.1/Target/StaticRoutes.xml:ro
       - tc31-boot:/etc/TwinCAT/3.1/Boot
       - tc31-license:/etc/TwinCAT/3.1/Target/License
     networks:
@@ -62,6 +62,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  otel-test-output:
   tc31-boot:
   tc31-license:
 

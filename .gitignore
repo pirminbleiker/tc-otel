@@ -31,9 +31,10 @@ NUL
 # Logs
 *.log
 
-# OTLP collector test output
-tests/runtime/otlp-output/*
-!tests/runtime/otlp-output/.gitkeep
+# Local development and session state (must not be committed)
+.beads/
+.runtime/
+captures/
 
 # Playwright MCP artefacts + ad-hoc dashboard screenshots (session-local)
 .playwright-mcp/
