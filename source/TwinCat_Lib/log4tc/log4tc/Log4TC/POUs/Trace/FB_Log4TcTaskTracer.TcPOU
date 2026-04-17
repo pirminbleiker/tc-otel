@@ -716,11 +716,24 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="Begin" Id="{832e89db-497a-4d07-b3b1-c6e95e2f7e46}">
-      <Declaration><![CDATA[METHOD PUBLIC Begin : USINT
+      <Declaration><![CDATA[(*
+:Description: Allocate a slot, mint IDs, emit SPAN_BEGIN frame.
+
+``bIsolated`` (Phase 6 Stage 1 addition): when TRUE, skip the
+task-global ``aStack`` interactions entirely. The new span is
+treated as a root (no parent_local_id lookup, no trace_id
+inheritance from the task stack, no push onto aStack). Used by
+FB_Span instances bound to an FB_Log4TcTracer — their parent
+relationship is driven exclusively by ``sTraceParent`` (which the
+FB_Log4TcTracer fills in from its own nesting chain). Default FALSE
+preserves Phase-5 behaviour for unbound FB_Span callers.
+*)
+METHOD PUBLIC Begin : USINT
 VAR_INPUT
     sName        : STRING(60);
     eKind        : E_SpanKind := E_SpanKind.eInternal;
     sTraceParent : STRING(60) := '';
+    bIsolated    : BOOL := FALSE;
 END_VAR
 VAR
     hSpan            : USINT;
@@ -747,19 +760,22 @@ IF hSpan > 254 THEN
     RETURN;  (* Guard against 0xFF reserved value *)
 END_IF
 
-(* Mark slot as in-use and record parent *)
+(* Mark slot as in-use and record parent.
+   Isolated spans never inherit from the task stack — they are
+   roots of their instance tracer's chain, parent (if any) lives in
+   sTraceParent. *)
 aSlots[hSpan].bInUse := TRUE;
-IF nStackDepth > 0 THEN
-    aSlots[hSpan].parent_local_id := aStack[nStackDepth - 1];
-ELSE
+IF bIsolated OR nStackDepth = 0 THEN
     aSlots[hSpan].parent_local_id := 16#FF;
+ELSE
+    aSlots[hSpan].parent_local_id := aStack[nStackDepth - 1];
 END_IF
 
 (* Populate the slot's trace_id and span_id so CurrentTraceParent() cites
    exactly the bytes tc-otel stores. Mirrors Rust's resolution order
    (span_dispatcher.rs on_begin):
      1. External W3C traceparent  -> adopt its trace_id
-     2. Parent span on local stack -> inherit parent's trace_id
+     2. Parent span on local stack -> inherit parent's trace_id (skipped when isolated)
      3. True root                  -> mint fresh trace_id
    span_id is always freshly minted for this span. *)
 _SeedRng();
@@ -772,7 +788,7 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
 END_IF;
 
 IF NOT bExternalValid THEN
-    IF nStackDepth > 0 THEN
+    IF NOT bIsolated AND nStackDepth > 0 THEN
         hParent := aStack[nStackDepth - 1];
         IF aSlots[hParent].bInUse THEN
             Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[0]),
@@ -788,8 +804,8 @@ END_IF;
 
 _MintSpanId(hSpan);
 
-(* Push onto stack *)
-IF nStackDepth < 16 THEN
+(* Push onto stack unless isolated — isolated spans are off-stack. *)
+IF NOT bIsolated AND nStackDepth < 16 THEN
     aStack[nStackDepth] := hSpan;
     nStackDepth := nStackDepth + 1;
 END_IF
