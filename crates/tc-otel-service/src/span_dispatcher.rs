@@ -729,7 +729,8 @@ mod tests {
             None,
             None,
         );
-        dispatcher.on_attr(net_id, 1, 0, "key1".to_string(), AttrValue::I64(42));
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        dispatcher.on_attr(net_id, span_id, 0, "key1".to_string(), AttrValue::I64(42));
 
         let span_key = SpanKey {
             ams_net_id: net_id,
@@ -762,7 +763,8 @@ mod tests {
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
-        dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
         let record = rx.try_recv();
@@ -911,7 +913,8 @@ mod tests {
         assert_eq!(dispatcher.orphan_counter(), 1);
 
         // END the span and verify it's finalized with the attribute intact
-        dispatcher.on_end(net_id, 10, 0, 1000, 1, "success".to_string());
+        let span_id = [10u8, 2, 3, 4, 5, 6, 7, 8];
+        dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
         let record = rx.try_recv();
@@ -1136,7 +1139,7 @@ mod tests {
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
 
         // END the span
-        dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
+        dispatcher.on_end(net_id, pregenerated_id, 0, 1000, 1, "success".to_string());
 
         // Should be removed from index and primary map
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_none());
