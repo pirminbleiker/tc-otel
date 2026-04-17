@@ -184,10 +184,17 @@ IF sTraceParent = '' AND _pTracer <> 0 AND_THEN _pTracer^.IsAnyOpen THEN
 END_IF;
 
 (* Begin a new span on the task tracer, forwarding the (possibly
-   tracer-derived) traceparent. Empty string = locally rooted — the
-   Rust dispatcher picks parent from the task stack or mints a fresh
-   trace_id. *)
-_hSpan := PRG_TaskLog.Span.Begin(sName, eKind, sTraceParent);
+   tracer-derived) traceparent. Empty string + no tracer = locally
+   rooted via task stack. When bound to an instance tracer, pass
+   bIsolated := TRUE so the task stack is bypassed entirely — the
+   tracer already decided our parent via sTraceParent. Without this,
+   a parallel FB_Span on the same task would end up as our parent
+   just because it happened to be on aStack. *)
+_hSpan := PRG_TaskLog.Span.Begin(
+    sName        := sName,
+    eKind        := eKind,
+    sTraceParent := sTraceParent,
+    bIsolated    := _pTracer <> 0);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
