@@ -2,6 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent};
 use tc_otel_core::{SpanStatusCode, TraceRecord};
@@ -38,6 +40,7 @@ pub struct PendingSpan {
     pub attrs: HashMap<String, AttrValue>,
     pub events: Vec<SpanEvent>,
     pub deadline: Instant,
+    pub orphan_reason: Option<String>,
     #[allow(dead_code)]
     pub ams_net_id: AmsNetId,
     #[allow(dead_code)]
@@ -50,6 +53,7 @@ pub struct SpanDispatcher {
     trace_tx: mpsc::Sender<TraceRecord>,
     span_ttl: Duration,
     max_pending: usize,
+    orphan_counter: Arc<AtomicU64>,
 }
 
 impl SpanDispatcher {
@@ -64,7 +68,13 @@ impl SpanDispatcher {
             trace_tx,
             span_ttl,
             max_pending,
+            orphan_counter: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Get the orphan span counter value for testing/observability
+    pub fn orphan_counter(&self) -> u64 {
+        self.orphan_counter.load(Ordering::SeqCst)
     }
 
     /// Process an incoming trace wire event
@@ -157,13 +167,14 @@ impl SpanDispatcher {
         // preferred over a fresh UUID so `CurrentTraceParent()` on the
         // producer side can cite the exact bytes that tc-otel stores and
         // downstream consumers can set parent_span_id accordingly.
-        let (trace_id, parent_span_id) = if let Some(tp) = &traceparent {
+        let (trace_id, parent_span_id, orphan_reason) = if let Some(tp) = &traceparent {
             match parse_w3c_traceparent(tp) {
-                Some((tid, sid)) => (tid, Some(sid)),
+                Some((tid, sid)) => (tid, Some(sid), None),
                 None => {
                     tracing::warn!("Failed to parse W3C traceparent: {}", tp);
                     (
                         pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
+                        None,
                         None,
                     )
                 }
@@ -176,15 +187,21 @@ impl SpanDispatcher {
                 local_id: parent_local_id,
             };
             match self.pending.get(&parent_key) {
-                Some(p) => (p.trace_id, Some(p.span_id)),
+                Some(p) => (p.trace_id, Some(p.span_id), None),
                 None => {
-                    tracing::warn!(
+                    let reason = format!("parent_local_id_{}_not_found", parent_local_id);
+                    tracing::debug!(
+                        parent_local_id = parent_local_id,
+                        net_id = %net_id,
+                        task_index = task_index,
                         "parent span not found for local_id {}, treating as root",
                         parent_local_id
                     );
+                    self.orphan_counter.fetch_add(1, Ordering::SeqCst);
                     (
                         pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
                         None,
+                        Some(reason),
                     )
                 }
             }
@@ -192,6 +209,7 @@ impl SpanDispatcher {
             // Root span — use PLC-minted trace_id when offered.
             (
                 pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
+                None,
                 None,
             )
         };
@@ -211,6 +229,14 @@ impl SpanDispatcher {
             self.finalise_timed_out(stale);
         }
 
+        let mut attrs = HashMap::new();
+        if let Some(ref reason) = orphan_reason {
+            attrs.insert(
+                "log4tc.orphan_reason".to_string(),
+                AttrValue::String(reason.clone()),
+            );
+        }
+
         let pending = PendingSpan {
             trace_id,
             span_id,
@@ -218,9 +244,10 @@ impl SpanDispatcher {
             name,
             kind,
             start_time: dc_time_to_datetime(dc_time),
-            attrs: HashMap::new(),
+            attrs,
             events: Vec::new(),
             deadline: Instant::now() + self.span_ttl,
+            orphan_reason,
             ams_net_id: net_id,
             task_index,
         };
@@ -809,5 +836,191 @@ mod tests {
 
         let record = rx.try_recv();
         assert!(record.is_ok());
+    }
+
+    #[test]
+    fn test_dispatcher_orphan_span_no_parent_in_pending() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+
+        // BEGIN with parent_local_id=5 but no span with local_id=5 in pending
+        dispatcher.on_begin(
+            net_id,
+            10,
+            0,
+            0,
+            5, // non-existent parent
+            0,
+            "orphan_span".to_string(),
+            None,
+            None,
+            None,
+        );
+
+        // Should create a pending span with orphan_reason set
+        let orphan_key = SpanKey {
+            ams_net_id: net_id,
+            task_index: 0,
+            local_id: 10,
+        };
+        let pending = dispatcher.pending.get(&orphan_key).unwrap();
+
+        // Check that orphan_reason is set
+        assert!(pending.orphan_reason.is_some());
+        assert_eq!(
+            pending.orphan_reason.as_ref().unwrap(),
+            "parent_local_id_5_not_found"
+        );
+
+        // Check that the orphan_reason attribute is attached
+        let orphan_attr = pending.attrs.get("log4tc.orphan_reason");
+        assert!(orphan_attr.is_some());
+        match orphan_attr.unwrap() {
+            AttrValue::String(s) => assert_eq!(s, "parent_local_id_5_not_found"),
+            _ => panic!("Expected string attribute"),
+        }
+
+        // Counter should be incremented
+        assert_eq!(dispatcher.orphan_counter(), 1);
+
+        // END the span and verify it's finalized with the attribute intact
+        dispatcher.on_end(net_id, 10, 0, 1000, 1, "success".to_string());
+        assert_eq!(dispatcher.pending_count(), 0);
+
+        let record = rx.try_recv();
+        assert!(record.is_ok());
+        let tr = record.unwrap();
+        assert_eq!(tr.name, "orphan_span");
+        assert_eq!(tr.parent_span_id, "".to_string()); // no parent
+        let orphan_attr_in_record = tr.span_attributes.get("log4tc.orphan_reason");
+        assert!(orphan_attr_in_record.is_some());
+    }
+
+    #[test]
+    fn test_dispatcher_orphan_counter_increments() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+
+        assert_eq!(dispatcher.orphan_counter(), 0);
+
+        // First orphan
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            99, // non-existent parent
+            0,
+            "orphan1".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(dispatcher.orphan_counter(), 1);
+
+        // Second orphan
+        dispatcher.on_begin(
+            net_id,
+            2,
+            0,
+            100,
+            99, // non-existent parent again
+            0,
+            "orphan2".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(dispatcher.orphan_counter(), 2);
+
+        // Normal parent-child (no increment)
+        dispatcher.on_begin(
+            net_id,
+            3,
+            0,
+            200,
+            0xFF,
+            0,
+            "root".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(dispatcher.orphan_counter(), 2); // still 2
+
+        dispatcher.on_begin(
+            net_id,
+            4,
+            0,
+            300,
+            3, // points to existing span 3
+            0,
+            "child".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(dispatcher.orphan_counter(), 2); // still 2
+    }
+
+    #[test]
+    fn test_dispatcher_normal_parent_child_no_orphan_attribute() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+
+        // Parent span
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "parent".to_string(),
+            None,
+            None,
+            None,
+        );
+
+        let parent_key = SpanKey {
+            ams_net_id: net_id,
+            task_index: 0,
+            local_id: 1,
+        };
+        let parent = dispatcher.pending.get(&parent_key).unwrap();
+        assert!(parent.orphan_reason.is_none());
+        assert!(!parent.attrs.contains_key("log4tc.orphan_reason"));
+
+        // Child span with valid parent
+        dispatcher.on_begin(
+            net_id,
+            2,
+            0,
+            100,
+            1, // points to existing parent
+            0,
+            "child".to_string(),
+            None,
+            None,
+            None,
+        );
+
+        let child_key = SpanKey {
+            ams_net_id: net_id,
+            task_index: 0,
+            local_id: 2,
+        };
+        let child = dispatcher.pending.get(&child_key).unwrap();
+        assert!(child.orphan_reason.is_none());
+        assert!(!child.attrs.contains_key("log4tc.orphan_reason"));
+
+        // Counter should not have been incremented
+        assert_eq!(dispatcher.orphan_counter(), 0);
     }
 }
