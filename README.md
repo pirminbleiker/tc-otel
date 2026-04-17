@@ -1,4 +1,4 @@
-# log4TC
+# TcOtel
 
 [![CI](https://github.com/pirminbleiker/tc-otel/actions/workflows/build.yml/badge.svg)](https://github.com/pirminbleiker/tc-otel/actions/workflows/build.yml)
 [![Release](https://github.com/pirminbleiker/tc-otel/actions/workflows/release.yml/badge.svg)](https://github.com/pirminbleiker/tc-otel/actions/workflows/release.yml)
@@ -7,7 +7,7 @@
 
 **Full-stack observability for Beckhoff TwinCAT 3 PLCs — structured logs, distributed traces, and push-based metrics via OpenTelemetry.**
 
-log4TC provides a complete observability pipeline for TwinCAT PLCs: Push logs, traces, and metrics from your PLC code via ADS to a Rust service (tc-otel) that exports them as standard OTLP to any backend you choose — Grafana, Datadog, Elastic, Honeycomb, or your own OTLP collector.
+TcOtel provides a complete observability pipeline for TwinCAT PLCs: Push logs, traces, and metrics from your PLC code via ADS to a Rust service (tc-otel) that exports them as standard OTLP to any backend you choose — Grafana, Datadog, Elastic, Honeycomb, or your own OTLP collector.
 
 ## Features
 
@@ -100,8 +100,8 @@ chmod +x tc-otel
 ### 2. Install the PLC Library
 
 1. Go to **PLC > Library Repository > Install...**
-2. Select `library/Log4TC.library` from this repo
-3. In your PLC project, add **Log4TC** reference
+2. Select `library/TcOtel.library` from this repo
+3. In your PLC project, add **TcOtel** reference
 4. Start logging:
 
 ```iecst
@@ -140,7 +140,7 @@ See [GETTING_STARTED.md](GETTING_STARTED.md) for detailed steps.
 | [Traces Setup](docs/traces-setup.md) | Push-based distributed tracing with span lifecycle (Phase 6 Stage 1) |
 | [Traces Design](docs/traces-design.md) | Wire format, parent linkage, W3C propagation (Phase 5+) |
 | [Traces Propagation](docs/traces-propagation.md) | Cross-PLC / cross-task `traceparent` handling |
-| [Instance Tracer Design](docs/traces-instance-tracer-design.md) | `FB_Log4TcTracer` per-instance span tracking |
+| [Instance Tracer Design](docs/traces-instance-tracer-design.md) | `FB_TcOtelTracer` per-instance span tracking |
 | [Push Diagnostics Setup](docs/push-diagnostics-setup.md) | Per-task cycle time, RT-violation metrics |
 | [Push Metrics Wire Format](docs/push-metrics-wire-format.md) | Diagnostic batch serialization |
 | [Contributing](CONTRIBUTING.md) | Development setup, building, testing |
@@ -158,8 +158,8 @@ See [GETTING_STARTED.md](GETTING_STARTED.md) for detailed steps.
 │   ├── tc-otel-service             # Main service: config, CLI, transport orchestration
 │   ├── tc-otel-benches             # Benchmarks
 │   └── tc-otel-integration-tests    # End-to-end tests
-├── source/TwinCat_Lib/log4tc/       # TwinCAT PLC library (Log4TC)
-│   └── log4tc/                      # FB_Log, FB_Span, FB_Log4TcTaskTracer, PRG_TaskLog
+├── source/TwinCat_Lib/TcOtel/       # TwinCAT PLC library (TcOtel)
+│   └── TcOtel/                      # FB_Log, FB_Span, FB_TcOtelTaskTracer, PRG_TaskLog
 ├── docs/                            # Architecture, design, setup guides
 ├── observability/                   # Docker/k8s configs for Tempo, Loki, Prometheus, Grafana
 ├── scripts/                         # Build and deployment utilities
@@ -201,7 +201,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup.
 ### Complete (Phase 1–6 Stage 1)
 - Structured logging (v2 format, context properties)
 - Distributed traces (w/ W3C `traceparent` propagation, cross-task, cross-PLC)
-- Instance tracer (`FB_Log4TcTracer` for task-aware span tracking)
+- Instance tracer (`FB_TcOtelTracer` for task-aware span tracking)
 - Push-based diagnostics (per-task cycle time, RT violations)
 - Log-to-trace correlation (Loki → Tempo via trace ID)
 - TCP and MQTT transport
@@ -214,7 +214,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup.
 
 ## Contributing
 
-log4TC is open source under dual license: MIT or Apache-2.0. Contributions welcome!
+TcOtel is open source under dual license: MIT or Apache-2.0. Contributions welcome!
 
 For development setup, testing, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

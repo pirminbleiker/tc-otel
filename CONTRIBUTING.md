@@ -47,7 +47,7 @@ source/
   TwinCat_Lib/          PLC library source (IEC 61131-3)
   TwinCat_Examples/     PLC example projects
 library/
-  Log4TC.library        Compiled TwinCAT library (legacy name)
+  TcOtel.library        Compiled TwinCAT library (legacy name)
 tests/                  Additional Rust integration & security tests
 ```
 

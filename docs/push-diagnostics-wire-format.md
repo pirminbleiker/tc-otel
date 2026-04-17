@@ -3,7 +3,7 @@
 ## Overview
 
 Push diagnostics let the PLC emit per-task execution data to tc-otel on every
-cycle. Each task runs its own sampler (`FB_Log4TcTaskDiag` — one instance per
+cycle. Each task runs its own sampler (`FB_TcOtelTaskDiag` — one instance per
 task, driven from `PRG_TaskLog.Call()`). Samples are collected into a
 1024-entry ring buffer and flushed as a single **batch frame** whenever the
 per-task aggregation window expires.

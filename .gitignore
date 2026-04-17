@@ -59,6 +59,6 @@ __pycache__/
 # VS upgrade logs
 UpgradeLog*.htm
 UpgradeLog*.XML
-source/TwinCat_Lib/log4tc/log4tc/Log4TC/Log4TC.tmcRefac
+*.tmcRefac
 tests/*
 *.bak

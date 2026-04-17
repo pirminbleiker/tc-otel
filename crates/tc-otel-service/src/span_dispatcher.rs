@@ -244,7 +244,7 @@ impl SpanDispatcher {
         let mut attrs = HashMap::new();
         if let Some(ref reason) = orphan_reason {
             attrs.insert(
-                "log4tc.orphan_reason".to_string(),
+                "TCOTEL.orphan_reason".to_string(),
                 AttrValue::String(reason.clone()),
             );
         }
@@ -911,7 +911,7 @@ mod tests {
         );
 
         // Check that the orphan_reason attribute is attached
-        let orphan_attr = pending.attrs.get("log4tc.orphan_reason");
+        let orphan_attr = pending.attrs.get("TCOTEL.orphan_reason");
         assert!(orphan_attr.is_some());
         match orphan_attr.unwrap() {
             AttrValue::String(s) => assert_eq!(s, "parent_local_id_5_not_found"),
@@ -930,7 +930,7 @@ mod tests {
         let tr = record.unwrap();
         assert_eq!(tr.name, "orphan_span");
         assert_eq!(tr.parent_span_id, "".to_string()); // no parent
-        let orphan_attr_in_record = tr.span_attributes.get("log4tc.orphan_reason");
+        let orphan_attr_in_record = tr.span_attributes.get("TCOTEL.orphan_reason");
         assert!(orphan_attr_in_record.is_some());
     }
 
@@ -1031,7 +1031,7 @@ mod tests {
         };
         let parent = dispatcher.pending.get(&parent_key).unwrap();
         assert!(parent.orphan_reason.is_none());
-        assert!(!parent.attrs.contains_key("log4tc.orphan_reason"));
+        assert!(!parent.attrs.contains_key("TCOTEL.orphan_reason"));
 
         // Child span with valid parent
         dispatcher.on_begin(
@@ -1054,7 +1054,7 @@ mod tests {
         };
         let child = dispatcher.pending.get(&child_key).unwrap();
         assert!(child.orphan_reason.is_none());
-        assert!(!child.attrs.contains_key("log4tc.orphan_reason"));
+        assert!(!child.attrs.contains_key("TCOTEL.orphan_reason"));
 
         // Counter should not have been incremented
         assert_eq!(dispatcher.orphan_counter(), 0);
