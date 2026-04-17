@@ -264,13 +264,13 @@
     <Compile Include="API\FB_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="API\FB_Span.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="API\F_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\F_HashWorkpieceId.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="API\F_TraceParentFromWorkpieceId.TcPOU">
+    <Compile Include="API\F_TraceParentFromString.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="API\I_LogBuilder.TcIO">
@@ -342,13 +342,16 @@
     <Compile Include="POUs\Trace\E_SpanStatus.TcDUT">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="POUs\Trace\F_HashSpanId.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Trace\F_HashTraceId.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="POUs\Trace\ST_SpanSlot.TcDUT">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\Trace\FB_Log4TcTaskTracer.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="POUs\Trace\FB_Span.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\FB_ContextBuilder.TcPOU">
@@ -458,8 +461,8 @@
   <ProjectExtensions>
     <PlcProjectOptions>
       <XmlArchive>
-        <Data>
-          <o xml:space="preserve" t="OptionKey">
+  <Data>
+    <o xml:space="preserve" t="OptionKey">
       <v n="Name">"&lt;ProjectRoot&gt;"</v>
       <d n="SubKeys" t="Hashtable" ckt="String" cvt="OptionKey">
         <v>{192FAD59-8248-4824-A8DE-9177C94C195A}</v>
@@ -599,15 +602,15 @@
       </d>
       <d n="Values" t="Hashtable" />
     </o>
-        </Data>
-        <TypeList>
-          <Type n="Boolean">System.Boolean</Type>
-          <Type n="Hashtable">System.Collections.Hashtable</Type>
-          <Type n="NewestVersionConstraintToSave">{af9bafe2-ba31-4b15-a2b9-48a0f2cd09fb}</Type>
-          <Type n="OptionKey">{54dd0eac-a6d8-46f2-8c27-2f43c7e49861}</Type>
-          <Type n="String">System.String</Type>
-        </TypeList>
-      </XmlArchive>
+  </Data>
+  <TypeList>
+    <Type n="Boolean">System.Boolean</Type>
+    <Type n="Hashtable">System.Collections.Hashtable</Type>
+    <Type n="NewestVersionConstraintToSave">{af9bafe2-ba31-4b15-a2b9-48a0f2cd09fb}</Type>
+    <Type n="OptionKey">{54dd0eac-a6d8-46f2-8c27-2f43c7e49861}</Type>
+    <Type n="String">System.String</Type>
+  </TypeList>
+</XmlArchive>
     </PlcProjectOptions>
   </ProjectExtensions>
 </Project>

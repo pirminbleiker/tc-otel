@@ -159,12 +159,27 @@ eKind, sTraceParent := sParsedFromPayload)`. Transport-agnostic — the
 PLC doesn't care whether the string arrived via MQTT, OPC UA,
 Fieldbus, RFID, Ethernet/IP, or a human typing it in.
 
-## Pattern D — transport-less handoff (workpiece-centric)
+## Pattern D — transport-less handoff via hashed identifiers
 
 When the physical product flows through stations via conveyor or
-tray and the only shared identifier is a scanned barcode / RFID
-ID, use `F_TraceParentFromWorkpieceId` to derive a complete
-traceparent from the identifier:
+tray and the only shared identifier is a scanned barcode / RFID ID
+(no data bus), `F_TraceParentFromString` builds a complete
+traceparent by hashing two domain identifiers into the trace_id and
+parent_span_id positions:
+
+```pascal
+F_TraceParentFromString(
+    sTraceId  : STRING(80);          // hashed → 32-hex trace_id
+    sParentId : STRING(80) := '';    // hashed → 16-hex span_id,
+                                     // or all-zero when empty
+) : STRING(60)
+```
+
+### Aggregation-only (siblings under one trace_id)
+
+The simplest case — every station sharing the same workpiece ID
+ends up in the same trace, but spans are all siblings (no
+parent-child linkage):
 
 ```pascal
 VAR
@@ -172,7 +187,7 @@ VAR
     sTp  : STRING(60);
 END_VAR
 
-sTp := F_TraceParentFromWorkpieceId(sWorkpieceId := sWp);
+sTp := F_TraceParentFromString(sTraceId := sWp);
 
 spnStation.Begin(
     sName        := 'station_weigh',
@@ -183,35 +198,57 @@ spnStation.AddString('workpiece_id', sWp);
 spnStation.End();
 ```
 
-Every PLC that scans the same workpiece ID produces the same 32-hex
-trace_id. Tempo aggregates their spans under one trace.
+Every PLC that hashes the same `sTraceId` produces the same 32-hex
+trace_id. Tempo aggregates their spans under one trace. Adequate
+for "what happened to WP-1234?" queries; less good for "which
+station fed which?" visualisations.
 
-### With an upstream sender span_id
+### Parent-child linkage (full tree)
 
-If the previous station did open a span and shipped its span_id
-alongside the piece (16 hex chars), pass it as `sSenderSpanId` to
-get a full parent-child link:
+To get a real tree in Tempo, both producer and consumer must build
+their traceparent via `F_TraceParentFromString` using consistent
+identifiers. The producer passes its own `sParentId` so its minted
+span_id is the hash of that identifier (not the random xorshift
+default), and the consumer cites the same identifier:
 
 ```pascal
-sTp := F_TraceParentFromWorkpieceId(
-    sWorkpieceId  := sWp,
-    sSenderSpanId := sUpstreamSpanIdHex);
+// Producer station:
+sTpProducer := F_TraceParentFromString(
+    sTraceId  := 'WP-1234',
+    sParentId := 'upstream-feeder');      // its own station-id
+spnProducer.Begin(
+    sName        := 'station_weigh',
+    sTraceParent := sTpProducer);
+// ... work ...
+spnProducer.End();
 
-spnStation.Begin(
+// Consumer station, same workpiece, cites the producer:
+sTpConsumer := F_TraceParentFromString(
+    sTraceId  := 'WP-1234',
+    sParentId := 'station_weigh');        // the producer's id
+spnConsumer.Begin(
     sName        := 'station_inspect',
-    eKind        := E_SpanKind.eServer,
-    sTraceParent := sTp);
+    sTraceParent := sTpConsumer);
 ```
 
-With `sSenderSpanId` empty (the default), all-zero span_id is
-substituted — Tempo treats the consumer span as root within the
-trace. This is the "stations are siblings under the common
-workpiece trace_id" mode: adequate for "what happened to WP-1234"
-queries; less good for "which station fed which" visualisations.
+### Symmetry rule
 
-The helper rejects malformed `sSenderSpanId` (anything other than
-exactly 16 hex chars) and falls back to all-zero, so callers don't
-need to validate.
+`F_TraceParentFromString` only produces a working parent-child link
+when BOTH sides hash the same `sParentId` via this helper. If the
+producer calls `FB_Span.Begin(sName := '...')` without a
+`sTraceParent`, its span_id is a random xorshift draw; the
+consumer's `parent_span_id` then refers to a span the producer
+never emitted, and Tempo renders it as an orphaned child. The
+chain works only when:
+
+1. Producer and consumer agree on the `sParentId` string (same
+   domain identifier on both sides).
+2. Producer feeds its own `F_TraceParentFromString` output to
+   `FB_Span.Begin(sTraceParent := ...)` — so its emitted span_id
+   equals the consumer's expected `parent_span_id`.
+
+For pure aggregation (siblings under a trace_id) these rules don't
+apply — leave `sParentId` empty on both sides.
 
 ## Cross-PLC clock synchronisation
 
