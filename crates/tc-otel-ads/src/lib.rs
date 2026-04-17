@@ -1,10 +1,10 @@
-//! ADS (Automation Device Specification) binary protocol parser for Log4TC
+//! ADS (Automation Device Specification) binary protocol parser for TC-OTel
 //!
 //! This crate handles parsing and serialization of the legacy ADS binary protocol
-//! used for communication between TwinCAT PLC and the Log4TC service.
+//! used for communication between TwinCAT PLC and the TC-OTel service.
 //!
 //! The ADS protocol is a proprietary Beckhoff protocol for device communication.
-//! Log4TC uses ADS for receiving log entries from TwinCAT PLCs.
+//! TC-OTel uses ADS for receiving log entries from TwinCAT PLCs.
 
 pub mod ads_client;
 pub mod ams;

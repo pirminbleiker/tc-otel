@@ -1,4 +1,4 @@
-//! Performance benchmarking utilities and fixtures for Log4TC
+//! Performance benchmarking utilities and fixtures for TC-OTel
 
 use tc_otel_core::{LogEntry, LogLevel};
 

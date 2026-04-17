@@ -5,7 +5,7 @@
 :Description: Single per-cycle diagnostic sample inside a push batch.
 
 One sample is captured per PLC cycle and buffered in a 1024-entry ring inside
-``FB_Log4TcTaskDiag``. The whole ring is flushed at the end of every
+``FB_TcOtelTaskDiag``. The whole ring is flushed at the end of every
 aggregation window. ``flags`` carries per-cycle markers:
 
 * bit0 : cycle-time exceeded on this cycle

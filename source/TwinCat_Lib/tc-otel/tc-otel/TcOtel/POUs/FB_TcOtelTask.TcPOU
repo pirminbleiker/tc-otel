@@ -1,12 +1,12 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
-  <POU Name="FB_Log4TcTask" Id="{7a1ab82d-e3cd-4e48-96e0-5ca76f3c5915}" SpecialFunc="None">
+  <POU Name="FB_TcOtelTask" Id="{7a1ab82d-e3cd-4e48-96e0-5ca76f3c5915}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 Main code of Log4TC which manages log messages of a single task.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
-FUNCTION_BLOCK INTERNAL FB_Log4TcTask
+FUNCTION_BLOCK INTERNAL FB_TcOtelTask
 VAR CONSTANT
 	nAdsPort			: UINT := 16150; 
 	nLogIndexGrp		: UINT := 1;
@@ -180,8 +180,8 @@ CASE nState OF
 
 		// Emit a one-shot log on the FALSE->TRUE transition of bConnected so the
 		// service receives a marker when the PLC resumes logging.
-		IF Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending THEN
-			Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending := FALSE;
+		IF TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending THEN
+			TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending := FALSE;
 			F_Log(E_LogLevel.eInfo, 'log4tc connected, logging resumed')
 				.WithLogger('Log4Tc')
 				.CreateLog();
@@ -215,7 +215,7 @@ CASE nState OF
 
 			F_InternalLog(
 				E_LogLevel.eDebug,
-				'FB_Log4TcTask.Call',
+				'FB_TcOtelTask.Call',
 				'Sending message with size %d.',
 				Tc2_Utilities.F_UDINT(fbAdsWriteMsg.LEN),
 				Tc2_Utilities.EMPTY_ARG_VALUE,
@@ -240,11 +240,11 @@ CASE nState OF
 					Tc2_Utilities.EMPTY_ARG_VALUE
 				);
 
-				IncUDINT(Log4TcInfo.aTaskInfo[nTaskIndex].nSendLogBufferErrorCount);
+				IncUDINT(TcOtelInfo.aTaskInfo[nTaskIndex].nSendLogBufferErrorCount);
 
 				// Service unreachable: gate new log entries at the fluent-API level so
 				// callers skip all MEMCPY work until a send succeeds again.
-				Log4TcInfo.aTaskInfo[nTaskIndex].bConnected := FALSE;
+				TcOtelInfo.aTaskInfo[nTaskIndex].bConnected := FALSE;
 
 				// Re-register on ADS error (service might have restarted)
 				bRegistrationDirty := TRUE;
@@ -254,7 +254,7 @@ CASE nState OF
 			ELSE
 				F_InternalLog(
 					E_LogLevel.eDebug,
-					'FB_Log4TcTask.Call',
+					'FB_TcOtelTask.Call',
 					'Message successfully sent.',
 					Tc2_Utilities.EMPTY_ARG_VALUE,
 					Tc2_Utilities.EMPTY_ARG_VALUE,
@@ -264,9 +264,9 @@ CASE nState OF
 
 				// Rising edge of connectivity: flag a one-shot reconnect log for the
 				// next cycle and open the fluent-API gate.
-				IF NOT Log4TcInfo.aTaskInfo[nTaskIndex].bConnected THEN
-					Log4TcInfo.aTaskInfo[nTaskIndex].bConnected := TRUE;
-					Log4TcInfo.aTaskInfo[nTaskIndex].bReconnectPending := TRUE;
+				IF NOT TcOtelInfo.aTaskInfo[nTaskIndex].bConnected THEN
+					TcOtelInfo.aTaskInfo[nTaskIndex].bConnected := TRUE;
+					TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending := TRUE;
 				END_IF
 
 				pReadBuffer := _ReadBuffer;

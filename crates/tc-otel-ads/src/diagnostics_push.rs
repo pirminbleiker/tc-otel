@@ -1,6 +1,6 @@
 //! Decoder for push-diagnostic batch frames sent by TwinCAT PLCs.
 //!
-//! Each task on the PLC runs its own per-cycle sampler (see `FB_Log4TcTaskDiag`
+//! Each task on the PLC runs its own per-cycle sampler (see `FB_TcOtelTaskDiag`
 //! in the PLC library). Every aggregation window it flushes one batch frame
 //! containing the per-cycle samples captured in the window plus a pre-computed
 //! aggregate. Batches are pushed via AdsWrite to index group `IG_PUSH_DIAG`

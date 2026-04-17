@@ -18,7 +18,7 @@ pub mod system_metrics;
 mod trace_dispatcher;
 pub mod web;
 
-use service::Log4TcService;
+use service::TcOtelService;
 
 #[derive(Parser, Debug)]
 #[command(name = "tc-otel")]
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
         settings.export.endpoint,
     );
 
-    let service = Log4TcService::new(settings)
+    let service = TcOtelService::new(settings)
         .await?
         .with_config_watch(args.config);
     service.run().await?;

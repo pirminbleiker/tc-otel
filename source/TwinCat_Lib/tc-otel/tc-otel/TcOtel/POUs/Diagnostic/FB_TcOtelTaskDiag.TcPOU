@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="FB_Log4TcTaskDiag" Id="{4c5d6e7f-8a9b-0c1d-2e3f-4a5b6c7d8e9f}" SpecialFunc="None">
+  <POU Name="FB_TcOtelTaskDiag" Id="{4c5d6e7f-8a9b-0c1d-2e3f-4a5b6c7d8e9f}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: Per-task push-diagnostic collector.
 
@@ -16,7 +16,7 @@ tc-otel writes via ADS symbol access.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
-FUNCTION_BLOCK FB_Log4TcTaskDiag
+FUNCTION_BLOCK FB_TcOtelTaskDiag
 VAR_INPUT
 END_VAR
 VAR
@@ -123,7 +123,7 @@ END_VAR
         <ST><![CDATA[(* This FB lives as an array element in PRG_TaskLog and is never invoked
    directly — only Call() runs each cycle. Every state transition that
    normally belongs in the FB body (ADSWRITE pumping especially) has to
-   happen here. Same pattern the logger's FB_Log4TcTask uses.
+   happen here. Same pattern the logger's FB_TcOtelTask uses.
 
    Watchdog: if ADSWRITE's BUSY stays true past nFlightWatchdogCycles the
    current batch is abandoned (WRITE:=FALSE resets the FB), bFlushInFlight
@@ -438,7 +438,7 @@ END_FOR
 
 nBytesToWrite := nOffset;
 
-(* Kick ADSWRITE using the same rising-edge idiom as FB_Log4TcTask:
+(* Kick ADSWRITE using the same rising-edge idiom as FB_TcOtelTask:
    reset with WRITE:=FALSE first, then trigger with the full parameter
    set. Subsequent cycles pump the FB with a bare call at the top of
    Call() until BUSY falls. *)

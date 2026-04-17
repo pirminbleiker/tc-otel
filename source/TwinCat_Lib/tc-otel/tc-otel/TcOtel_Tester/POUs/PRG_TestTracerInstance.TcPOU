@@ -3,7 +3,7 @@
   <POU Name="PRG_TestTracerInstance" Id="{a9b0c1d2-e3f4-4a5b-8c6d-7e8f9a0b1c2d}" SpecialFunc="None">
     <Declaration><![CDATA[(*
 :Description: Phase 6 Stage 1 live verification — two parallel
-FB_Log4TcTracer instances on the same task, each running their own
+FB_TcOtelTracer instances on the same task, each running their own
 nested span chain.
 
 Before Stage 1, this scenario would have been impossible: both
@@ -26,12 +26,12 @@ VAR
     bInitialised  : BOOL;
 
     (* Controller A: tracer + its two spans *)
-    tracerA       : FB_Log4TcTracer;
+    tracerA       : FB_TcOtelTracer;
     spnAOuter     : FB_Span;
     spnAInner     : FB_Span;
 
     (* Controller B: tracer + its two spans *)
-    tracerB       : FB_Log4TcTracer;
+    tracerB       : FB_TcOtelTracer;
     spnBOuter     : FB_Span;
     spnBInner     : FB_Span;
 END_VAR

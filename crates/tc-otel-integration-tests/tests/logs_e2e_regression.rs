@@ -152,12 +152,12 @@ mod tests {
                 {
                     "resource": {
                         "attributes": [
-                            {"key": "service.name", "value": {"stringValue": "Log4TC"}}
+                            {"key": "service.name", "value": {"stringValue": "TC-OTel"}}
                         ]
                     },
                     "scopeLogs": [
                         {
-                            "scope": {"name": "log4tc.logger"},
+                            "scope": {"name": "tc_otel.logger"},
                             "logRecords": [
                                 {
                                     "timeUnixNano": "1715705400000000000",

@@ -4,7 +4,7 @@
     <Declaration><![CDATA[(*
 :Description: Per-slot state for span allocation and parent tracking.
 
-Fixed-size structure allocated by FB_Log4TcTaskTracer for each open span.
+Fixed-size structure allocated by FB_TcOtelTaskTracer for each open span.
 Tracks whether the slot is in use and the parent's local_id for implicit
 nesting via the task's span stack.
 *)

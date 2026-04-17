@@ -9,7 +9,7 @@ one FB_Span per logical operation and drive it through method calls. The FB
 owns the span lifetime, enforces begin/end pairing, and provides FB_exit
 safety net for abnormal teardown (online change, program stop, FB deletion).
 
-All methods delegate to PRG_TaskLog.Span (the low-level FB_Log4TcTaskTracer
+All methods delegate to PRG_TaskLog.Span (the low-level FB_TcOtelTaskTracer
 instance for the current task).
 
 Documented in docs/traces-design.md Section "User-facing API: FB_Span".
@@ -28,11 +28,11 @@ VAR
        own open-span stack for parent resolution and
        CurrentTraceParent, isolating it from parallel FB_Spans on
        the same task. Set once via BindTracer before first Begin. *)
-    _pTracer    : POINTER TO FB_Log4TcTracer;
+    _pTracer    : POINTER TO FB_TcOtelTracer;
 
     (* Pointer to the span that was the tracer's innermost-open span
        at the moment THIS span's Begin() ran. Forms the outer-chain
-       used by FB_Log4TcTracer's LIFO stack. NULL when this is the
+       used by FB_TcOtelTracer's LIFO stack. NULL when this is the
        outermost open span on the bound tracer (or when unbound).
        Accessed only via _GetOuterSpan / _SetOuterSpan below. *)
     _pOuterSpan : POINTER TO FB_Span;
@@ -153,7 +153,7 @@ Pass `sTraceParent` to chain this span onto an incoming W3C traceparent
 header — used for cross-task, cross-PLC, or cross-process propagation.
 Leave empty for locally-rooted spans (the common case).
 
-When this FB_Span is bound to an ``FB_Log4TcTracer`` via
+When this FB_Span is bound to an ``FB_TcOtelTracer`` via
 ``BindTracer`` and ``sTraceParent`` is empty, the tracer's
 innermost open span is auto-used as the parent. That gives each
 tracer its own isolated nesting chain, immune to parallel
@@ -176,7 +176,7 @@ IF _bOpen THEN
 END_IF;
 
 (* Instance-tracer auto-nesting: if the user didn't pass an external
-   traceparent and this FB_Span is bound to an FB_Log4TcTracer that
+   traceparent and this FB_Span is bound to an FB_TcOtelTracer that
    already has an open span, inherit from it. Task-scoped behaviour
    (default) is unchanged — no tracer → no override. *)
 IF sTraceParent = '' AND _pTracer <> 0 AND_THEN _pTracer^.IsAnyOpen THEN
@@ -325,7 +325,7 @@ Typical usage — one tracer per controller:
 
     FUNCTION_BLOCK FB_Motion
     VAR
-        _tracer : FB_Log4TcTracer;
+        _tracer : FB_TcOtelTracer;
         _spn    : FB_Span;
     END_VAR
 
@@ -334,7 +334,7 @@ Typical usage — one tracer per controller:
 *)
 METHOD PUBLIC BindTracer : BOOL
 VAR_INPUT
-    pTracer : POINTER TO FB_Log4TcTracer;
+    pTracer : POINTER TO FB_TcOtelTracer;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -353,7 +353,7 @@ BindTracer := TRUE;
     </Method>
     <Method Name="_GetOuterSpan" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
       <Declaration><![CDATA[(*
-:Description: Internal accessor used by FB_Log4TcTracer to walk its
+:Description: Internal accessor used by FB_TcOtelTracer to walk its
 LIFO stack. Returns the span that was innermost-open when THIS span
 began — or 0 if this is the outermost / unbound. Not user-visible.
 *)
@@ -366,7 +366,7 @@ METHOD INTERNAL _GetOuterSpan : POINTER TO FB_Span
     </Method>
     <Method Name="_SetOuterSpan" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
       <Declaration><![CDATA[(*
-:Description: Internal mutator used by FB_Log4TcTracer to attach
+:Description: Internal mutator used by FB_TcOtelTracer to attach
 and detach this span from its LIFO stack. Not user-visible.
 *)
 METHOD INTERNAL _SetOuterSpan

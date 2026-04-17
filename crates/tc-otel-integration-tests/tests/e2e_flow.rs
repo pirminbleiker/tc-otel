@@ -1,4 +1,4 @@
-//! End-to-end integration tests for Log4TC
+//! End-to-end integration tests for TC-OTel
 //!
 //! Tests the complete flow: ADS protocol parsing → LogEntry → OTEL mapping → Export
 

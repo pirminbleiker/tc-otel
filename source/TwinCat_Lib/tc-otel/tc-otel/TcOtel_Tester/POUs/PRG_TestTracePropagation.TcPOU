@@ -111,7 +111,7 @@ CASE nScenario2Step OF
         // For a parent-child chain, both producer and consumer must
         // build their traceparent via F_TraceParentFromString with the
         // same sParentId — see docs/traces-propagation.md.
-        sTraceParentHash := log4tc.F_TraceParentFromString(
+        sTraceParentHash := tc_otel.F_TraceParentFromString(
             sTraceId := GVL_TracePropagation.sWorkpieceId);
         spnStageA.Begin(sName := 'station_weigh', eKind := E_SpanKind.eInternal, sTraceParent := sTraceParentHash);
         spnStageA.AddString('workpiece_id', GVL_TracePropagation.sWorkpieceId);

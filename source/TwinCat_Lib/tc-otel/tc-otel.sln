@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # TcXaeShell Solution File, Format Version 11.00
 VisualStudioVersion = 17.10.35827.194
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}") = "log4tc", "log4tc\log4tc.tsproj", "{ADF155C1-099B-4386-BD36-DC7AED699701}"
+Project("{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}") = "tc-otel", "tc-otel\tc-otel.tsproj", "{ADF155C1-099B-4386-BD36-DC7AED699701}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Docs", "Docs", "{028DF23E-2068-4647-8AD1-38F3A9BC8F89}"
 	ProjectSection(SolutionItems) = preProject
