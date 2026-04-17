@@ -219,18 +219,16 @@
             "type": "tempo",
             "uid": "tempo"
           },
-          "queryType": "traceqlSearch",
+          "queryType": "traceql",
           "query": "{} | rate() by (resource.service.name)",
           "metricsQueryType": "range",
-          "tableType": "traces",
-          "limit": 20,
           "filters": []
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Trace duration (avg) \u2014 by span name",
+      "title": "Span duration p95 \u2014 by span name",
       "description": "95th percentile of root span duration. Rising indicates slower operations.",
       "datasource": "Tempo",
       "gridPos": {
@@ -259,11 +257,9 @@
             "type": "tempo",
             "uid": "tempo"
           },
-          "queryType": "traceqlSearch",
-          "query": "{} | avg_over_time(duration) by (name)",
+          "queryType": "traceql",
+          "query": "{} | quantile_over_time(duration, .95) by (name)",
           "metricsQueryType": "range",
-          "tableType": "traces",
-          "limit": 20,
           "filters": []
         }
       ]
@@ -348,7 +344,7 @@
     },
     {
       "type": "text",
-      "title": "Open Traces Drilldown",
+      "title": "",
       "description": "Navigate to detailed trace explorer for deep-dive analysis.",
       "gridPos": {
         "h": 3,
@@ -358,8 +354,9 @@
       },
       "id": 109,
       "options": {
-        "text": "[Open Traces Drilldown Explorer](d/tempo-traces)",
-        "mode": "markdown"
+        "text": "### Need deeper analysis?\n\nOpen the [**Traces Drilldown** app](/a/grafana-exploretraces-app/explore?var-ds=tempo&var-primarySignal=nestedSetParent%3C0&actionView=traceList) \u2014 filter by service, span name, duration, and explore the full span tree of any trace.",
+        "mode": "markdown",
+        "content": "### Need deeper analysis?\n\nOpen the [**Traces Drilldown** app](/a/grafana-exploretraces-app/explore?var-ds=tempo&var-primarySignal=nestedSetParent%3C0&actionView=traceList) \u2014 filter by service, span name, duration, and explore the full span tree of any trace."
       }
     },
     {
@@ -703,6 +700,6 @@
   "timezone": "",
   "title": "tc-otel TwinCAT Diagnostics",
   "uid": "tc-otel-diag",
-  "version": 7,
+  "version": 10,
   "weekStart": ""
 }
