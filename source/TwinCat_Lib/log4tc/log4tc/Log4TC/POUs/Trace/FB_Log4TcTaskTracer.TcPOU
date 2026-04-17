@@ -145,6 +145,111 @@ Tc2_System.MEMCPY(ADR(aSlots[hSpan].span_id[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="_HexCharToNibble" Id="{6a5b4c3d-2e1f-4a5b-8c7d-9e0f1a2b3c4d}">
+      <Declaration><![CDATA[(* Convert one hex ASCII byte ('0'-'9', 'a'-'f', 'A'-'F') into a 4-bit nibble.
+   Returns FALSE for any other byte. Used by _ParseTraceParent. *)
+METHOD PRIVATE _HexCharToNibble : BOOL
+VAR_INPUT
+    ch : BYTE;
+END_VAR
+VAR_IN_OUT
+    nNibble : BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF ch >= 16#30 AND ch <= 16#39 THEN
+    nNibble := ch - 16#30;                  (* '0'..'9' -> 0..9 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#61 AND ch <= 16#66 THEN
+    nNibble := ch - 16#57;                  (* 'a'..'f' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#41 AND ch <= 16#46 THEN
+    nNibble := ch - 16#37;                  (* 'A'..'F' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSE
+    _HexCharToNibble := FALSE;
+END_IF;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_ParseTraceParent" Id="{7b6c5d4e-3f2a-4b6c-9d8e-0f1a2b3c4d5e}">
+      <Declaration><![CDATA[(* Parse a W3C traceparent string into raw trace_id (16B) and span_id (8B) bytes.
+   Expected format: "00-<32 hex>-<16 hex>-<2 hex>", total 55 chars.
+   Returns TRUE on success (abTraceId / abSpanId populated), FALSE on any
+   validation failure. On failure, output arrays may be partially written —
+   callers must treat FALSE as "ignore outputs". *)
+METHOD PRIVATE _ParseTraceParent : BOOL
+VAR_INPUT
+    sTp : STRING(60);
+END_VAR
+VAR_IN_OUT
+    abTraceId : ARRAY[0..15] OF BYTE;
+    abSpanId  : ARRAY[0..7]  OF BYTE;
+END_VAR
+VAR
+    pBytes : POINTER TO BYTE;
+    i      : INT;
+    nHi    : BYTE;
+    nLo    : BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+_ParseTraceParent := FALSE;
+
+(* W3C traceparent is exactly 55 ASCII characters. *)
+IF Tc2_Utilities.LEN2(ADR(sTp)) < 55 THEN
+    RETURN;
+END_IF;
+
+pBytes := ADR(sTp);
+
+(* Version "00" — other versions unrecognised, reject *)
+IF pBytes[0] <> 16#30 OR pBytes[1] <> 16#30 THEN
+    RETURN;
+END_IF;
+
+(* Delimiters at positions 2, 35, 52 *)
+IF pBytes[2] <> 16#2D OR pBytes[35] <> 16#2D OR pBytes[52] <> 16#2D THEN
+    RETURN;
+END_IF;
+
+(* Flags must be "00" (not sampled) or "01" (sampled). Other values are
+   reserved; reject to stay conservative. *)
+IF pBytes[53] <> 16#30 THEN
+    RETURN;
+END_IF;
+IF pBytes[54] <> 16#30 AND pBytes[54] <> 16#31 THEN
+    RETURN;
+END_IF;
+
+(* Decode trace_id: 32 hex chars at offset 3 -> 16 bytes *)
+FOR i := 0 TO 15 DO
+    IF NOT _HexCharToNibble(pBytes[3 + i * 2], nHi) THEN
+        RETURN;
+    END_IF;
+    IF NOT _HexCharToNibble(pBytes[3 + i * 2 + 1], nLo) THEN
+        RETURN;
+    END_IF;
+    abTraceId[i] := SHL(nHi, 4) OR nLo;
+END_FOR;
+
+(* Decode span_id: 16 hex chars at offset 36 -> 8 bytes *)
+FOR i := 0 TO 7 DO
+    IF NOT _HexCharToNibble(pBytes[36 + i * 2], nHi) THEN
+        RETURN;
+    END_IF;
+    IF NOT _HexCharToNibble(pBytes[36 + i * 2 + 1], nLo) THEN
+        RETURN;
+    END_IF;
+    abSpanId[i] := SHL(nHi, 4) OR nLo;
+END_FOR;
+
+_ParseTraceParent := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="_WriteFrameHeader" Id="{5c95a435-e5f4-4be0-a30e-3e2cecf13cfe}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteFrameHeader
 VAR_INPUT
@@ -618,17 +723,20 @@ VAR_INPUT
     sTraceParent : STRING(60) := '';
 END_VAR
 VAR
-    hSpan           : USINT;
-    nTaskIndex      : USINT;
-    nNameLen        : UDINT;
-    nNameLenUsint   : USINT;
-    nTpLen          : UDINT;
-    nTpLenUsint     : USINT;
-    nFlagsBegin     : BYTE;
-    nTotalLen       : UDINT;
-    nDcTime         : LINT;
-    pBuffer         : POINTER TO FB_LogBuffer;
-    eKindByte       : BYTE;
+    hSpan            : USINT;
+    nTaskIndex       : USINT;
+    nNameLen         : UDINT;
+    nNameLenUsint    : USINT;
+    nTpLen           : UDINT;
+    nTpLenUsint      : USINT;
+    nFlagsBegin      : BYTE;
+    nTotalLen        : UDINT;
+    nDcTime          : LINT;
+    pBuffer          : POINTER TO FB_LogBuffer;
+    eKindByte        : BYTE;
+    bExternalValid   : BOOL;
+    abExternalSpanId : ARRAY[0..7] OF BYTE;
+    hParent          : USINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -647,11 +755,37 @@ ELSE
     aSlots[hSpan].parent_local_id := 16#FF;
 END_IF
 
-(* Mint local trace_id (16B) and span_id (8B) into the slot so
-   CurrentTraceParent() has real IDs to format for outbound propagation.
-   The Rust dispatcher honours these when flag_local_ids is set. *)
+(* Populate the slot's trace_id and span_id so CurrentTraceParent() cites
+   exactly the bytes tc-otel stores. Mirrors Rust's resolution order
+   (span_dispatcher.rs on_begin):
+     1. External W3C traceparent  -> adopt its trace_id
+     2. Parent span on local stack -> inherit parent's trace_id
+     3. True root                  -> mint fresh trace_id
+   span_id is always freshly minted for this span. *)
 _SeedRng();
-_MintTraceId(hSpan);
+
+bExternalValid := FALSE;
+IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
+    bExternalValid := _ParseTraceParent(sTraceParent,
+                                         aSlots[hSpan].trace_id,
+                                         abExternalSpanId);
+END_IF;
+
+IF NOT bExternalValid THEN
+    IF nStackDepth > 0 THEN
+        hParent := aStack[nStackDepth - 1];
+        IF aSlots[hParent].bInUse THEN
+            Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[0]),
+                              ADR(aSlots[hParent].trace_id[0]),
+                              16);
+        ELSE
+            _MintTraceId(hSpan);
+        END_IF;
+    ELSE
+        _MintTraceId(hSpan);
+    END_IF;
+END_IF;
+
 _MintSpanId(hSpan);
 
 (* Push onto stack *)
@@ -773,34 +907,36 @@ Begin := hSpan;
         <ST><![CDATA[]]></ST>
       </Implementation>
     </Method>
-    <Method Name="CurrentTraceParent" Id="{703b7f93-e680-4a9f-a268-bebc44b81a3d}">
+    <Method Name="TraceParentFor" Id="{9c0d1e2f-3a4b-4c5d-6e7f-8a9b0c1d2e3f}">
       <Declaration><![CDATA[(*
-:Description: Format a W3C traceparent header for the innermost open span.
+:Description: Format a W3C traceparent header for the span occupying
+a specific slot. Instance-scoped — callers pass the hSpan they got
+back from Begin(), so the result cites THAT span regardless of what
+other spans are open on the task.
 
-Returns '' when no span is open. Format: `00-<32hex>-<16hex>-01`.
-Must be called BEFORE the span's End(); the slot is recycled on End.
-Used to ship trace context across task / PLC / RPC boundaries.
+Returns '' when the slot is not in use. Format: `00-<32hex>-<16hex>-01`.
+Must be called while the span is still open; End() recycles the slot.
+
+This is the primitive used by FB_Span.TraceParent property so each
+FB_Span instance can surface its own context without colliding with
+parallel FB_Span instances on the same task.
 *)
-METHOD PUBLIC CurrentTraceParent : STRING(60)
+METHOD PUBLIC TraceParentFor : STRING(60)
+VAR_INPUT
+    hSpan : USINT;
+END_VAR
 VAR
-    hSpan     : USINT;
     i         : INT;
     sHex      : STRING(60);
     nNibble   : BYTE;
     achHex    : ARRAY[0..15] OF BYTE := [16#30, 16#31, 16#32, 16#33, 16#34, 16#35, 16#36, 16#37, 16#38, 16#39, 16#61, 16#62, 16#63, 16#64, 16#65, 16#66];
-    achOut    : ARRAY[0..55] OF BYTE;  (* "00-" + 32 + "-" + 16 + "-01" = 55 chars *)
+    achOut    : ARRAY[0..55] OF BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF nStackDepth = 0 THEN
-    CurrentTraceParent := '';
-    RETURN;
-END_IF;
-
-hSpan := aStack[nStackDepth - 1];
 IF NOT aSlots[hSpan].bInUse THEN
-    CurrentTraceParent := '';
+    TraceParentFor := '';
     RETURN;
 END_IF;
 
@@ -829,10 +965,42 @@ achOut[52] := 16#2D;  (* '-' *)
 achOut[53] := 16#30;  (* '0' *)
 achOut[54] := 16#31;  (* '1' *)
 
-(* Copy 55 bytes + null terminator into the STRING(60) output. *)
 Tc2_System.MEMCPY(ADR(sHex), ADR(achOut[0]), 55);
 sHex[55] := 0;
-CurrentTraceParent := sHex;
+TraceParentFor := sHex;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="CurrentTraceParent" Id="{703b7f93-e680-4a9f-a268-bebc44b81a3d}">
+      <Declaration><![CDATA[(*
+:Description: Format a W3C traceparent header for the **innermost
+open span of the task's span stack**.
+
+WARNING — task-global state. If two or more FB_Span instances hold
+open spans on the same task at the same time (common for parallel
+controllers), this returns whichever was pushed most recently, not
+necessarily the one the caller owns. Prefer the per-instance
+`FB_Span.TraceParent` property instead.
+
+`CurrentTraceParent` is still useful for nested-call contexts where
+you know you are inside a single active span chain (e.g. a function
+reading "the span my caller opened"), but not for parallel
+independent FB_Span instances.
+
+Returns '' when no span is open.
+*)
+METHOD PUBLIC CurrentTraceParent : STRING(60)
+VAR
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF nStackDepth = 0 THEN
+    CurrentTraceParent := '';
+    RETURN;
+END_IF;
+
+CurrentTraceParent := TraceParentFor(aStack[nStackDepth - 1]);
 ]]></ST>
       </Implementation>
     </Method>

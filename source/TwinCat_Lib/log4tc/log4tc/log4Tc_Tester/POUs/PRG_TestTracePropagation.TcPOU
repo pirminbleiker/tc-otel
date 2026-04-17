@@ -8,8 +8,8 @@ Runs three scenarios on a round-robin cadence so tc-otel sees all
 three patterns documented in docs/traces-propagation.md:
 
   Scenario 1 (Pattern A — explicit traceparent handoff):
-    Producer opens a Client span 'order_submit', reads its
-    CurrentTraceParent() before End, parks the string in the GVL.
+    Producer opens a Client span 'order_submit', reads its own
+    TraceParent property before End, parks the string in the GVL.
     Consumer later opens 'handle_order' via the FB_Span.Begin
     overload with sTraceParent := the parked string. Tempo should
     render a two-span tree (Client → Server).
@@ -22,8 +22,11 @@ three patterns documented in docs/traces-propagation.md:
     three sibling spans sharing a trace_id.
 
   Scenario 3 (chained producer-consumer-consumer):
-    Each stage opens its own span citing the previous stage's
-    CurrentTraceParent(). Linear Tempo chain.
+    Each stage reads its own TraceParent property before End(),
+    passes it to the next stage's Begin. Uses per-instance access
+    so parallel Scenarios 1 and 2 on the same task can't poison
+    the task-global CurrentTraceParent stack. Tempo shows a linear
+    chain A → B → C.
 
 All scenarios use FB_Span methods only — no low-level tracer access.
 *)
@@ -70,7 +73,7 @@ CASE nScenario1Step OF
     END_IF
 1:  // producer open for ~100 ms, then capture traceparent + end
     IF tScenario1Acc >= T#100MS THEN
-        GVL_TracePropagation.sCurrentTraceParent := PRG_TaskLog.Span.CurrentTraceParent();
+        GVL_TracePropagation.sCurrentTraceParent := spnProducer.TraceParent;
         spnProducer.AddEvent('traceparent_captured');
         spnProducer.End();
         nScenario1Step := 2;
@@ -147,14 +150,14 @@ CASE nScenario3Step OF
     END_IF
 1:
     IF tScenario3Acc >= T#60MS THEN
-        sChainTp1 := PRG_TaskLog.Span.CurrentTraceParent();
+        sChainTp1 := spnChainA.TraceParent;
         spnChainA.End();
         spnChainB.Begin(sName := 'chain_B', sTraceParent := sChainTp1);
         nScenario3Step := 2;
     END_IF
 2:
     IF tScenario3Acc >= T#120MS THEN
-        sChainTp2 := PRG_TaskLog.Span.CurrentTraceParent();
+        sChainTp2 := spnChainB.TraceParent;
         spnChainB.End();
         spnChainC.Begin(sName := 'chain_C', sTraceParent := sChainTp2);
         nScenario3Step := 3;

@@ -8,7 +8,7 @@ a message flowing across a bus — renders as one tree in Tempo.
 Prerequisites: the base traces pipeline is set up per
 [`traces-setup.md`](traces-setup.md). Consumer-side machinery (accepting
 an incoming W3C traceparent on `Begin()`) has been in place since
-Phase 1; Phase 5 added the producer side (`CurrentTraceParent()`
+Phase 1; Phase 5 added the producer side (`FB_Span.TraceParent`, and the task-global `CurrentTraceParent()`
 formatting a real header, `F_HashWorkpieceId` for transport-less
 handoffs, and the `FB_Span.Begin` overload so you rarely need to drop
 down to the low-level tracer).
@@ -33,39 +33,54 @@ tc-otel parses this string verbatim, so the PLC only has to produce
 and consume the string — no binary encoding, no round-trip to the
 backend.
 
-## Primitive: `CurrentTraceParent()`
+## Primitive: `FB_Span.TraceParent`
+
+Per-instance, safe to use when multiple `FB_Span` instances live on
+the same task:
 
 ```pascal
 VAR
+    spn : FB_Span;
     sTp : STRING(60);
 END_VAR
 
-sTp := PRG_TaskLog.Span.CurrentTraceParent();
-```
-
-Returns the traceparent string for the **innermost currently-open
-span** on this task, formatted as `00-<trace_id>-<span_id>-01`.
-Returns an empty string when no span is open.
-
-Call it **before** `End()` on the span you want to cite — the slot
-is recycled on End, so after that it will point at whatever the next
-caller opened.
-
-Example — capturing the traceparent right before End:
-
-```pascal
 spn.Begin('process_step');
 // ... work ...
-sTp := PRG_TaskLog.Span.CurrentTraceParent();
+sTp := spn.TraceParent;        // cites THIS instance's span
 // ... hand `sTp` off to the next module (GVL, RPC, MQTT, etc.) ...
 spn.End();
 ```
 
-Underneath, the trace_id and span_id are **minted on the PLC** at
+Returns the traceparent string formatted as `00-<trace_id>-<span_id>-01`.
+Returns an empty string when the span is not open. Must be called
+**before** `End()` — the slot is recycled on End.
+
+Under the hood, trace_id and span_id are **minted on the PLC** at
 `Begin()` time (xorshift64 seeded from `F_GetActualDcTime64()` XOR
-task_index), stored in the slot, and shipped verbatim in the
-SPAN_BEGIN frame so tc-otel honours the same bytes the PLC just
-returned. No return channel, no round-trip latency.
+task_index), stored in the slot associated with this FB_Span
+instance, and shipped verbatim in the SPAN_BEGIN frame so tc-otel
+honours the same bytes the PLC just returned. No return channel,
+no round-trip latency.
+
+### Task-global variant: `PRG_TaskLog.Span.CurrentTraceParent()`
+
+There is also a task-scoped accessor:
+
+```pascal
+sTp := PRG_TaskLog.Span.CurrentTraceParent();
+```
+
+It returns the traceparent for the **innermost span on the task's
+span stack**, regardless of which FB_Span instance owns it. Use
+only for nested-span patterns where you are sure you are inside
+a single active span chain (e.g. a helper function reading "the
+span my caller opened").
+
+**Do not use it with parallel FB_Span instances on the same task.**
+If `FB_Motion.spn` and `FB_Pump.spn` both hold open spans,
+`CurrentTraceParent()` returns whichever was pushed most recently
+— which is almost never what the caller expects. Use
+`<instance>.TraceParent` instead.
 
 ## Pattern A — same PLC, two tasks, via GVL
 
@@ -80,7 +95,7 @@ END_VAR
 // --- Producer task A ---
 spnProducer.Begin('enqueue_job', eKind := E_SpanKind.eClient);
 // ... work ...
-GVL_Work.sTraceParent := PRG_TaskLog.Span.CurrentTraceParent();
+GVL_Work.sTraceParent := spnProducer.TraceParent;
 spnProducer.End();
 
 // --- Consumer task B, some cycles later ---
@@ -123,7 +138,7 @@ Client side (PLC A):
 
 ```pascal
 spnSubmit.Begin('submit_order', eKind := E_SpanKind.eClient);
-sTp := PRG_TaskLog.Span.CurrentTraceParent();
+sTp := spnSubmit.TraceParent;
 fbAdsRpc(
     sNetId := '172.16.4.1.1.1',
     nPort  := 851,
