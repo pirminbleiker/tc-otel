@@ -51,6 +51,10 @@ pub struct PendingSpan {
 /// Dispatcher that processes trace wire events and produces completed spans
 pub struct SpanDispatcher {
     pending: HashMap<SpanKey, PendingSpan>,
+    // Secondary index: span_id -> primary SpanKey.
+    // Points from pregenerated span_id back to the primary key.
+    // Populated only when flag_local_ids is set.
+    pending_by_span_id: HashMap<[u8; 8], SpanKey>,
     trace_tx: mpsc::Sender<TraceRecord>,
     span_ttl: Duration,
     max_pending: usize,
@@ -66,6 +70,7 @@ impl SpanDispatcher {
     ) -> Self {
         Self {
             pending: HashMap::new(),
+            pending_by_span_id: HashMap::new(),
             trace_tx,
             span_ttl,
             max_pending,
@@ -228,6 +233,11 @@ impl SpanDispatcher {
 
         // If key already exists, flush stale entry
         if let Some(stale) = self.pending.remove(&key) {
+            // Clean up span_id index if present
+            if let Some(old_key) = self.pending_by_span_id.remove(&stale.span_id) {
+                // Verify consistency: the old span_id should point to the key we're evicting
+                debug_assert_eq!(old_key, key);
+            }
             self.finalise_timed_out(stale);
         }
 
@@ -253,6 +263,11 @@ impl SpanDispatcher {
             ams_net_id: net_id,
             task_index,
         };
+
+        // Insert into secondary index if pregenerated_span_id was provided.
+        if pregenerated_span_id.is_some() {
+            self.pending_by_span_id.insert(span_id, key);
+        }
 
         self.pending.insert(key, pending);
     }
@@ -330,6 +345,9 @@ impl SpanDispatcher {
         };
 
         if let Some(pending) = self.pending.remove(&span_key) {
+            // Clean up span_id index entry if present
+            self.pending_by_span_id.remove(&pending.span_id);
+
             let end_time = dc_time_to_datetime(dc_time);
             let status_code = match status {
                 0 => SpanStatusCode::Unset,
@@ -447,6 +465,8 @@ impl SpanDispatcher {
 
         if let Some(key) = oldest_key {
             if let Some(pending) = self.pending.remove(&key) {
+                // Clean up span_id index entry if present
+                self.pending_by_span_id.remove(&pending.span_id);
                 self.finalise_timed_out(pending);
             }
         }
@@ -463,6 +483,8 @@ impl SpanDispatcher {
 
         for key in expired {
             if let Some(pending) = self.pending.remove(&key) {
+                // Clean up span_id index entry if present
+                self.pending_by_span_id.remove(&pending.span_id);
                 self.finalise_timed_out(pending);
             }
         }
@@ -471,6 +493,18 @@ impl SpanDispatcher {
     #[allow(dead_code)]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Lookup a pending span by its span_id (pregenerated ID from the PLC).
+    /// Returns a reference to the PendingSpan, or None if not found or not indexed.
+    /// This is the API for Stage 3 PLC events that are keyed by span_id on the wire.
+    ///
+    /// Currently unused in the main binary (used by integration tests and Stage 3 PLC).
+    #[allow(dead_code)]
+    pub fn pending_by_span_id(&self, span_id: &[u8; 8]) -> Option<&PendingSpan> {
+        self.pending_by_span_id
+            .get(span_id)
+            .and_then(|key| self.pending.get(key))
     }
 
     /// Lookup the innermost open span for a task.
@@ -1024,5 +1058,195 @@ mod tests {
 
         // Counter should not have been incremented
         assert_eq!(dispatcher.orphan_counter(), 0);
+    }
+
+    #[test]
+    fn test_pending_by_span_id_with_pregenerated() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let pregenerated_id = [1u8; 8];
+
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test_span".to_string(),
+            None,
+            None,
+            Some(pregenerated_id),
+        );
+
+        // Should be retrievable via pending_by_span_id
+        let pending = dispatcher.pending_by_span_id(&pregenerated_id);
+        assert!(pending.is_some());
+        assert_eq!(pending.unwrap().span_id, pregenerated_id);
+        assert_eq!(pending.unwrap().name, "test_span");
+    }
+
+    #[test]
+    fn test_pending_by_span_id_without_pregenerated() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+
+        // BEGIN without pregenerated_span_id
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test_span".to_string(),
+            None,
+            None,
+            None,
+        );
+
+        // Get the generated span_id from pending
+        let span_key = SpanKey {
+            ams_net_id: net_id,
+            task_index: 0,
+            local_id: 1,
+        };
+        let generated_id = dispatcher.pending.get(&span_key).unwrap().span_id;
+
+        // Should NOT be indexed by generated ID (only pregenerated are indexed)
+        let pending = dispatcher.pending_by_span_id(&generated_id);
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn test_pending_by_span_id_end_removes_index() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let pregenerated_id = [2u8; 8];
+
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "test_span".to_string(),
+            None,
+            None,
+            Some(pregenerated_id),
+        );
+
+        // Verify it's indexed
+        assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
+
+        // END the span
+        dispatcher.on_end(net_id, 1, 0, 1000, 1, "success".to_string());
+
+        // Should be removed from index and primary map
+        assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_none());
+        assert_eq!(dispatcher.pending_count(), 0);
+        let _record = rx.try_recv();
+        assert!(_record.is_ok());
+    }
+
+    #[test]
+    fn test_pending_by_span_id_parallel_spans() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let id1 = [1u8; 8];
+        let id2 = [2u8; 8];
+
+        // Two parallel spans with different pregenerated IDs
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "span1".to_string(),
+            None,
+            None,
+            Some(id1),
+        );
+
+        dispatcher.on_begin(
+            net_id,
+            2,
+            0,
+            100,
+            0xFF,
+            0,
+            "span2".to_string(),
+            None,
+            None,
+            Some(id2),
+        );
+
+        // Both should be retrievable
+        let pending1 = dispatcher.pending_by_span_id(&id1);
+        let pending2 = dispatcher.pending_by_span_id(&id2);
+
+        assert!(pending1.is_some());
+        assert!(pending2.is_some());
+        assert_eq!(pending1.unwrap().name, "span1");
+        assert_eq!(pending2.unwrap().name, "span2");
+    }
+
+    #[test]
+    fn test_pending_by_span_id_duplicate_key_cleans_old() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let pregenerated_id = [3u8; 8];
+
+        // First BEGIN with pregenerated_span_id
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            0,
+            0xFF,
+            0,
+            "first_span".to_string(),
+            None,
+            None,
+            Some(pregenerated_id),
+        );
+
+        assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
+
+        // Second BEGIN with same key (local_id) but different name — should flush first
+        dispatcher.on_begin(
+            net_id,
+            1,
+            0,
+            100,
+            0xFF,
+            0,
+            "second_span".to_string(),
+            None,
+            None,
+            Some(pregenerated_id),
+        );
+
+        // Old span should be finalized
+        let _first_record = rx.try_recv();
+        assert!(_first_record.is_ok());
+
+        // Index should point to the new span
+        let pending = dispatcher.pending_by_span_id(&pregenerated_id);
+        assert!(pending.is_some());
+        assert_eq!(pending.unwrap().name, "second_span");
     }
 }

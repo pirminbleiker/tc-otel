@@ -607,3 +607,149 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
         "PLC-minted span_id should still identify this span"
     );
 }
+
+// ─── Stage 1: span_id secondary index ─────────────────────────
+
+#[tokio::test]
+async fn test_span_dispatcher_indexes_pregenerated_span_ids() {
+    // Stage 1 (Rust side) must index spans by their pregenerated span_id.
+    // This unblocks Stage 3 on the PLC side (retire aStack/aSlots).
+    let (tx, _rx) = mpsc::channel(8);
+    let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 64);
+
+    let net_id = AmsNetId::from_bytes([5, 80, 201, 232, 1, 1]);
+    let pregenerated_span_id = [0xDEu8, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xF0, 0x0D];
+    let pregenerated_trace_id = [
+        0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        0x00,
+    ];
+
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 1,
+            task_index: 2,
+            flags: 0x08, // flag_local_ids
+            dc_time: 1_776_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "indexed_span".to_string(),
+            traceparent: None,
+            pregenerated_trace_id: Some(pregenerated_trace_id),
+            pregenerated_span_id: Some(pregenerated_span_id),
+        },
+    );
+
+    // Should be retrievable via the new secondary index
+    let pending = dispatcher.pending_by_span_id(&pregenerated_span_id);
+    assert!(pending.is_some(), "span should be indexed by span_id");
+    let p = pending.unwrap();
+    assert_eq!(p.span_id, pregenerated_span_id);
+    assert_eq!(p.trace_id, pregenerated_trace_id);
+    assert_eq!(p.name, "indexed_span");
+}
+
+#[tokio::test]
+async fn test_span_dispatcher_span_id_index_end_cleanup() {
+    // When a span is ended, the span_id index entry must also be removed.
+    let (tx, _rx) = mpsc::channel(8);
+    let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 64);
+
+    let net_id = AmsNetId::from_bytes([5, 80, 201, 232, 1, 1]);
+    let pregenerated_span_id = [0xCAu8, 0xFE, 0xBA, 0xBE, 0xDE, 0xAD, 0xBE, 0xEF];
+
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 1,
+            task_index: 2,
+            flags: 0x08,
+            dc_time: 1_000_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "span_to_end".to_string(),
+            traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: Some(pregenerated_span_id),
+        },
+    );
+
+    assert!(
+        dispatcher
+            .pending_by_span_id(&pregenerated_span_id)
+            .is_some(),
+        "span should be indexed before end"
+    );
+
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::End {
+            local_id: 1,
+            task_index: 2,
+            flags: 0,
+            dc_time: 1_001_000_000_000_000_000,
+            status: 1,
+            message: "complete".to_string(),
+        },
+    );
+
+    assert!(
+        dispatcher
+            .pending_by_span_id(&pregenerated_span_id)
+            .is_none(),
+        "span_id index should be cleaned up after end"
+    );
+}
+
+#[tokio::test]
+async fn test_span_dispatcher_parallel_indexed_spans() {
+    // Two parallel spans with different pregenerated span_ids must each be
+    // independently retrievable via the secondary index.
+    let (tx, _rx) = mpsc::channel(8);
+    let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 64);
+
+    let net_id = AmsNetId::from_bytes([5, 80, 201, 232, 1, 1]);
+    let span_id_1 = [1u8; 8];
+    let span_id_2 = [2u8; 8];
+
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 1,
+            task_index: 2,
+            flags: 0x08,
+            dc_time: 1_000_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "span_a".to_string(),
+            traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: Some(span_id_1),
+        },
+    );
+
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 2,
+            task_index: 2,
+            flags: 0x08,
+            dc_time: 1_050_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "span_b".to_string(),
+            traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: Some(span_id_2),
+        },
+    );
+
+    // Both should be independently retrievable
+    let pending_1 = dispatcher.pending_by_span_id(&span_id_1);
+    let pending_2 = dispatcher.pending_by_span_id(&span_id_2);
+
+    assert!(pending_1.is_some());
+    assert!(pending_2.is_some());
+    assert_eq!(pending_1.unwrap().name, "span_a");
+    assert_eq!(pending_2.unwrap().name, "span_b");
+}
