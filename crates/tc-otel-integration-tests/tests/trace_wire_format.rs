@@ -15,7 +15,9 @@ use tokio::sync::mpsc;
 #[test]
 fn test_round_trip_begin_attr_event_end() {
     let mut data = Vec::new();
-    // BEGIN
+    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+
+    // BEGIN (Phase 6 Stage 3: uses parent_local_id still, but ATTR/EVENT/END use full span_id)
     data.push(5);
     data.push(5);
     data.push(2);
@@ -27,12 +29,13 @@ fn test_round_trip_begin_attr_event_end() {
     data.push(0);
     data.extend_from_slice(b"test_span");
 
-    // ATTR i64
+    // ATTR i64 (Phase 6 Stage 3: first byte of span_id in position 1, rest after dc_time)
     data.push(6);
-    data.push(5);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&1100i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);  // Remaining 7 bytes of span_id
     data.push(1);
     data.push(5);
     data.push(0);
@@ -40,12 +43,13 @@ fn test_round_trip_begin_attr_event_end() {
     data.extend_from_slice(b"count");
     data.extend_from_slice(&42i64.to_le_bytes());
 
-    // ATTR string
+    // ATTR string (Phase 6 Stage 3: span_id in header)
     data.push(6);
-    data.push(5);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&1200i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(4);
     data.push(7);
     data.push(5);
@@ -53,12 +57,13 @@ fn test_round_trip_begin_attr_event_end() {
     data.extend_from_slice(b"user_id");
     data.extend_from_slice(b"alice");
 
-    // EVENT
+    // EVENT (Phase 6 Stage 3: span_id in header)
     data.push(7);
-    data.push(5);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&1300i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(10);
     data.push(1);
     data.extend_from_slice(&0u16.to_le_bytes());
@@ -70,12 +75,13 @@ fn test_round_trip_begin_attr_event_end() {
     data.extend_from_slice(b"step");
     data.extend_from_slice(&1i64.to_le_bytes());
 
-    // END
+    // END (Phase 6 Stage 3: span_id in header)
     data.push(8);
-    data.push(5);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&1400i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(1);
     data.push(0);
     data.extend_from_slice(&0u16.to_le_bytes());
@@ -107,6 +113,9 @@ fn test_round_trip_begin_attr_event_end() {
 #[test]
 fn test_multi_frame_dispatch() {
     let mut data = Vec::new();
+    let span_id = [10u8, 11, 12, 13, 14, 15, 16, 17];
+
+    // BEGIN
     data.push(5);
     data.push(1);
     data.push(2);
@@ -118,11 +127,13 @@ fn test_multi_frame_dispatch() {
     data.push(0);
     data.extend_from_slice(b"op");
 
+    // ATTR (Phase 6 Stage 3: span_id in header)
     data.push(6);
-    data.push(1);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&110i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(1);
     data.push(8);
     data.push(0);
@@ -130,21 +141,25 @@ fn test_multi_frame_dispatch() {
     data.extend_from_slice(b"duration");
     data.extend_from_slice(&500i64.to_le_bytes());
 
+    // EVENT (Phase 6 Stage 3: span_id in header)
     data.push(7);
-    data.push(1);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&120i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(4);
     data.push(0);
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(b"done");
 
+    // END (Phase 6 Stage 3: span_id in header)
     data.push(8);
-    data.push(1);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&130i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(1);
     data.push(0);
     data.extend_from_slice(&0u16.to_le_bytes());
@@ -210,6 +225,8 @@ fn test_coexistence_with_legacy_v2_logs() {
     let log2_len = (data.len() - log2_payload_start) as u16;
     data[log2_payload_start - 2..log2_payload_start].copy_from_slice(&log2_len.to_le_bytes());
 
+    let span_id = [20u8, 21, 22, 23, 24, 25, 26, 27];
+
     // BEGIN
     data.push(5);
     data.push(1);
@@ -222,12 +239,13 @@ fn test_coexistence_with_legacy_v2_logs() {
     data.push(0);
     data.extend_from_slice(b"span");
 
-    // END
+    // END (Phase 6 Stage 3: span_id in header)
     data.push(8);
-    data.push(1);
+    data.push(span_id[0]);
     data.push(2);
     data.push(0);
     data.extend_from_slice(&600i64.to_le_bytes());
+    data.extend_from_slice(&span_id[1..8]);
     data.push(1);
     data.push(0);
     data.extend_from_slice(&0u16.to_le_bytes());
@@ -242,6 +260,7 @@ fn test_dispatcher_lifecycle() {
     let (tx, mut rx) = mpsc::channel(10);
     let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(5), 100);
     let net_id = AmsNetId::from_bytes([5, 80, 201, 232, 1, 1]);
+    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
 
     dispatcher.on_event(
         net_id,
@@ -255,14 +274,14 @@ fn test_dispatcher_lifecycle() {
             name: "test_op".to_string(),
             traceparent: None,
             pregenerated_trace_id: None,
-            pregenerated_span_id: None,
+            pregenerated_span_id: Some(span_id),
         },
     );
 
     dispatcher.on_event(
         net_id,
         TraceWireEvent::Attr {
-            local_id: 1,
+            span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_001_000_000_000_000_000,
@@ -274,7 +293,7 @@ fn test_dispatcher_lifecycle() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::Event {
-            local_id: 1,
+            span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_002_000_000_000_000_000,
@@ -286,7 +305,7 @@ fn test_dispatcher_lifecycle() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_003_000_000_000_000_000,
@@ -325,6 +344,8 @@ fn test_nested_spans_parent_child() {
     let (tx, mut rx) = mpsc::channel(10);
     let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(5), 100);
     let net_id = AmsNetId::from_bytes([5, 80, 201, 232, 1, 1]);
+    let parent_span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let child_span_id = [2u8, 3, 4, 5, 6, 7, 8, 9];
 
     dispatcher.on_event(
         net_id,
@@ -338,7 +359,7 @@ fn test_nested_spans_parent_child() {
             name: "parent".to_string(),
             traceparent: None,
             pregenerated_trace_id: None,
-            pregenerated_span_id: None,
+            pregenerated_span_id: Some(parent_span_id),
         },
     );
 
@@ -354,14 +375,14 @@ fn test_nested_spans_parent_child() {
             name: "child".to_string(),
             traceparent: None,
             pregenerated_trace_id: None,
-            pregenerated_span_id: None,
+            pregenerated_span_id: Some(child_span_id),
         },
     );
 
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 2,
+            span_id: child_span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_001_000_000_000_000_000,
@@ -373,10 +394,12 @@ fn test_nested_spans_parent_child() {
     let inner_record = rx.blocking_recv().expect("Should receive inner trace");
     assert_eq!(inner_record.name, "child");
 
+    let parent_span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id: parent_span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_002_000_000_000_000_000,
@@ -527,7 +550,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id: expected_span,
             task_index: 2,
             flags: 0,
             dc_time: 1_776_000_000_001_000_000,
@@ -581,7 +604,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id: pregen_span,
             task_index: 2,
             flags: 0,
             dc_time: 1_776_000_000_001_000_000,
@@ -684,7 +707,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id: pregenerated_span_id,
             task_index: 2,
             flags: 0,
             dc_time: 1_001_000_000_000_000_000,

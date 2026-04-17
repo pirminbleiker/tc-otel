@@ -73,12 +73,12 @@ fn test_parse_span_attr_event() {
 
     match &result.trace_events[0] {
         TraceWireEvent::Attr {
-            local_id,
+            span_id,
             key,
             value,
             ..
         } => {
-            assert_eq!(*local_id, 5);
+            assert_eq!(span_id[0], 5);
             assert_eq!(key, "key");
             assert_eq!(*value, AttrValue::I64(42));
         }
@@ -106,12 +106,12 @@ fn test_parse_span_event() {
 
     match &result.trace_events[0] {
         TraceWireEvent::Event {
-            local_id,
+            span_id,
             name,
             attrs,
             ..
         } => {
-            assert_eq!(*local_id, 5);
+            assert_eq!(span_id[0], 5);
             assert_eq!(name, "event");
             assert!(attrs.is_empty());
         }
@@ -139,12 +139,12 @@ fn test_parse_span_end_event() {
 
     match &result.trace_events[0] {
         TraceWireEvent::End {
-            local_id,
+            span_id,
             status,
             message,
             ..
         } => {
-            assert_eq!(*local_id, 5);
+            assert_eq!(span_id[0], 5);
             assert_eq!(*status, 1);
             assert_eq!(message, "success");
         }
@@ -263,8 +263,9 @@ async fn test_span_dispatcher_processes_begin_event() {
     assert_eq!(dispatcher.pending_count(), 1);
 
     // Simulate SPAN_END
+    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
     let end_event = TraceWireEvent::End {
-        local_id: 1,
+        span_id,
         task_index: 0,
         flags: 0,
         dc_time: 1000,
@@ -289,6 +290,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
 
     let net_id = AmsNetId::from_str("192.168.1.1.1.1").unwrap();
+    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
 
     // BEGIN
     dispatcher.on_event(
@@ -303,7 +305,7 @@ async fn test_span_dispatcher_full_lifecycle() {
             name: "span".to_string(),
             traceparent: None,
             pregenerated_trace_id: None,
-            pregenerated_span_id: None,
+            pregenerated_span_id: Some(span_id),
         },
     );
 
@@ -311,7 +313,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::Attr {
-            local_id: 1,
+            span_id,
             task_index: 0,
             flags: 0,
             dc_time: 100,
@@ -324,7 +326,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::Event {
-            local_id: 1,
+            span_id,
             task_index: 0,
             flags: 0,
             dc_time: 200,
@@ -337,7 +339,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     dispatcher.on_event(
         net_id,
         TraceWireEvent::End {
-            local_id: 1,
+            span_id,
             task_index: 0,
             flags: 0,
             dc_time: 300,

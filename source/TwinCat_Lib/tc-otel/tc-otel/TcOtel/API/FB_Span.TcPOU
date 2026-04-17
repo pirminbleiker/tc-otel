@@ -36,6 +36,16 @@ VAR
        outermost open span on the bound tracer (or when unbound).
        Accessed only via _GetOuterSpan / _SetOuterSpan below. *)
     _pOuterSpan : POINTER TO FB_Span;
+
+    (* Phase 6 — Stage 3: span state moved from ST_SpanSlot into FB_Span itself.
+       _nLocalId is the legacy slot index (0 = closed/not-yet-begun, still
+       allocated per-tracer for backward compat). Retired after Stage 4. *)
+    _nLocalId : USINT := 0;
+
+    (* Owned trace_id and span_id bytes. Populated during Begin().
+       TraceParent property now computes directly from these. *)
+    _abTraceId : ARRAY[0..15] OF BYTE;
+    _abSpanId  : ARRAY[0..7] OF BYTE;
 END_VAR
 (*
 Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
@@ -404,19 +414,55 @@ FB_Span instances on the same task each return their OWN context.
 Use this when shipping a traceparent across task, PLC, or transport
 boundaries — it never picks up a span opened by a different
 controller FB running on the same task.
+
+Phase 6 Stage 3: now computes directly from _abTraceId / _abSpanId
+owned by this FB_Span, no tracer indirection.
 *)
 PROPERTY PUBLIC TraceParent : STRING(60)]]></Declaration>
       <Get Name="Get" Id="{bc3d2f7e-4a5b-4c6d-9e8f-0a1b2c3d4e5f}">
         <Declaration><![CDATA[VAR
+    i         : INT;
+    nNibble   : BYTE;
+    achHex    : ARRAY[0..15] OF BYTE := [16#30, 16#31, 16#32, 16#33, 16#34, 16#35, 16#36, 16#37, 16#38, 16#39, 16#61, 16#62, 16#63, 16#64, 16#65, 16#66];
+    achOut    : ARRAY[0..55] OF BYTE;
+    sHex      : STRING(60);
 END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[
-IF _bOpen THEN
-    TraceParent := PRG_TaskLog.Span.TraceParentFor(_hSpan);
-ELSE
+IF NOT _bOpen THEN
     TraceParent := '';
+    RETURN;
 END_IF;
+
+(* Layout: "00-" (3) + trace_id_hex (32) + "-" (1) + span_id_hex (16) + "-01" (3) = 55 chars *)
+achOut[0] := 16#30;  (* '0' *)
+achOut[1] := 16#30;  (* '0' *)
+achOut[2] := 16#2D;  (* '-' *)
+
+FOR i := 0 TO 15 DO
+    nNibble := SHR(_abTraceId[i], 4) AND 16#0F;
+    achOut[3 + i * 2]     := achHex[nNibble];
+    nNibble := _abTraceId[i] AND 16#0F;
+    achOut[3 + i * 2 + 1] := achHex[nNibble];
+END_FOR
+
+achOut[35] := 16#2D;  (* '-' *)
+
+FOR i := 0 TO 7 DO
+    nNibble := SHR(_abSpanId[i], 4) AND 16#0F;
+    achOut[36 + i * 2]     := achHex[nNibble];
+    nNibble := _abSpanId[i] AND 16#0F;
+    achOut[36 + i * 2 + 1] := achHex[nNibble];
+END_FOR
+
+achOut[52] := 16#2D;  (* '-' *)
+achOut[53] := 16#30;  (* '0' *)
+achOut[54] := 16#31;  (* '1' *)
+
+Tc2_System.MEMCPY(ADR(sHex), ADR(achOut[0]), 55);
+sHex[55] := 0;
+TraceParent := sHex;
 ]]></ST>
         </Implementation>
       </Get>

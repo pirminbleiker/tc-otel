@@ -282,6 +282,50 @@ END_IF
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="_WriteFrameHeaderWithSpanId" Id="{6d7c5e46-f7a1-4c8f-b1e0-4f3d9c5a6b2d}">
+      <Declaration><![CDATA[(* Phase 6 Stage 3: Write header with 8-byte span_id instead of 1-byte local_id.
+   Used for ATTR, EVENT, END frames. Header layout:
+   [event_type:u8] [span_id_byte0:u8] [task_idx:u8] [flags:u8] [dc_time:i64] [span_id_bytes1-7:7bytes] *)
+METHOD PRIVATE _WriteFrameHeaderWithSpanId
+VAR_INPUT
+    pWriteBuffer : POINTER TO FB_LogBuffer;
+    nEventType   : BYTE;
+    abSpanId     : ARRAY[0..7] OF BYTE;
+    nTaskIdx     : USINT;
+    nFlags       : BYTE;
+    nDcTime      : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pWriteBuffer^.BufferFree >= 20 THEN
+    (* Event type *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nEventType), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    (* First byte of span_id (in place of former local_id) *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(abSpanId[0]), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    (* Task index *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nTaskIdx), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    (* Flags *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nFlags), 1);
+    pWriteBuffer^.DataAdded(1);
+
+    (* DC time *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nDcTime), 8);
+    pWriteBuffer^.DataAdded(8);
+
+    (* Remaining 7 bytes of span_id *)
+    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(abSpanId[1]), 7);
+    pWriteBuffer^.DataAdded(7);
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
@@ -319,13 +363,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
-nTotalLen := 12 + 4 + nKeyLen + 1;
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1)
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nKeyLen + 1;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -389,13 +434,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + name_len(1) + attr_count(1) + reserved(2) + name *)
-nTotalLen := 12 + 4 + nNameLen;
+(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nNameLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeEvent, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
@@ -461,13 +507,14 @@ nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
    instead of 4 bytes of stack garbage past the DINT. *)
 nValLint := DINT_TO_LINT(nVal);
 
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -531,13 +578,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -601,13 +649,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 12 + 4 + nKeyLen + 8;
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -679,13 +728,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
-nTotalLen := 12 + 4 + nKeyLen + nValLen;
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nKeyLen + nValLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeAttr, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -1047,13 +1097,14 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(12) + status(1) + msg_len(1) + reserved(2) + msg *)
-nTotalLen := 12 + 4 + nMsgLen;
+(* Frame: header(20=12+8) + status(1) + msg_len(1) + reserved(2) + msg
+   Phase 6 Stage 3: header now includes 8-byte span_id *)
+nTotalLen := 20 + 4 + nMsgLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeEnd, hSpan, nTaskIdx, nFlags, nDcTime);
+    (* Header with 8-byte span_id *)
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEnd, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);
