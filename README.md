@@ -1,108 +1,88 @@
-# tc-otel
+# log4TC
 
 [![CI](https://github.com/pirminbleiker/tc-otel/actions/workflows/build.yml/badge.svg)](https://github.com/pirminbleiker/tc-otel/actions/workflows/build.yml)
 [![Release](https://github.com/pirminbleiker/tc-otel/actions/workflows/release.yml/badge.svg)](https://github.com/pirminbleiker/tc-otel/actions/workflows/release.yml)
 [![GitHub License](https://img.shields.io/github/license/pirminbleiker/tc-otel)](LICENSE)
 [![GitHub Downloads](https://img.shields.io/github/downloads/pirminbleiker/tc-otel/total)](https://github.com/pirminbleiker/tc-otel/releases)
 
-**OpenTelemetry for Beckhoff TwinCAT 3 PLCs -- logs, metrics, and traces.**
+**Full-stack observability for Beckhoff TwinCAT 3 PLCs — structured logs, distributed traces, and push-based metrics via OpenTelemetry.**
 
-tc-otel bridges TwinCAT 3 PLCs to the OpenTelemetry ecosystem. It collects telemetry data from PLCs via ADS and exports it as standard OTLP to any compatible backend -- Grafana, Datadog, Elastic, Honeycomb, and more.
-
-## Architecture
-
-**High-level system overview:**
-
-```
-                           ┌─────────────────────────────────────────┐
-                           │      Swappable Transport Layer           │
-                           │                                           │
-  TwinCAT PLC              │ TCP (direct ADS route)   MQTT Broker     │  tc-otel Service
- +----------+              │ +----────────────────+   +──────────+    │ +----------------+
- |   Logs   |              │ | Point-to-point     |   | Multi-   |    │ | ADS Receiver   |
- | Metrics  | ----[ADS]----|>| Direct IP route    |   | consumer |----+-→| Processor      |
- |  Traces  |              │ | port 48898         |   | fan-out  |    │ | OTEL Exporter  |
- +----------+              │ +----────────────────+   +──────────+    │ +----------------+
-                           │                                           │                    ↓
-                           └─────────────────────────────────────────┘                    OTLP
-                                                                                      HTTP/gRPC
-                                                                                          ↓
-                                                                            +-----------------+
-                                                                            | Grafana Loki    |
-                                                                            | Prometheus      |
-                                                                            | Jaeger / Tempo  |
-                                                                            +-----------------+
-```
-
-The system has two components:
-
-1. **PLC Library** (`library/`) -- A TwinCAT 3 library providing the telemetry API
-2. **Service** (`crates/`) -- A Rust service that receives ADS data and exports via OpenTelemetry
-
-For detailed architecture information including the layered design, protocol vs. transport separation, and how to extend the system with new commands or transports, see [Architecture Guide](docs/architecture.md).
-
-### Transport Options
-
-tc-otel supports multiple transports for ADS communication between PLC and service. Choose the one that fits your deployment:
-
-| Transport                    | When to use                                                                     | Requires                                                                                    |
-|------------------------------|---------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
-| **TCP (direct ADS route)**   | Point-to-point communication, low latency requirements, existing TwinCAT static routes | Direct IP connectivity between PLC and tc-otel service, ADS route configured via TwinCAT engineering |
-| **MQTT (ADS-over-MQTT)**     | Multiple consumers, NAT/firewall traversal, broker fan-out, unidirectional clients | MQTT broker (mosquitto, EMQX, HiveMQ, etc.), `RemoteConnections/Mqtt` configured in PLC `StaticRoutes.xml` |
-
-For MQTT setup details, see [MQTT Transport Setup](GETTING_STARTED.md#mqtt-transport-setup) in the Getting Started guide.
+log4TC provides a complete observability pipeline for TwinCAT PLCs: Push logs, traces, and metrics from your PLC code via ADS to a Rust service (tc-otel) that exports them as standard OTLP to any backend you choose — Grafana, Datadog, Elastic, Honeycomb, or your own OTLP collector.
 
 ## Features
 
-- **Simple PLC API** -- `F_Log(E_LogLevel.eInfo, 'Motor {0} started').WithAnyArg(sMotorName).CreateLog()`
-- **Structured logging** -- Positional placeholders `{0}`, `{1}` with any IEC 61131-3 type
-- **Context properties** -- Attach metadata at task, scope, and logger level
-- **Push-based diagnostics** -- Real-time task cycle time and RT-violation monitoring via active ADS writes; see [Push Diagnostics Setup](docs/push-diagnostics-setup.md)
-- **OpenTelemetry native** -- Exports via OTLP HTTP/gRPC to any OTEL-compatible backend
-- **High performance** -- Zero-alloc hot path, handles thousands of entries per second
-- **Cross-platform** -- Linux (amd64/arm64), Windows, Docker
-- **Minimal footprint** -- Single static binary, ~5 MB
+- **Structured logging** — `F_Log(E_LogLevel.eInfo, 'Motor {0} started').WithAnyArg(sMotorName).CreateLog()` with typed placeholders
+- **Distributed traces** — W3C `traceparent` propagation across tasks and multiple PLCs; span lifecycle (Begin/Attribute/Event/End) emitted as OTLP to Grafana Tempo or Jaeger
+- **Push-based diagnostics** — Per-task cycle time, RT-violation detection, and custom metrics via active ADS writes; no polling needed
+- **Log-to-trace correlation** — Logs automatically linked to trace context for fast root-cause analysis in Grafana
+- **Multi-transport** — TCP (direct ADS route) or MQTT (publish-subscribe for fan-out and NAT traversal)
+- **High performance** — Zero-allocation hot path, handles thousands of log/span/metric entries per second
+- **OpenTelemetry native** — OTLP HTTP/gRPC export to any compatible backend
+- **Cross-platform** — Linux (amd64/arm64), Windows, Docker; single static binary (~5 MB)
 
-## Roadmap
+## Architecture
 
-tc-otel aims to provide **full OpenTelemetry observability** for TwinCAT PLCs across all three OTEL pillars:
+**System overview:**
 
-### Logs (available now)
-- [x] Structured log messages from PLC via ADS
-- [x] Message templates with typed arguments
-- [x] Context properties (task, scope, logger)
-- [x] OTLP HTTP/gRPC export
-- [x] Victoria-Logs / Grafana Loki / Elastic integration
-- [x] Log level filtering
+```
+┌─────────────────────────────────────────────────────────┐
+│ TwinCAT PLC                                              │
+│  • F_Log(level, msg)          → Logs (ADS WRITE)        │
+│  • FB_Span.Begin/End          → Traces (ADS WRITE)      │
+│  • PRG_TaskLog.Call()         → Metrics (ADS WRITE)     │
+└────────────────────┬──────────────────────────────────────┘
+                     │ ADS (via TCP or MQTT)
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│ tc-otel Service (Rust)                                   │
+│  • ADS Router (decode, dispatch)                         │
+│  • Log/Trace/Metric processors                           │
+│  • OTLP Exporter                                         │
+└────────────────────┬──────────────────────────────────────┘
+                     │ OTLP (HTTP/gRPC)
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│ Your Observability Stack                                 │
+│  • Grafana (UI)                                          │
+│  • Tempo (traces)                                        │
+│  • Loki / Victoria-Logs (logs)                           │
+│  • Prometheus / Victoria-Metrics (metrics)               │
+│  • Or: Datadog, Elastic, Honeycomb, etc.                │
+└──────────────────────────────────────────────────────────┘
+```
 
-### Metrics (planned)
-- [ ] PLC variable sampling as OTEL metrics (gauges, counters, histograms)
-- [ ] Task cycle time metrics (jitter, min/max/avg)
-- [ ] PLC CPU and memory utilization
-- [ ] ADS connection health metrics
-- [ ] Custom metric definitions via config (map PLC symbols to metric names)
-- [ ] Prometheus / OTEL Collector / Datadog export
+For detailed architecture, layered design, and extension points, see [Architecture Guide](docs/architecture.md).
 
-### Traces (planned)
-- [ ] Motion sequence tracing (start/end spans for axis movements)
-- [ ] Recipe execution spans
-- [ ] State machine transition traces
-- [ ] Distributed tracing across multiple PLCs
-- [ ] Correlation of logs within trace context
-- [ ] Jaeger / Grafana Tempo / Zipkin export
+### Transport Options
 
-### Infrastructure (planned)
-- [ ] Auto-discovery of PLC symbols via ADS browse
-- [ ] Hot-reload configuration without restart
-- [ ] Web UI for status and diagnostics
-- [ ] Helm chart for Kubernetes deployment
-- [ ] Grafana dashboard templates
+| Transport | When to use | Setup |
+|-----------|-------------|-------|
+| **TCP (direct ADS route)** | Point-to-point, low latency, existing TwinCAT infrastructure | Direct IP connectivity, ADS route via TwinCAT |
+| **MQTT** | Multiple consumers, NAT/firewall, broker fan-out, edge gateways | MQTT broker (mosquitto/EMQX), `StaticRoutes.xml` config |
+
+See [MQTT Transport Setup](GETTING_STARTED.md#mqtt-transport-setup) and [Traces Setup](docs/traces-setup.md) for examples.
 
 ## Quick Start
 
-### 1. Install the service
+### Option A: Docker Compose (all-in-one stack)
 
-**Docker (recommended):**
+```bash
+# Clone the repo
+git clone https://github.com/pirminbleiker/tc-otel.git
+cd tc-otel
+
+# Start the full observability stack (Grafana + Tempo + Loki + Prometheus + tc-otel)
+docker compose -f docker-compose.observability.yml up -d
+
+# Verify tc-otel is running
+docker logs -f tc-otel
+```
+
+Visit Grafana at `http://localhost:3000` (admin/admin).
+
+### Option B: tc-otel service only
+
+**Docker:**
 ```bash
 docker run -d --name tc-otel \
   -p 48898:48898 \
@@ -110,108 +90,136 @@ docker run -d --name tc-otel \
   ghcr.io/pirminbleiker/tc-otel:latest
 ```
 
-**Binary download:**
+**Binary (Linux/Windows):**
 ```bash
-# Linux (amd64)
 curl -L https://github.com/pirminbleiker/tc-otel/releases/latest/download/tc-otel-linux-amd64 -o tc-otel
 chmod +x tc-otel
-
-# Or install the .deb package
-curl -L https://github.com/pirminbleiker/tc-otel/releases/latest/download/tc-otel_amd64.deb -o tc-otel.deb
-sudo dpkg -i tc-otel.deb
+./tc-otel --config config.json
 ```
 
-### 2. Configure
+### 2. Install the PLC Library
 
-Create a `config.json` (see [config.example.json](config.example.json)):
-```json
-{
-  "logging": { "log_level": "info", "format": "text" },
-  "receiver": {
-    "ams_net_id": "0.0.0.0.1.1",
-    "ams_tcp_port": 48898,
-    "ads_port": 16150
-  },
-  "export": {
-    "endpoint": "http://localhost:3100/otlp/v1/logs",
-    "batch_size": 2000,
-    "flush_interval_ms": 1000
-  },
-  "outputs": [],
-  "service": {
-    "channel_capacity": 50000
-  }
-}
-```
-
-### 3. Add the PLC library
-
-1. Install `library/Log4TC.library` into your TwinCAT library repository
-2. Add a reference in your PLC project
-3. Start logging:
+1. Go to **PLC > Library Repository > Install...**
+2. Select `library/Log4TC.library` from this repo
+3. In your PLC project, add **Log4TC** reference
+4. Start logging:
 
 ```iecst
-// Simple log (must call CreateLog to emit)
+// Simple log
 F_Log(E_LogLevel.eInfo, 'Machine started').CreateLog();
 
-// With arguments (positional: {0}, {1})
-F_Log(E_LogLevel.eWarn, 'Temperature {0} exceeds limit {1}')
+// With arguments
+F_Log(E_LogLevel.eWarn, 'Temp {0}°C exceeds limit {1}°C')
     .WithAnyArg(fTemperature)
     .WithAnyArg(fTempLimit)
     .CreateLog();
+
+// Distributed trace (spans)
+VAR spn : FB_Span; END_VAR
+spn.Begin('motion_step');
+spn.AddInt('axis', 1);
+spn.End();
 ```
 
-### 4. Add an ADS route
+### 3. Configure ADS Route
 
-Add a route from your PLC to the tc-otel service (AMS Net ID from config, transport TCP).
+Add a route from your PLC to tc-otel:
+- **Route Name:** `tc-otel`
+- **AMS Net ID:** from your `config.json` (e.g., `172.17.0.2.1.1`)
+- **Transport:** TCP
+- **Address:** IP of machine running tc-otel
 
-See [GETTING_STARTED.md](GETTING_STARTED.md) for the full walkthrough.
+See [GETTING_STARTED.md](GETTING_STARTED.md) for detailed steps.
 
-## Config UI
+## Documentation
 
-The tc-otel service exposes a web UI for live config editing at `http://localhost:8080/#/config` (Docker host port 8080).
+| Document | Purpose |
+|----------|---------|
+| [Getting Started](GETTING_STARTED.md) | Install, configure, and run tc-otel + PLC library |
+| [Architecture](docs/architecture.md) | Layered design, protocol/transport separation, extension points |
+| [Traces Setup](docs/traces-setup.md) | Push-based distributed tracing with span lifecycle (Phase 6 Stage 1) |
+| [Traces Design](docs/traces-design.md) | Wire format, parent linkage, W3C propagation (Phase 5+) |
+| [Traces Propagation](docs/traces-propagation.md) | Cross-PLC / cross-task `traceparent` handling |
+| [Instance Tracer Design](docs/traces-instance-tracer-design.md) | `FB_Log4TcTracer` per-instance span tracking |
+| [Push Diagnostics Setup](docs/push-diagnostics-setup.md) | Per-task cycle time, RT-violation metrics |
+| [Push Metrics Wire Format](docs/push-metrics-wire-format.md) | Diagnostic batch serialization |
+| [Contributing](CONTRIBUTING.md) | Development setup, building, testing |
+| [Changelog](CHANGELOG.md) | Release history and milestones |
+| [Security Policy](SECURITY.md) | Reporting vulnerabilities |
 
-**Features:**
+## Project Structure
 
-- All `AppSettings` sections editable without restart
-- Secrets displayed as `***MASKED***`; empty field = preserve current value
-- POST response indicates which sections were hot-reloaded vs. require restart
-- For immutable deployments, mount config as `:ro` — UI saves will fail with HTTP 500
-
-**Security:** No authentication enabled. Restrict the web port to trusted networks only.
+```
+.
+├── crates/                          # Rust workspace
+│   ├── tc-otel-core                # Shared types (LogEntry, MetricEntry, etc.)
+│   ├── tc-otel-ads                 # ADS protocol: router, parser, frame codec
+│   ├── tc-otel-export              # OTLP exporters (HTTP/gRPC)
+│   ├── tc-otel-service             # Main service: config, CLI, transport orchestration
+│   ├── tc-otel-benches             # Benchmarks
+│   └── tc-otel-integration-tests    # End-to-end tests
+├── source/TwinCat_Lib/log4tc/       # TwinCAT PLC library (Log4TC)
+│   └── log4tc/                      # FB_Log, FB_Span, FB_Log4TcTaskTracer, PRG_TaskLog
+├── docs/                            # Architecture, design, setup guides
+├── observability/                   # Docker/k8s configs for Tempo, Loki, Prometheus, Grafana
+├── scripts/                         # Build and deployment utilities
+├── docker-compose.*.yml             # All-in-one stacks (observability, test)
+├── config.*.example.json            # Configuration templates
+└── tests/                           # Integration test fixtures
+```
 
 ## Installation Options
 
 | Method | Platforms | Notes |
 |--------|-----------|-------|
-| **Docker** | linux/amd64, linux/arm64 | `ghcr.io/pirminbleiker/tc-otel` |
+| **Docker Compose** | linux/amd64, linux/arm64 | Full stack: tc-otel + Grafana + Tempo + Loki + Prometheus |
+| **Docker Service Only** | linux/amd64, linux/arm64 | `ghcr.io/pirminbleiker/tc-otel` |
 | **Binary** | Linux amd64/arm64, Windows x64 | Single executable, no dependencies |
 | **.deb package** | Debian/Ubuntu amd64/arm64 | Includes systemd service unit |
-| **Build from source** | Any Rust target | See [CONTRIBUTING.md](CONTRIBUTING.md) |
-
-## Documentation
-
-- [Getting Started](GETTING_STARTED.md) -- Full setup walkthrough
-- [Contributing](CONTRIBUTING.md) -- Development setup, building, testing
-- [Changelog](CHANGELOG.md) -- Release history
-- [Security Policy](SECURITY.md) -- Reporting vulnerabilities
-- [PLC Examples](source/TwinCat_Examples/) -- TwinCAT example projects
+| **Build from source** | Any Rust target | Rust 1.75+, see [Contributing](CONTRIBUTING.md) |
 
 ## Building from Source
 
 ```bash
-# Prerequisites: Rust 1.75+
+# Prerequisites: Rust 1.75+, Docker (for integration tests)
 cargo build --release -p tc-otel-service
 
 # Run tests
-cargo test --all
+cargo test --workspace
 
-# Run benchmarks
-cargo bench
+# Run integration tests
+cargo test --package tc-otel-integration-tests --test '*'
+
+# Build PLC library
+# (Requires TwinCAT 3, XAE 4024+)
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup.
+
+## Status
+
+### Complete (Phase 1–6 Stage 1)
+- Structured logging (v2 format, context properties)
+- Distributed traces (w/ W3C `traceparent` propagation, cross-task, cross-PLC)
+- Instance tracer (`FB_Log4TcTracer` for task-aware span tracking)
+- Push-based diagnostics (per-task cycle time, RT violations)
+- Log-to-trace correlation (Loki → Tempo via trace ID)
+- TCP and MQTT transport
+- OTLP HTTP/gRPC export
+
+### In Progress / Planned
+- Span sampling (Phase 7)
+- Custom metric API enhancements
+- Helm charts and deployment templates
+
+## Contributing
+
+log4TC is open source under dual license: MIT or Apache-2.0. Contributions welcome!
+
+For development setup, testing, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Licensed under [Apache License 2.0](LICENSE).
+Licensed under [MIT or Apache License 2.0](LICENSE).
 
 Copyright (c) 2026 [Pirmin Bleiker](https://github.com/pirminbleiker)
