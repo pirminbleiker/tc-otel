@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <TcSmItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.22" ClassName="CNestedPlcProjDef">
-	<Project Disabled="true" GUID="{04FDCB5E-8373-4851-A688-CBAB70CD7D8E}" Name="Log4TC" PrjFilePath="..\..\Log4TC\Log4TC.plcproj" TmcFilePath="..\..\Log4TC\Log4TC.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-		<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{B1B4773D-014C-BA03-214A-DA68FD729C97}" TmcPath="Log4TC\Log4TC.tmc">
-			<Name>Log4TC Instance</Name>
+	<Project Disabled="true" GUID="{04FDCB5E-8373-4851-A688-CBAB70CD7D8E}" Name="TcOtel" PrjFilePath="..\..\TcOtel\TcOtel.plcproj" TmcFilePath="..\..\TcOtel\TcOtel.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
+		<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{6CBB95E3-68F6-72C2-5C2D-B4272065B6A7}" TmcPath="TcOtel\TcOtel.tmc">
+			<Name>TcOtel Instance</Name>
 			<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 			<Contexts>
 				<Context>

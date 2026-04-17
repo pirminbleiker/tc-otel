@@ -3,7 +3,7 @@
 ## Overview
 
 Each task that calls `PRG_TaskLog.Call()` gets a per-task push-diagnostic
-collector (`FB_Log4TcTaskDiag`). Every cycle the collector captures one
+collector (`FB_TcOtelTaskDiag`). Every cycle the collector captures one
 `ST_PushDiagSample` (`cycle_count`, `exec_time_us`, `dc_time`, `flags`)
 into a 1024-entry ring buffer. When the configured aggregation window
 elapses the ring plus pre-computed aggregates (`min/max/avg exec_time`,
@@ -16,7 +16,7 @@ to tc-otel without a separate FB call-site: the magic runs inside
 
 ## Files
 
-- **FB_Log4TcTaskDiag.TcPOU** — per-task collector (ring + window flush + ADSWRITE)
+- **FB_TcOtelTaskDiag.TcPOU** — per-task collector (ring + window flush + ADSWRITE)
 - **ST_PushDiagBatchHeader.TcDUT** — 80-byte batch header
 - **ST_PushDiagSample.TcDUT** — 24-byte per-cycle sample
 - **ST_PushDiagConfig.TcDUT** — 8-byte per-task config slot (runtime-writable)

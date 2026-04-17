@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <TcSmItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.22" ClassName="CNestedPlcProjDef">
-	<Project Disabled="true" GUID="{4EF4C9B2-959C-4C5D-9C52-4801DB7F5356}" Name="log4Tc_SmokeTest" PrjFilePath="..\..\log4Tc_SmokeTest\log4Tc_SmokeTest.plcproj" TmcFilePath="..\..\log4Tc_SmokeTest\log4Tc_SmokeTest.tmc" ReloadTmc="true" AmsPort="853" FileArchiveSettings="#x000e" SymbolicMapping="true">
-		<Instance Id="#x08502080" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{D1277477-6E68-C3F6-20C7-9FA694B6FEF5}" TmcPath="log4Tc_SmokeTest\log4Tc_SmokeTest.tmc">
-			<Name>log4Tc_SmokeTest Instance</Name>
+	<Project Disabled="true" GUID="{4EF4C9B2-959C-4C5D-9C52-4801DB7F5356}" Name="TcOtel_SmokeTest" PrjFilePath="..\..\TcOtel_SmokeTest\TcOtel_SmokeTest.plcproj" TmcFilePath="..\..\TcOtel_SmokeTest\TcOtel_SmokeTest.tmc" ReloadTmc="true" AmsPort="853" FileArchiveSettings="#x000e" SymbolicMapping="true">
+		<Instance Id="#x08502080" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{D1277477-6E68-C3F6-20C7-9FA694B6FEF5}" TmcPath="TcOtel_SmokeTest\TcOtel_SmokeTest.tmc">
+			<Name>TcOtel_SmokeTest Instance</Name>
 			<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 			<Contexts>
 				<Context>

@@ -62,7 +62,7 @@ tc-otel runs on a different port or diagnostics should be disabled.
 .. code::
 
 	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
-		// For Remote Log4TC Server change the AMS net ID and configure a route
+		// For Remote TC-OTel Server change the AMS net ID and configure a route
 	  PRG_TaskLog.Init('127.0.0.1.1.1');
 	END_IF
 

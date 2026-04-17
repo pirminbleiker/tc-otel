@@ -1,6 +1,6 @@
-# log4TC Architecture: Layered Design
+# TcOtel Architecture: Layered Design
 
-This document describes the layered architecture of log4TC, emphasizing the separation of concerns between the ADS protocol (command dispatch, frame codec, response building) and the transport mechanisms (TCP, MQTT).
+This document describes the layered architecture of TcOtel, emphasizing the separation of concerns between the ADS protocol (command dispatch, frame codec, response building) and the transport mechanisms (TCP, MQTT).
 
 ## Overview
 
@@ -100,7 +100,7 @@ pub trait AmsTransport: Send + Sync + 'static {
 | AMS header struct + parse | `ams.rs` | Serialization, parsing, ADS command constants |
 | Full frame codec + 6-byte TCP prefix | `frame.rs` | AmsFrame type with encode/decode methods |
 | Command dispatch + response builders | `router.rs` | AdsRouter::dispatch() and handlers |
-| Log4TC binary parser (v1/v2/registration/metric) | `parser.rs` | AdsParser for ADS_CMD_WRITE payloads |
+| TcOtel binary parser (v1/v2/registration/metric) | `parser.rs` | AdsParser for ADS_CMD_WRITE payloads |
 | TCP listener + per-connection loop | `transport/tcp.rs` | TcpAmsTransport, socket handling |
 | MQTT eventloop + pub/sub | `transport/mqtt.rs` | MqttAmsTransport, rumqttc integration |
 | Task metadata registry | `registry.rs` | TaskRegistry lookup for v2 log entries |

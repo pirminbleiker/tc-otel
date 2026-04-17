@@ -78,7 +78,7 @@ Each descriptor is followed by its string and attribute payloads.
 +0x0C  <name bytes>             (name_len bytes of UTF-8)
        <unit bytes>             (unit_len bytes of UTF-8)
        <description bytes>      (description_len bytes of UTF-8)
-       <attributes>             (attr_count × ST_Log4TcAttr)
+       <attributes>             (attr_count × ST_TcOtelAttr)
        <histogram_bounds>       (histogram_bucket_count × f32, if kind==2)
 ```
 

@@ -44,7 +44,7 @@ FOR nArg := 0 TO 1 DO
 
 	F_Log(E_LogLevel.eDebug, 'Try F_Log with args {0} and {tod} and some Context. try to reuse {0} and {tod}')
 		.WithLogger('PRG_TestSimpleApi')
-// 		.WithContext(Log4TC.F_Context().AddString('TestValue', 'This is a test string').AddInt('TestInt', 14))
+// 		.WithContext(TcOtel.F_Context().AddString('TestValue', 'This is a test string').AddInt('TestInt', 14))
 		.WithAnyArg(eEnum)
 		.WithAnyArg(tTOD)
 		.CreateLog();

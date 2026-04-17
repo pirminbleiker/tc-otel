@@ -54,7 +54,7 @@ to tc-otel in batches. Compared to 5 Hz polling this buys:
 
 ## Using Push Diagnostics on the PLC
 
-Push diagnostics ride along with the Log4TC library — there is no separate
+Push diagnostics ride along with the TcOtel library — there is no separate
 FB to instantiate. Every task that already calls `PRG_TaskLog.Call()` gets a
 per-task sampler for free.
 

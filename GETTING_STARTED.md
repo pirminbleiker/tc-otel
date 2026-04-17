@@ -37,7 +37,7 @@ In TwinCAT XAE **SYSTEM > Routes**, add:
 
 In TwinCAT XAE:
 1. **PLC > Library Repository > Install...**
-2. Select `library/Log4TC.library`
+2. Select `library/TcOtel.library`
 3. Right-click project **References > Add Library...**
 4. Search and add the library
 

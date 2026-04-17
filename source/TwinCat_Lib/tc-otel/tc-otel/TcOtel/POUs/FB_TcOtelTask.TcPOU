@@ -1,8 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_TcOtelTask" Id="{7a1ab82d-e3cd-4e48-96e0-5ca76f3c5915}" SpecialFunc="None">
     <Declaration><![CDATA[(*
-Main code of Log4TC which manages log messages of a single task.
+Main code of TC-OTel which manages log messages of a single task.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
@@ -28,6 +28,47 @@ END_VAR]]></Declaration>
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
+    <Method Name="_InitAndCheckTask" Id="{cf1c3c00-c377-4ffb-a1eb-30fbb2bc0114}">
+      <Declaration><![CDATA[METHOD PRIVATE _InitAndCheckTask : BOOL
+VAR
+	nActTaskIndex		: DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_InitAndCheckTask := TRUE;
+
+nActTaskIndex := Tc2_System.GETCURTASKINDEXEX();
+IF nTaskIndex = 0 AND nActTaskIndex > 0 THEN
+	nTaskIndex := nActTaskIndex;
+ELSIF nTaskIndex <> nActTaskIndex OR nActTaskIndex = 0 THEN
+	F_InternalLog(
+		E_LogLevel.eFatal,
+		'TcOtelTask._InitAndCheckTask',
+		'TcOtel called in wrong task (expected=%d actual=%d)',
+		F_DINT(nTaskIndex),
+		F_DINT(nActTaskIndex),
+		Tc2_Utilities.EMPTY_ARG_VALUE,
+		Tc2_Utilities.EMPTY_ARG_VALUE
+	);
+	_InitAndCheckTask := FALSE;
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="_ReadBuffer" Id="{89350028-23fb-44f2-92f4-54c18e36deb9}">
+      <Declaration><![CDATA[PROPERTY PRIVATE _ReadBuffer : POINTER TO FB_LogBuffer]]></Declaration>
+      <Get Name="Get" Id="{7c4c9ce0-9138-424d-a830-32f3cd97a4d1}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IF nWriteBuffer = 1 THEN
+	_ReadBuffer := ADR(fbLogBuffer2);
+ELSE
+	_ReadBuffer := ADR(fbLogBuffer1);
+END_IF]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Method Name="_WriteByte" Id="{d3e4f5a6-b7c8-d9e0-f1a2-b3c4d5e6f7a8}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteByte
 VAR_INPUT
@@ -44,6 +85,25 @@ END_VAR
 	Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nValue), SIZEOF(nValue));
 	pWriteBuffer^.DataAdded(SIZEOF(nValue));
 END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteRegistration" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteRegistration
+VAR
+	pWriteBuffer	: POINTER TO FB_LogBuffer;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[pWriteBuffer := WriteBuffer;
+
+// Write Registration message (0x03)
+_WriteByte(pWriteBuffer, 3);										// Type = 0x03 (Registration)
+_WriteByte(pWriteBuffer, TO_BYTE(nTaskIndex));					// Task index
+_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].TaskName));	// Task name
+_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.AppName));				// App name
+_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.ProjectName));			// Project name
+_WriteUDInt(pWriteBuffer, TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt);				// Online change count
 ]]></ST>
       </Implementation>
     </Method>
@@ -90,66 +150,6 @@ END_IF
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_WriteRegistration" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d}">
-      <Declaration><![CDATA[METHOD PRIVATE _WriteRegistration
-VAR
-	pWriteBuffer	: POINTER TO FB_LogBuffer;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[pWriteBuffer := WriteBuffer;
-
-// Write Registration message (0x03)
-_WriteByte(pWriteBuffer, 3);										// Type = 0x03 (Registration)
-_WriteByte(pWriteBuffer, TO_BYTE(nTaskIndex));					// Task index
-_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].TaskName));	// Task name
-_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.AppName));				// App name
-_WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.ProjectName));			// Project name
-_WriteUDInt(pWriteBuffer, TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt);				// Online change count
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_InitAndCheckTask" Id="{cf1c3c00-c377-4ffb-a1eb-30fbb2bc0114}">
-      <Declaration><![CDATA[METHOD PRIVATE _InitAndCheckTask : BOOL
-VAR
-	nActTaskIndex		: DINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[_InitAndCheckTask := TRUE;
-
-nActTaskIndex := Tc2_System.GETCURTASKINDEXEX();
-IF nTaskIndex = 0 AND nActTaskIndex > 0 THEN
-	nTaskIndex := nActTaskIndex;
-ELSIF nTaskIndex <> nActTaskIndex OR nActTaskIndex = 0 THEN
-	F_InternalLog(
-		E_LogLevel.eFatal,
-		'Log4TcTask._InitAndCheckTask',
-		'Log4Tc called in wrong task (expected=%d actual=%d)',
-		F_DINT(nTaskIndex),
-		F_DINT(nActTaskIndex),
-		Tc2_Utilities.EMPTY_ARG_VALUE,
-		Tc2_Utilities.EMPTY_ARG_VALUE
-	);
-	_InitAndCheckTask := FALSE;
-END_IF]]></ST>
-      </Implementation>
-    </Method>
-    <Property Name="_ReadBuffer" Id="{89350028-23fb-44f2-92f4-54c18e36deb9}">
-      <Declaration><![CDATA[PROPERTY PRIVATE _ReadBuffer : POINTER TO FB_LogBuffer]]></Declaration>
-      <Get Name="Get" Id="{7c4c9ce0-9138-424d-a830-32f3cd97a4d1}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[IF nWriteBuffer = 1 THEN
-	_ReadBuffer := ADR(fbLogBuffer2);
-ELSE
-	_ReadBuffer := ADR(fbLogBuffer1);
-END_IF]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
     <Method Name="Call" Id="{ef6225c0-33b1-4834-a78e-390eae37cdd9}">
       <Declaration><![CDATA[(*
 Should be called regularly in the same task as its instance was
@@ -182,8 +182,8 @@ CASE nState OF
 		// service receives a marker when the PLC resumes logging.
 		IF TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending THEN
 			TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending := FALSE;
-			F_Log(E_LogLevel.eInfo, 'log4tc connected, logging resumed')
-				.WithLogger('Log4Tc')
+			F_Log(E_LogLevel.eInfo, 'tc-otel connected, logging resumed')
+				.WithLogger('TcOtel')
 				.CreateLog();
 		END_IF
 
@@ -232,7 +232,7 @@ CASE nState OF
 			IF fbAdsWriteMsg.ERR THEN
 				F_InternalLog(
 					E_LogLevel.eFatal,
-					'Log4TcTask.Call',
+					'TcOtelTask.Call',
 					'Error sending log message to handler. task=%d adsErrId=%d',
 					F_DINT(nTaskIndex),
 					F_UDINT(fbAdsWriteMsg.ERRID),

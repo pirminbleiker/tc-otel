@@ -25,7 +25,7 @@ impl LogDispatcher {
         config_rx: Option<watch::Receiver<AppSettings>>,
     ) -> Result<Self> {
         // ENV override for endpoint, otherwise use config
-        let endpoint = std::env::var("LOG4TC_EXPORT_ENDPOINT")
+        let endpoint = std::env::var("TCOTEL_EXPORT_ENDPOINT")
             .unwrap_or_else(|_| settings.export.endpoint.clone());
 
         let batch_size = settings.export.batch_size;
@@ -163,7 +163,7 @@ impl LogDispatcher {
                         continue;
                     }
                     let new_export = config_rx.as_ref().unwrap().borrow().export.clone();
-                    let new_endpoint = std::env::var("LOG4TC_EXPORT_ENDPOINT")
+                    let new_endpoint = std::env::var("TCOTEL_EXPORT_ENDPOINT")
                         .unwrap_or(new_export.endpoint);
                     let new_batch_size = new_export.batch_size;
                     let new_flush_interval = Duration::from_millis(new_export.flush_interval_ms);

@@ -63,7 +63,7 @@ DataDog) works by repointing the `[traces.export]` endpoint in AppSettings.
 
 ## Using Traces on the PLC
 
-All trace code follows the Log4TC pattern: declare an `FB_Span` instance and
+All trace code follows the TcOtel pattern: declare an `FB_Span` instance and
 call its methods. The function block owns the span lifetime and guarantees
 begin/end pairing even on abnormal exit.
 
@@ -152,7 +152,7 @@ does not get the `FB_exit` safety net that `FB_Span` provides.
 
 **Reference implementation:**
 
-`log4tc_Tester.PRG_TestTraceApi` ships traces out of the box: a 1 Hz tick span
+`TcOtel_Tester.PRG_TestTraceApi` ships traces out of the box: a 1 Hz tick span
 and a 5 s nested demo. Run it to confirm your setup and as a template for your
 own traces.
 
@@ -308,4 +308,4 @@ under one trace.
 See [`traces-propagation.md`](traces-propagation.md) for patterns,
 cross-PLC clock-sync guidance, and the live test
 (`PRG_TestTracePropagation`) that exercises all three handoff
-mechanisms on the `log4Tc_Tester` project.
+mechanisms on the `TcOtel_Tester` project.
