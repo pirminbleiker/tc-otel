@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="F_TraceParentFromWorkpieceId" Id="{8c9d0e1f-2a3b-4c5d-6e7f-8a9b0c1d2e3f}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Build a W3C traceparent header derived from a workpiece
+identifier, suitable for transport-less production-line tracing
+(Pattern D in docs/traces-propagation.md).
+
+Returns the canonical 55-char string ``00-<trace>-<span>-01`` where:
+
+* ``<trace>`` is the 32-hex ``F_HashWorkpieceId(sWorkpieceId)`` digest
+  — every PLC that sees the same workpiece ID produces the same
+  trace_id, so their spans aggregate under one trace in Tempo.
+* ``<span>`` is either the caller-supplied ``sSenderSpanId`` (16 hex
+  chars — the span_id of the upstream / producing station), or 16
+  zeros when the caller has no upstream span to cite. All-zeros is
+  the OTel-defined "no parent" marker; tc-otel treats the consumer
+  span as root within its trace.
+
+Pass ``sSenderSpanId`` when a previous station DID open a span and
+you want the new consumer span to link as its child (full tree in
+Tempo). Leave it empty for pure hash-based aggregation where
+stations are siblings under the common workpiece trace_id.
+
+Example (no upstream span):
+
+    sTp := F_TraceParentFromWorkpieceId(sWorkpieceId := 'WP-1234');
+    spn.Begin(sName := 'station_weigh', sTraceParent := sTp);
+
+Example (upstream station shipped its span_id alongside the piece):
+
+    sTp := F_TraceParentFromWorkpieceId(
+        sWorkpieceId  := 'WP-1234',
+        sSenderSpanId := sUpstreamSpanIdHex);
+    spn.Begin(sName := 'station_inspect', sTraceParent := sTp);
+*)
+FUNCTION F_TraceParentFromWorkpieceId : STRING(60)
+VAR_INPUT
+    sWorkpieceId  : STRING(80);
+    sSenderSpanId : STRING(16) := '';  (* 16 hex chars, or empty for "no parent" *)
+END_VAR
+VAR
+    sTraceHex : STRING(32);
+    sSpanHex  : STRING(16);
+    nLen      : UDINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+sTraceHex := F_HashWorkpieceId(sWorkpieceId);
+
+(* Validate sender span_id: must be exactly 16 hex chars, otherwise
+   fall back to the all-zero "no parent" marker. This keeps malformed
+   callers from producing invalid W3C headers that tc-otel would
+   reject. *)
+nLen := Tc2_Utilities.LEN2(ADR(sSenderSpanId));
+IF nLen = 16 THEN
+    sSpanHex := sSenderSpanId;
+ELSE
+    sSpanHex := '0000000000000000';
+END_IF;
+
+F_TraceParentFromWorkpieceId := CONCAT(
+    CONCAT(
+        CONCAT('00-', sTraceHex),
+        CONCAT('-', sSpanHex)),
+    '-01');
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

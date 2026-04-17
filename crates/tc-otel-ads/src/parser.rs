@@ -590,7 +590,11 @@ impl AdsParser {
 
         match event_type {
             5 => {
-                // SPAN_BEGIN: parent_local_id, kind, name_len, reserved, name, [traceparent]
+                // SPAN_BEGIN payload layout:
+                //   parent_local_id(1) + kind(1) + name_len(1) + reserved(1)
+                //   [if flag_local_ids (0x08): trace_id(16) + span_id(8)]
+                //   name(name_len)
+                //   [if flag_has_external_parent (0x02): tp_len(1) + traceparent(tp_len)]
                 let parent_local_id = reader.read_u8()?;
                 let kind = reader.read_u8()?;
                 let name_len = reader.read_u8()? as usize;
@@ -601,6 +605,21 @@ impl AdsParser {
                         "SPAN_BEGIN: name length exceeds 127".to_string(),
                     ));
                 }
+
+                // Pregenerated IDs section (flag_local_ids). The PLC emits
+                // this so CurrentTraceParent() on the producer side can
+                // format a matching W3C header for outbound propagation.
+                let (pregenerated_trace_id, pregenerated_span_id) = if (flags & 0x08) != 0 {
+                    let tid_bytes = reader.read_bytes(16)?;
+                    let mut tid = [0u8; 16];
+                    tid.copy_from_slice(tid_bytes);
+                    let sid_bytes = reader.read_bytes(8)?;
+                    let mut sid = [0u8; 8];
+                    sid.copy_from_slice(sid_bytes);
+                    (Some(tid), Some(sid))
+                } else {
+                    (None, None)
+                };
 
                 let name_bytes = reader.read_bytes(name_len)?;
                 let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
@@ -632,6 +651,8 @@ impl AdsParser {
                     kind,
                     name,
                     traceparent,
+                    pregenerated_trace_id,
+                    pregenerated_span_id,
                 })
             }
             6 => {
@@ -2498,5 +2519,100 @@ mod tests {
 
         assert_eq!(entry.version, AdsProtocolVersion::V2);
         assert_eq!(entry.arguments.len(), 7);
+    }
+
+    // ─── Phase 5: BEGIN with flag_local_ids (bit 3) ─────────────
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_parse_begin_with_local_ids_reads_24_trailing_bytes() {
+        use crate::protocol::TraceWireEvent;
+
+        let expected_trace: [u8; 16] = [
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99,
+        ];
+        let expected_span: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xF0, 0x0D];
+
+        let mut data = Vec::new();
+        data.push(5u8); // SPAN_BEGIN outer
+        data.push(42); // local_id
+        data.push(7); // task_index
+        data.push(0x08); // flag_local_ids
+        data.extend_from_slice(&9_999i64.to_le_bytes()); // dc_time
+        data.push(0xFF); // parent_local_id (root)
+        data.push(3); // kind (Producer)
+        data.push(4); // name_len = 4 ("ship")
+        data.push(0); // reserved
+        data.extend_from_slice(&expected_trace);
+        data.extend_from_slice(&expected_span);
+        data.extend_from_slice(b"ship");
+
+        let result = AdsParser::parse_all(&data).unwrap();
+        assert_eq!(result.trace_events.len(), 1);
+
+        if let TraceWireEvent::Begin {
+            local_id,
+            task_index,
+            flags,
+            kind,
+            name,
+            pregenerated_trace_id,
+            pregenerated_span_id,
+            ..
+        } = &result.trace_events[0]
+        {
+            assert_eq!(*local_id, 42);
+            assert_eq!(*task_index, 7);
+            assert_eq!(*flags, 0x08);
+            assert_eq!(*kind, 3);
+            assert_eq!(name, "ship");
+            assert_eq!(*pregenerated_trace_id, Some(expected_trace));
+            assert_eq!(*pregenerated_span_id, Some(expected_span));
+        } else {
+            panic!("Expected Begin variant");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_parse_begin_with_local_ids_and_external_parent_coexist() {
+        use crate::protocol::TraceWireEvent;
+
+        let trace_bytes: [u8; 16] = [0x11; 16];
+        let span_bytes: [u8; 8] = [0x22; 8];
+        let tp = "00-aabbccddeeff00112233445566778899-1122334455667788-01";
+
+        let mut data = Vec::new();
+        data.push(5u8);
+        data.push(1);
+        data.push(1);
+        data.push(0x02 | 0x08); // external parent + local ids
+        data.extend_from_slice(&1_000i64.to_le_bytes());
+        data.push(0xFF);
+        data.push(1); // kind
+        data.push(2); // name_len
+        data.push(0); // reserved
+        data.extend_from_slice(&trace_bytes);
+        data.extend_from_slice(&span_bytes);
+        data.extend_from_slice(b"op");
+        data.push(tp.len() as u8);
+        data.extend_from_slice(tp.as_bytes());
+
+        let result = AdsParser::parse_all(&data).unwrap();
+        assert_eq!(result.trace_events.len(), 1);
+        if let TraceWireEvent::Begin {
+            traceparent,
+            pregenerated_trace_id,
+            pregenerated_span_id,
+            ..
+        } = &result.trace_events[0]
+        {
+            assert_eq!(traceparent.as_deref(), Some(tp));
+            assert_eq!(*pregenerated_trace_id, Some(trace_bytes));
+            assert_eq!(*pregenerated_span_id, Some(span_bytes));
+        } else {
+            panic!("Expected Begin");
+        }
     }
 }

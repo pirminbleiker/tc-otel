@@ -19,6 +19,7 @@ toml.workspace = true
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 bytes.workspace = true
+hex = "0.4"
 
 # Testing utilities
 mockall.workspace = true

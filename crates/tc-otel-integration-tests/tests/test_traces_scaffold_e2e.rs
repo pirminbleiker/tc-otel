@@ -255,6 +255,8 @@ async fn test_span_dispatcher_processes_begin_event() {
         kind: 0,
         name: "operation".to_string(),
         traceparent: None,
+        pregenerated_trace_id: None,
+        pregenerated_span_id: None,
     };
 
     dispatcher.on_event(net_id, begin_event);
@@ -300,6 +302,8 @@ async fn test_span_dispatcher_full_lifecycle() {
             kind: 0,
             name: "span".to_string(),
             traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: None,
         },
     );
 

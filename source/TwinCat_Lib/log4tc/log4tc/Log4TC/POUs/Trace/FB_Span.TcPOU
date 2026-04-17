@@ -130,10 +130,18 @@ AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
       </Implementation>
     </Method>
     <Method Name="Begin" Id="{2e739ce8-316c-49f6-966f-716f08f6881f}">
-      <Declaration><![CDATA[METHOD PUBLIC Begin : BOOL
+      <Declaration><![CDATA[(*
+:Description: Start a new span on this FB_Span instance.
+
+Pass `sTraceParent` to chain this span onto an incoming W3C traceparent
+header — used for cross-task, cross-PLC, or cross-process propagation.
+Leave empty for locally-rooted spans (the common case).
+*)
+METHOD PUBLIC Begin : BOOL
 VAR_INPUT
-    sName : STRING(60);
-    eKind : E_SpanKind := E_SpanKind.eInternal;
+    sName        : STRING(60);
+    eKind        : E_SpanKind := E_SpanKind.eInternal;
+    sTraceParent : STRING(60) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -145,8 +153,10 @@ IF _bOpen THEN
     End();
 END_IF;
 
-(* Begin a new span on the task tracer *)
-_hSpan := PRG_TaskLog.Span.Begin(sName, eKind, '');
+(* Begin a new span on the task tracer, forwarding the optional
+   traceparent. Empty string = locally rooted (Rust dispatcher picks
+   parent from stack or mints a fresh trace_id). *)
+_hSpan := PRG_TaskLog.Span.Begin(sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;

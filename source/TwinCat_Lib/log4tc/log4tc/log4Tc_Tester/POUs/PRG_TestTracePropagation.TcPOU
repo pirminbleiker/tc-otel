@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="PRG_TestTracePropagation" Id="{6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Phase-5 live cross-task propagation scenarios.
+
+Runs three scenarios on a round-robin cadence so tc-otel sees all
+three patterns documented in docs/traces-propagation.md:
+
+  Scenario 1 (Pattern A — explicit traceparent handoff):
+    Producer opens a Client span 'order_submit', reads its
+    CurrentTraceParent() before End, parks the string in the GVL.
+    Consumer later opens 'handle_order' via the FB_Span.Begin
+    overload with sTraceParent := the parked string. Tempo should
+    render a two-span tree (Client → Server).
+
+  Scenario 2 (Pattern D — workpiece-centric hash):
+    Synthesises a workpiece_id like "WP-1234", hashes to 32-hex via
+    F_HashWorkpieceId, builds a W3C header with all-zero span_id
+    (no upstream span to cite). Opens three module spans across
+    three cycles, each passing the same header. Tempo should show
+    one trace with three sibling spans sharing a trace_id.
+
+  Scenario 3 (chained producer-consumer-consumer):
+    Each stage opens its own span citing the previous stage's
+    CurrentTraceParent(). Linear Tempo chain.
+
+All scenarios use FB_Span methods only — no low-level tracer access.
+*)
+PROGRAM PRG_TestTracePropagation
+VAR
+    (* Scenario 1: explicit handoff *)
+    spnProducer    : FB_Span;
+    spnConsumer    : FB_Span;
+    tScenario1Acc  : TIME;
+    nScenario1Step : USINT;  (* 0 idle, 1 producer open, 2 producer ended, 3 consumer open *)
+
+    (* Scenario 2: hash-based, no handoff *)
+    spnStageA      : FB_Span;
+    spnStageB      : FB_Span;
+    spnStageC      : FB_Span;
+    tScenario2Acc  : TIME;
+    nScenario2Step : USINT;  (* 0..3 *)
+    nWorkpieceSeq  : DINT;
+    sTraceParentHash : STRING(60);
+
+    (* Scenario 3: chained *)
+    spnChainA      : FB_Span;
+    spnChainB      : FB_Span;
+    spnChainC      : FB_Span;
+    tScenario3Acc  : TIME;
+    nScenario3Step : USINT;
+    sChainTp1      : STRING(60);
+    sChainTp2      : STRING(60);
+
+    nSeq           : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ─── Scenario 1: explicit traceparent handoff (every 3 s) ───
+tScenario1Acc := tScenario1Acc + T#1MS;
+
+CASE nScenario1Step OF
+0:  // idle — wait for 3 s cycle start
+    IF tScenario1Acc >= T#3S THEN
+        tScenario1Acc := T#0S;
+        spnProducer.Begin('order_submit', eKind := E_SpanKind.eClient);
+        spnProducer.AddInt('seq', nSeq);
+        nScenario1Step := 1;
+    END_IF
+1:  // producer open for ~100 ms, then capture traceparent + end
+    IF tScenario1Acc >= T#100MS THEN
+        GVL_TracePropagation.sCurrentTraceParent := PRG_TaskLog.Span.CurrentTraceParent();
+        spnProducer.AddEvent('traceparent_captured');
+        spnProducer.End();
+        nScenario1Step := 2;
+    END_IF
+2:  // 50 ms gap between producer End and consumer Begin — exercises
+    // the "producer already flushed, consumer still opens as child"
+    // code path in tc-otel.
+    IF tScenario1Acc >= T#150MS THEN
+        spnConsumer.Begin(
+            sName        := 'handle_order',
+            eKind        := E_SpanKind.eServer,
+            sTraceParent := GVL_TracePropagation.sCurrentTraceParent);
+        spnConsumer.AddInt('seq', nSeq);
+        nScenario1Step := 3;
+    END_IF
+3:  // consumer open for ~80 ms, then end + reset
+    IF tScenario1Acc >= T#230MS THEN
+        spnConsumer.End();
+        nSeq := nSeq + 1;
+        nScenario1Step := 0;
+    END_IF
+END_CASE
+
+// ─── Scenario 2: workpiece-centric hash (every 5 s) ───
+tScenario2Acc := tScenario2Acc + T#1MS;
+
+CASE nScenario2Step OF
+0:
+    IF tScenario2Acc >= T#5S THEN
+        tScenario2Acc := T#0S;
+        GVL_TracePropagation.sWorkpieceId := CONCAT('WP-', DINT_TO_STRING(nWorkpieceSeq));
+        nWorkpieceSeq := nWorkpieceSeq + 1;
+        // Pattern D helper: workpiece-ID-derived trace_id, no upstream
+        // span to cite. Pass sSenderSpanId when the previous station
+        // did open a span and shipped its span_id alongside the piece.
+        sTraceParentHash := F_TraceParentFromWorkpieceId(
+            sWorkpieceId := GVL_TracePropagation.sWorkpieceId);
+        spnStageA.Begin(sName := 'station_weigh', eKind := E_SpanKind.eInternal, sTraceParent := sTraceParentHash);
+        spnStageA.AddString('workpiece_id', GVL_TracePropagation.sWorkpieceId);
+        nScenario2Step := 1;
+    END_IF
+1:
+    IF tScenario2Acc >= T#50MS THEN
+        spnStageA.End();
+        spnStageB.Begin(sName := 'station_inspect', eKind := E_SpanKind.eInternal, sTraceParent := sTraceParentHash);
+        spnStageB.AddString('workpiece_id', GVL_TracePropagation.sWorkpieceId);
+        nScenario2Step := 2;
+    END_IF
+2:
+    IF tScenario2Acc >= T#100MS THEN
+        spnStageB.End();
+        spnStageC.Begin(sName := 'station_label', eKind := E_SpanKind.eInternal, sTraceParent := sTraceParentHash);
+        spnStageC.AddString('workpiece_id', GVL_TracePropagation.sWorkpieceId);
+        nScenario2Step := 3;
+    END_IF
+3:
+    IF tScenario2Acc >= T#150MS THEN
+        spnStageC.End();
+        nScenario2Step := 0;
+    END_IF
+END_CASE
+
+// ─── Scenario 3: chained producer → consumer → consumer (every 7 s) ───
+tScenario3Acc := tScenario3Acc + T#1MS;
+
+CASE nScenario3Step OF
+0:
+    IF tScenario3Acc >= T#7S THEN
+        tScenario3Acc := T#0S;
+        spnChainA.Begin('chain_A');
+        nScenario3Step := 1;
+    END_IF
+1:
+    IF tScenario3Acc >= T#60MS THEN
+        sChainTp1 := PRG_TaskLog.Span.CurrentTraceParent();
+        spnChainA.End();
+        spnChainB.Begin(sName := 'chain_B', sTraceParent := sChainTp1);
+        nScenario3Step := 2;
+    END_IF
+2:
+    IF tScenario3Acc >= T#120MS THEN
+        sChainTp2 := PRG_TaskLog.Span.CurrentTraceParent();
+        spnChainB.End();
+        spnChainC.Begin(sName := 'chain_C', sTraceParent := sChainTp2);
+        nScenario3Step := 3;
+    END_IF
+3:
+    IF tScenario3Acc >= T#180MS THEN
+        spnChainC.End();
+        nScenario3Step := 0;
+    END_IF
+END_CASE
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

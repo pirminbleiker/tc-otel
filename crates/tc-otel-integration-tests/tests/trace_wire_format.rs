@@ -254,6 +254,8 @@ fn test_dispatcher_lifecycle() {
             kind: 0,
             name: "test_op".to_string(),
             traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: None,
         },
     );
 
@@ -335,6 +337,8 @@ fn test_nested_spans_parent_child() {
             kind: 0,
             name: "parent".to_string(),
             traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: None,
         },
     );
 
@@ -349,6 +353,8 @@ fn test_nested_spans_parent_child() {
             kind: 0,
             name: "child".to_string(),
             traceparent: None,
+            pregenerated_trace_id: None,
+            pregenerated_span_id: None,
         },
     );
 
@@ -394,4 +400,210 @@ fn test_unknown_outer_byte_doesnt_panic() {
     let parsed = result.unwrap();
     assert_eq!(parsed.trace_events.len(), 0);
     assert_eq!(parsed.entries.len(), 0);
+}
+
+// ─── Phase 5: local-ID minting round-trip ─────────────────────
+
+fn build_begin_with_local_ids(
+    local_id: u8,
+    task_index: u8,
+    parent_local_id: u8,
+    name: &[u8],
+    trace_id: [u8; 16],
+    span_id: [u8; 8],
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.push(5); // SPAN_BEGIN
+    data.push(local_id);
+    data.push(task_index);
+    data.push(0x08); // flag_local_ids only
+    data.extend_from_slice(&1_000i64.to_le_bytes()); // dc_time
+    data.push(parent_local_id);
+    data.push(0); // kind
+    data.push(name.len() as u8);
+    data.push(0); // reserved
+    data.extend_from_slice(&trace_id); // 16 bytes
+    data.extend_from_slice(&span_id); // 8 bytes
+    data.extend_from_slice(name);
+    data
+}
+
+#[test]
+fn test_begin_with_local_ids_round_trip() {
+    let expected_trace = [
+        0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        0x00,
+    ];
+    let expected_span = [0xDEu8, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xF0, 0x0D];
+
+    let data = build_begin_with_local_ids(7, 3, 0xFF, b"hello", expected_trace, expected_span);
+    let result = AdsParser::parse_all(&data).unwrap();
+    assert_eq!(result.trace_events.len(), 1);
+
+    if let TraceWireEvent::Begin {
+        pregenerated_trace_id,
+        pregenerated_span_id,
+        name,
+        flags,
+        ..
+    } = &result.trace_events[0]
+    {
+        assert_eq!(flags & 0x08, 0x08, "flag_local_ids should round-trip");
+        assert_eq!(name, "hello");
+        assert_eq!(
+            *pregenerated_trace_id,
+            Some(expected_trace),
+            "trace_id must survive the wire exactly"
+        );
+        assert_eq!(
+            *pregenerated_span_id,
+            Some(expected_span),
+            "span_id must survive the wire exactly"
+        );
+    } else {
+        panic!("expected Begin variant");
+    }
+}
+
+#[test]
+fn test_begin_without_local_ids_leaves_options_none() {
+    // Same frame as the existing round_trip test — no flag_local_ids,
+    // no 24-byte trailer.
+    let mut data = Vec::new();
+    data.push(5);
+    data.push(5);
+    data.push(2);
+    data.push(0);
+    data.extend_from_slice(&1000i64.to_le_bytes());
+    data.push(0xFF);
+    data.push(0);
+    data.push(9);
+    data.push(0);
+    data.extend_from_slice(b"test_span");
+
+    let result = AdsParser::parse_all(&data).unwrap();
+    if let TraceWireEvent::Begin {
+        pregenerated_trace_id,
+        pregenerated_span_id,
+        ..
+    } = &result.trace_events[0]
+    {
+        assert!(pregenerated_trace_id.is_none());
+        assert!(pregenerated_span_id.is_none());
+    } else {
+        panic!("expected Begin");
+    }
+}
+
+#[tokio::test]
+async fn test_span_dispatcher_honours_pregenerated_ids() {
+    // Wire a dispatcher and feed a BEGIN frame whose PLC-minted IDs
+    // must appear verbatim on the finalised TraceRecord.
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 64);
+
+    let expected_trace = [
+        0xA0u8, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
+        0xAF,
+    ];
+    let expected_span = [0xB0u8, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7];
+
+    let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 1,
+            task_index: 2,
+            flags: 0x08,
+            dc_time: 1_776_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "producer_op".to_string(),
+            traceparent: None,
+            pregenerated_trace_id: Some(expected_trace),
+            pregenerated_span_id: Some(expected_span),
+        },
+    );
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::End {
+            local_id: 1,
+            task_index: 2,
+            flags: 0,
+            dc_time: 1_776_000_000_001_000_000,
+            status: 1,
+            message: String::new(),
+        },
+    );
+
+    let record = rx.recv().await.expect("expected TraceRecord");
+    assert_eq!(
+        record.trace_id,
+        hex::encode(expected_trace),
+        "dispatcher must use the PLC-minted trace_id verbatim"
+    );
+    assert_eq!(
+        record.span_id,
+        hex::encode(expected_span),
+        "dispatcher must use the PLC-minted span_id verbatim"
+    );
+}
+
+#[tokio::test]
+async fn test_external_traceparent_overrides_pregenerated_trace_id() {
+    // Upstream propagation must win: the trace_id from the W3C
+    // traceparent string takes priority over any PLC-minted one.
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 64);
+
+    let pregen_trace = [0x11u8; 16];
+    let pregen_span = [0x22u8; 8];
+    let upstream_trace_hex = "aabbccddeeff00112233445566778899";
+    let upstream_parent_hex = "1122334455667788";
+    let traceparent = format!("00-{upstream_trace_hex}-{upstream_parent_hex}-01");
+
+    let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::Begin {
+            local_id: 1,
+            task_index: 2,
+            flags: 0x02 | 0x08, // external parent + local IDs
+            dc_time: 1_776_000_000_000_000_000,
+            parent_local_id: 0xFF,
+            kind: 0,
+            name: "consumer_op".to_string(),
+            traceparent: Some(traceparent),
+            pregenerated_trace_id: Some(pregen_trace),
+            pregenerated_span_id: Some(pregen_span),
+        },
+    );
+    dispatcher.on_event(
+        net_id,
+        TraceWireEvent::End {
+            local_id: 1,
+            task_index: 2,
+            flags: 0,
+            dc_time: 1_776_000_000_001_000_000,
+            status: 1,
+            message: String::new(),
+        },
+    );
+
+    let record = rx.recv().await.expect("expected TraceRecord");
+    assert_eq!(
+        record.trace_id, upstream_trace_hex,
+        "upstream traceparent must dictate trace_id"
+    );
+    assert_eq!(
+        record.parent_span_id, upstream_parent_hex,
+        "upstream traceparent must dictate parent_span_id"
+    );
+    // span_id: THIS span is new → PLC-minted span_id still applies so
+    // the producer's `CurrentTraceParent()` cites the correct bytes.
+    assert_eq!(
+        record.span_id,
+        hex::encode(pregen_span),
+        "PLC-minted span_id should still identify this span"
+    );
 }
