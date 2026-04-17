@@ -66,6 +66,9 @@
     <Compile Include="POUs\PRG_TestTracePropagation.TcPOU">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="POUs\PRG_TestTracerInstance.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Folder Include="DUTs" />

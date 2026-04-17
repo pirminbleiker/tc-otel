@@ -264,6 +264,9 @@
     <Compile Include="API\FB_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="API\FB_Log4TcTracer.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="API\FB_Span.TcPOU">
       <SubType>Code</SubType>
     </Compile>

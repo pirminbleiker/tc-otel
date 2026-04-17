@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="PRG_TestTracerInstance" Id="{a9b0c1d2-e3f4-4a5b-8c6d-7e8f9a0b1c2d}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Phase 6 Stage 1 live verification — two parallel
+FB_Log4TcTracer instances on the same task, each running their own
+nested span chain.
+
+Before Stage 1, this scenario would have been impossible: both
+controllers' spans would push onto the task-global aStack and
+either contaminate each other's CurrentTraceParent or use each
+other as parent in nested Begin calls. With BindTracer, each
+controller's span tree is isolated.
+
+Expectation in Tempo:
+* Two separate traces (distinct trace_ids) every cycle.
+* Controller A: ``ctl_a_outer`` with nested ``ctl_a_inner``.
+* Controller B: ``ctl_b_outer`` with nested ``ctl_b_inner``.
+* ``ctl_a_inner`` parent = ``ctl_a_outer`` (never ctl_b_outer).
+* ``ctl_b_inner`` parent = ``ctl_b_outer`` (never ctl_a_outer).
+*)
+PROGRAM PRG_TestTracerInstance
+VAR
+    tAccum        : TIME;
+    nStep         : USINT;
+    bInitialised  : BOOL;
+
+    (* Controller A: tracer + its two spans *)
+    tracerA       : FB_Log4TcTracer;
+    spnAOuter     : FB_Span;
+    spnAInner     : FB_Span;
+
+    (* Controller B: tracer + its two spans *)
+    tracerB       : FB_Log4TcTracer;
+    spnBOuter     : FB_Span;
+    spnBInner     : FB_Span;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+// Bind each span to its controller's tracer once.
+IF NOT bInitialised THEN
+    spnAOuter.BindTracer(ADR(tracerA));
+    spnAInner.BindTracer(ADR(tracerA));
+    spnBOuter.BindTracer(ADR(tracerB));
+    spnBInner.BindTracer(ADR(tracerB));
+    bInitialised := TRUE;
+END_IF
+
+tAccum := tAccum + T#1MS;
+
+// Every 4 s run the interleaved dance. Both controllers open outer,
+// open inner, close inner, close outer — but in shuffled order so
+// any stack-based parent resolution would pair them wrong.
+CASE nStep OF
+0:
+    IF tAccum >= T#4S THEN
+        tAccum := T#0S;
+        spnAOuter.Begin('ctl_a_outer');
+        nStep := 1;
+    END_IF
+1:
+    IF tAccum >= T#20MS THEN
+        // B opens BEFORE A has opened its inner. If FB_Span used
+        // the task-global stack, spnAInner (below) would inherit
+        // from spnBOuter. With per-tracer nesting it won't.
+        spnBOuter.Begin('ctl_b_outer');
+        nStep := 2;
+    END_IF
+2:
+    IF tAccum >= T#40MS THEN
+        // A's inner must see spnAOuter as parent, not spnBOuter.
+        spnAInner.Begin('ctl_a_inner');
+        nStep := 3;
+    END_IF
+3:
+    IF tAccum >= T#60MS THEN
+        // B's inner must see spnBOuter as parent.
+        spnBInner.Begin('ctl_b_inner');
+        nStep := 4;
+    END_IF
+4:
+    IF tAccum >= T#80MS THEN
+        spnAInner.End();    // close inner-A first
+        nStep := 5;
+    END_IF
+5:
+    IF tAccum >= T#100MS THEN
+        spnBInner.End();    // close inner-B
+        nStep := 6;
+    END_IF
+6:
+    IF tAccum >= T#120MS THEN
+        spnBOuter.End();    // close outer-B out of order
+        nStep := 7;
+    END_IF
+7:
+    IF tAccum >= T#140MS THEN
+        spnAOuter.End();    // close outer-A last
+        nStep := 0;
+    END_IF
+END_CASE
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
