@@ -244,6 +244,7 @@ async fn test_span_dispatcher_processes_begin_event() {
     let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
 
     let net_id = AmsNetId::from_str("192.168.1.1.1.1").unwrap();
+    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
 
     // Simulate a SPAN_BEGIN wire event
     let begin_event = TraceWireEvent::Begin {
@@ -256,14 +257,13 @@ async fn test_span_dispatcher_processes_begin_event() {
         name: "operation".to_string(),
         traceparent: None,
         pregenerated_trace_id: None,
-        pregenerated_span_id: None,
+        pregenerated_span_id: Some(span_id),
     };
 
     dispatcher.on_event(net_id, begin_event);
     assert_eq!(dispatcher.pending_count(), 1);
 
     // Simulate SPAN_END
-    let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
     let end_event = TraceWireEvent::End {
         span_id,
         task_index: 0,

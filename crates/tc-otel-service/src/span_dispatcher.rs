@@ -717,6 +717,7 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             1,
@@ -727,9 +728,8 @@ mod tests {
             "test".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
-        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_attr(net_id, span_id, 0, "key1".to_string(), AttrValue::I64(42));
 
         let span_key = SpanKey {
@@ -749,6 +749,7 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             1,
@@ -759,11 +760,10 @@ mod tests {
             "test".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
-        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
@@ -873,6 +873,7 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // BEGIN with parent_local_id=5 but no span with local_id=5 in pending
+        let span_id = [10u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
             10,
@@ -883,7 +884,7 @@ mod tests {
             "orphan_span".to_string(),
             None,
             None,
-            None,
+            Some(span_id),
         );
 
         // Should create a pending span with orphan_reason set
@@ -913,7 +914,6 @@ mod tests {
         assert_eq!(dispatcher.orphan_counter(), 1);
 
         // END the span and verify it's finalized with the attribute intact
-        let span_id = [10u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_end(net_id, span_id, 0, 1000, 1, "success".to_string());
         assert_eq!(dispatcher.pending_count(), 0);
 
@@ -1109,9 +1109,10 @@ mod tests {
         };
         let generated_id = dispatcher.pending.get(&span_key).unwrap().span_id;
 
-        // Should NOT be indexed by generated ID (only pregenerated are indexed)
+        // Phase 6 Stage 3: All span_ids (generated or pregenerated) are indexed
         let pending = dispatcher.pending_by_span_id(&generated_id);
-        assert!(pending.is_none());
+        assert!(pending.is_some());
+        assert_eq!(pending.unwrap().span_id, generated_id);
     }
 
     #[test]
