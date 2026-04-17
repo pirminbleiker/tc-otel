@@ -1,0 +1,87 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="F_TraceParentFromString" Id="{8c9d0e1f-2a3b-4c5d-6e7f-8a9b0c1d2e3f}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Build a W3C traceparent header by hashing two domain
+identifiers into the trace_id and parent_span_id positions.
+
+Returns the canonical 55-char string ``00-<trace>-<span>-01`` where:
+
+* ``<trace>`` is ``F_HashTraceId(sTraceId)`` — a 32-hex digest of any
+  domain identifier naming the trace (workpiece ID, order ID, session
+  ID, …). Every PLC that hashes the same ``sTraceId`` produces the
+  same trace_id, so their spans aggregate under one trace in Tempo
+  without any explicit traceparent handoff.
+* ``<span>`` is ``F_HashSpanId(sParentId)`` when ``sParentId`` is
+  non-empty, or 16 zeros when empty. The all-zero form is the
+  OTel-defined "no parent" marker; tc-otel treats the consumer span
+  as root within its trace.
+
+**Symmetry rule for parent-child linkage.** This helper links a
+consumer's span to a producer's span ONLY when both sides hash the
+same ``sParentId`` via the same helper. Concretely: the producer
+must also build its own traceparent via
+``F_TraceParentFromString(sTraceId, sParentId := <its-own-id>)`` and
+feed it to ``FB_Span.Begin(sTraceParent := ...)`` so the Rust side
+uses the hashed span_id as the producer's span_id (instead of the
+xorshift-minted one). Otherwise the consumer's parent_span_id refers
+to a span the producer never emitted and Tempo renders an orphaned
+child. For aggregation-only use cases (siblings under a common
+trace_id) this doesn't matter — just leave ``sParentId`` empty.
+
+Example (aggregation-only; sibling spans under one trace_id):
+
+    sTp := F_TraceParentFromString(sTraceId := 'WP-1234');
+    spn.Begin(sName := 'station_weigh', sTraceParent := sTp);
+
+Example (parent-child; both sides use the helper):
+
+    // Producer station:
+    sTpProducer := F_TraceParentFromString(
+        sTraceId  := 'WP-1234',
+        sParentId := 'upstream-feeder');        // its own domain id
+    spnProducer.Begin(sName := 'station_weigh', sTraceParent := sTpProducer);
+    // ...
+    spnProducer.End();
+
+    // Consumer station, same workpiece, cites the producer as parent:
+    sTpConsumer := F_TraceParentFromString(
+        sTraceId  := 'WP-1234',
+        sParentId := 'station_weigh');          // references producer's id
+    spnConsumer.Begin(sName := 'station_inspect', sTraceParent := sTpConsumer);
+*)
+FUNCTION F_TraceParentFromString : STRING(60)
+VAR_INPUT
+    sTraceId  : STRING(80);                 (* identifier hashed via F_HashTraceId → 32-hex trace_id *)
+    sParentId : STRING(80) := '';           (* identifier hashed via F_HashSpanId → 16-hex span_id;
+                                               empty = no parent (all-zero span_id) *)
+END_VAR
+VAR
+    sTraceHex : STRING(32);
+    sSpanHex  : STRING(16);
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+sTraceHex := F_HashTraceId(sTraceId);
+
+(* Validate sender span_id: must be exactly 16 hex chars, otherwise
+   fall back to the all-zero "no parent" marker. This keeps malformed
+   callers from producing invalid W3C headers that tc-otel would
+   reject. *)
+   
+IF sParentId <> '' THEN
+    sSpanHex := F_HashSpanId(sParentId);
+ELSE
+    sSpanHex := '0000000000000000';  (* W3C: all-zero span_id = "invalid", signals no parent *)
+END_IF
+
+F_TraceParentFromString := CONCAT(
+    CONCAT(
+        CONCAT('00-', sTraceHex),
+        CONCAT('-', sSpanHex)),
+    '-01');
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

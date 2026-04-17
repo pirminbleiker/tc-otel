@@ -1,15 +1,21 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <POU Name="F_HashWorkpieceId" Id="{7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e}" SpecialFunc="None">
+  <POU Name="F_HashTraceId" Id="{7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e}" SpecialFunc="None">
     <Declaration><![CDATA[(*
-:Description: Deterministic 128-bit hash of a workpiece identifier,
-rendered as 32 lowercase hex characters for use as a W3C trace_id.
+:Description: Deterministic 128-bit hash of an arbitrary domain
+identifier, rendered as 32 lowercase hex characters for use as a W3C
+trace_id.
 
-Every PLC that calls this function with the same ``sWorkpieceId``
-produces the same hex string, enabling trace aggregation across
-modules that share only the workpiece ID and no explicit traceparent
-handoff (Pattern D in docs/traces-propagation.md — transport-less
-cross-PLC tracing via barcode / RFID / conveyor routing).
+Every PLC that hashes the same ``sTraceId`` input (workpiece ID,
+order ID, session ID, …) produces the same hex string, enabling
+trace aggregation across modules that share only the domain
+identifier and no explicit traceparent handoff (Pattern D in
+docs/traces-propagation.md — transport-less cross-PLC tracing via
+barcode / RFID / conveyor routing).
+
+Internal — callers should use ``F_TraceParentFromString`` to build a
+complete traceparent header. Direct use of this hash is only
+appropriate when the caller already has the W3C framing.
 
 Implementation: two parallel xorshift64 streams seeded from different
 constants, folded over the input bytes. Collision probability for
@@ -17,9 +23,9 @@ distinct 80-char inputs is ~1/2^128 — adequate for OTel trace_id use
 (spec requires "randomly generated", not cryptographic). Deterministic
 across PLC reboots and runtime reloads.
 *)
-FUNCTION F_HashWorkpieceId : STRING(32)
+FUNCTION INTERNAL F_HashTraceId : STRING(32)
 VAR_INPUT
-    sWorkpieceId : STRING(80);
+    sTraceId : STRING(80);   (* any domain identifier — workpiece, order, session, ... *)
 END_VAR
 VAR
     i         : INT;
@@ -40,7 +46,7 @@ END_VAR
 hi := 16#9E3779B97F4A7C15;
 lo := 16#C6BC279692B5C323;
 
-nLen := TO_INT(Tc2_Utilities.LEN2(ADR(sWorkpieceId)));
+nLen := TO_INT(Tc2_Utilities.LEN2(ADR(sTraceId)));
 IF nLen > 80 THEN
     nLen := 80;
 END_IF;
@@ -48,7 +54,7 @@ END_IF;
 (* Fold each byte into both streams, then advance xorshift64 once per
    byte so position matters (order-sensitive hash). *)
 FOR i := 0 TO nLen - 1 DO
-    b := sWorkpieceId[i];
+    b := sTraceId[i];
     hi := hi XOR TO_ULINT(b);
     hi := hi XOR SHL(hi, 13);
     hi := hi XOR SHR(hi, 7);
@@ -77,7 +83,7 @@ FOR i := 0 TO 15 DO
 END_FOR
 achResult[32] := 0;
 
-F_HashWorkpieceId := achResult;
+F_HashTraceId := achResult;
 ]]></ST>
     </Implementation>
   </POU>

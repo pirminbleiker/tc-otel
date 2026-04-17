@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="PRG_TestTracePropagation" Id="{6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d}" SpecialFunc="None">
     <Declaration><![CDATA[(*
@@ -15,11 +15,11 @@ three patterns documented in docs/traces-propagation.md:
     render a two-span tree (Client → Server).
 
   Scenario 2 (Pattern D — workpiece-centric hash):
-    Synthesises a workpiece_id like "WP-1234", hashes to 32-hex via
-    F_HashWorkpieceId, builds a W3C header with all-zero span_id
-    (no upstream span to cite). Opens three module spans across
-    three cycles, each passing the same header. Tempo should show
-    one trace with three sibling spans sharing a trace_id.
+    Synthesises a workpiece_id like "WP-1234", builds a W3C header
+    via F_TraceParentFromString (all-zero span_id — no upstream
+    station cited). Opens three module spans across three cycles,
+    each passing the same header. Tempo should show one trace with
+    three sibling spans sharing a trace_id.
 
   Scenario 3 (chained producer-consumer-consumer):
     Each stage opens its own span citing the previous stage's
@@ -103,11 +103,13 @@ CASE nScenario2Step OF
         tScenario2Acc := T#0S;
         GVL_TracePropagation.sWorkpieceId := CONCAT('WP-', DINT_TO_STRING(nWorkpieceSeq));
         nWorkpieceSeq := nWorkpieceSeq + 1;
-        // Pattern D helper: workpiece-ID-derived trace_id, no upstream
-        // span to cite. Pass sSenderSpanId when the previous station
-        // did open a span and shipped its span_id alongside the piece.
-        sTraceParentHash := F_TraceParentFromWorkpieceId(
-            sWorkpieceId := GVL_TracePropagation.sWorkpieceId);
+        // Pattern D helper: hash the workpiece ID into a trace_id, no
+        // upstream span to cite (sParentId omitted → all-zero span_id).
+        // For a parent-child chain, both producer and consumer must
+        // build their traceparent via F_TraceParentFromString with the
+        // same sParentId — see docs/traces-propagation.md.
+        sTraceParentHash := log4tc.F_TraceParentFromString(
+            sTraceId := GVL_TracePropagation.sWorkpieceId);
         spnStageA.Begin(sName := 'station_weigh', eKind := E_SpanKind.eInternal, sTraceParent := sTraceParentHash);
         spnStageA.AddString('workpiece_id', GVL_TracePropagation.sWorkpieceId);
         nScenario2Step := 1;

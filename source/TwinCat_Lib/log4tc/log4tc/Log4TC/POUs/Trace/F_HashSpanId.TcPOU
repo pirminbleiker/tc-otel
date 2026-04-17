@@ -1,0 +1,64 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="F_HashSpanId" Id="{1ed13b68-18af-0a7c-2fcc-3bb139826d5b}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Deterministic 64-bit hash of a sender/span identifier,
+rendered as 16 lowercase hex characters for use as a W3C parent_id
+(span-id) in a traceparent header. Every PLC that calls this function
+with the same ``sSpanId`` produces the same hex string, so the sender's
+emitted span_id and the receiver's parent_id match up without an
+explicit traceparent handoff (Pattern D — transport-less cross-PLC
+tracing via barcode / RFID / conveyor routing).
+Implementation: single xorshift64 stream, seeded from a constant that
+differs from ``F_HashTraceId`` so that trace_id and span_id derived
+from the same input don't share byte patterns. Collision probability
+for distinct inputs is ~1/2^64 — adequate for OTel span_id use (spec
+requires "randomly generated", not cryptographic). Deterministic
+across PLC reboots and runtime reloads.
+*)
+FUNCTION INTERNAL F_HashSpanId : STRING(16)
+VAR_INPUT
+    sSpanId : STRING(80);
+END_VAR
+VAR
+    i         : INT;
+    nLen      : INT;
+    h         : ULINT;
+    b         : BYTE;
+    nNibble   : BYTE;
+    achHex    : ARRAY[0..15] OF BYTE := [16#30, 16#31, 16#32, 16#33, 16#34, 16#35, 16#36, 16#37, 16#38, 16#39, 16#61, 16#62, 16#63, 16#64, 16#65, 16#66];
+    achOut    : ARRAY[0..7] OF BYTE;
+    achResult : STRING(16);
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[(* Seed deliberately different from F_HashTraceId's hi/lo constants so
+   span_id and trace_id hashed from the same input can't collide on
+   bytes. *)
+h := 16#D1B54A32D192ED03;
+nLen := TO_INT(Tc2_Utilities.LEN2(ADR(sSpanId)));
+IF nLen > 80 THEN
+    nLen := 80;
+END_IF;
+(* Fold each byte into the stream, then advance xorshift64 once per
+   byte so position matters (order-sensitive hash). *)
+FOR i := 0 TO nLen - 1 DO
+    b := sSpanId[i];
+    h := h XOR TO_ULINT(b);
+    h := h XOR SHL(h, 13);
+    h := h XOR SHR(h, 7);
+    h := h XOR SHL(h, 17);
+END_FOR
+Tc2_System.MEMCPY(ADR(achOut[0]), ADR(h), 8);
+(* Emit 16 hex chars into a STRING(16). Two chars per byte, 8 bytes total. *)
+FOR i := 0 TO 7 DO
+    b := achOut[i];
+    nNibble := SHR(b, 4) AND 16#0F;
+    achResult[i * 2]     := achHex[nNibble];
+    nNibble := b AND 16#0F;
+    achResult[i * 2 + 1] := achHex[nNibble];
+END_FOR
+achResult[16] := 0;
+F_HashSpanId := achResult;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
