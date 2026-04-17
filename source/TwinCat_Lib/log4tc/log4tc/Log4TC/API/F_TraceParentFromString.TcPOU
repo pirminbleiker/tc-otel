@@ -2,8 +2,8 @@
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="F_TraceParentFromString" Id="{8c9d0e1f-2a3b-4c5d-6e7f-8a9b0c1d2e3f}" SpecialFunc="None">
     <Declaration><![CDATA[(*
-:Description: Build a W3C traceparent header by hashing two domain
-identifiers into the trace_id and parent_span_id positions.
+:Description: Build a W3C traceparent header by hashing domain identifiers
+into the trace_id and (optional) parent_span_id positions.
 
 Returns the canonical 55-char string ``00-<trace>-<span>-01`` where:
 
@@ -17,38 +17,28 @@ Returns the canonical 55-char string ``00-<trace>-<span>-01`` where:
   OTel-defined "no parent" marker; tc-otel treats the consumer span
   as root within its trace.
 
-**Symmetry rule for parent-child linkage.** This helper links a
-consumer's span to a producer's span ONLY when both sides hash the
-same ``sParentId`` via the same helper. Concretely: the producer
-must also build its own traceparent via
-``F_TraceParentFromString(sTraceId, sParentId := <its-own-id>)`` and
-feed it to ``FB_Span.Begin(sTraceParent := ...)`` so the Rust side
-uses the hashed span_id as the producer's span_id (instead of the
-xorshift-minted one). Otherwise the consumer's parent_span_id refers
-to a span the producer never emitted and Tempo renders an orphaned
-child. For aggregation-only use cases (siblings under a common
-trace_id) this doesn't matter — just leave ``sParentId`` empty.
+Typical use: **brownfield aggregation** where MES / DB / barcode gives
+you a business identifier (order_id, workpiece_id, batch_id) but not
+a pre-minted traceparent. Every station hashing the same sTraceId
+aggregates its spans into one Tempo trace.
 
 Example (aggregation-only; sibling spans under one trace_id):
 
     sTp := F_TraceParentFromString(sTraceId := 'WP-1234');
     spn.Begin(sName := 'station_weigh', sTraceParent := sTp);
 
-Example (parent-child; both sides use the helper):
+Example (explicit chain — consumer cites an upstream producer):
 
-    // Producer station:
-    sTpProducer := F_TraceParentFromString(
+    sTp := F_TraceParentFromString(
         sTraceId  := 'WP-1234',
-        sParentId := 'upstream-feeder');        // its own domain id
-    spnProducer.Begin(sName := 'station_weigh', sTraceParent := sTpProducer);
-    // ...
-    spnProducer.End();
+        sParentId := 'station_weigh');          // name of upstream span
+    spn.Begin(sName := 'station_inspect', sTraceParent := sTp);
 
-    // Consumer station, same workpiece, cites the producer as parent:
-    sTpConsumer := F_TraceParentFromString(
-        sTraceId  := 'WP-1234',
-        sParentId := 'station_weigh');          // references producer's id
-    spnConsumer.Begin(sName := 'station_inspect', sTraceParent := sTpConsumer);
+For true distributed tracing with a transport carrying traceparent
+between producers and consumers, prefer forwarding
+``PRG_TaskLog.Span.CurrentTraceParent()`` — it returns the exact bytes
+tc-otel stored, so multi-hop chains stay consistent without relying
+on hash agreement.
 *)
 FUNCTION F_TraceParentFromString : STRING(60)
 VAR_INPUT
