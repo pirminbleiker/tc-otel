@@ -199,16 +199,27 @@ IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-(* Initialize parent_span_id to all-zero (root) *)
+(* Reset parent_span_id and child's trace_id to a clean state. The task
+   tracer inspects child trace_id after this: non-zero = "caller already
+   populated, adopt as-is", all-zero = "mint a fresh root trace_id". *)
 FOR i := 0 TO 7 DO
     abParentSpanId[i] := 16#00;
 END_FOR;
+FOR i := 0 TO 15 DO
+    pSpan^._abTraceId[i] := 16#00;
+END_FOR;
 
-(* If no external traceparent and tracer has an open span, inherit its span_id as parent *)
+(* Inherit from innermost open span on THIS tracer (unless the caller
+   supplied an explicit W3C traceparent — that takes priority inside the
+   task tracer). Copies both the parent's span_id (for parent linkage)
+   and the parent's trace_id (so child lands in the same trace). *)
 IF sTraceParent = '' AND _pInnermost <> 0 THEN
     Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
                       ADR(_pInnermost^._abSpanId[0]),
                       8);
+    Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]),
+                      ADR(_pInnermost^._abTraceId[0]),
+                      16);
 END_IF;
 
 (* Call task tracer with resolved parent_span_id *)

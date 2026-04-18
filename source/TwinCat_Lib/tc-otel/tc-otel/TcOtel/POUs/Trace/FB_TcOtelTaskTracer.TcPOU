@@ -799,6 +799,8 @@ VAR
     eKindByte        : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
+    bHasTraceId      : BOOL;
+    i                : INT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -811,8 +813,9 @@ END_IF;
 _SeedRng();
 
 (* Resolution order mirrors Rust span_dispatcher.rs on_begin:
-   1. External W3C traceparent  — adopt its trace_id
-   2. True root                 — mint fresh trace_id
+   1. External W3C traceparent     — adopt its trace_id
+   2. Caller-populated _abTraceId  — bound-tracer inherit from parent
+   3. True root                    — mint fresh trace_id
    span_id is always freshly minted. *)
 
 bExternalValid := FALSE;
@@ -822,9 +825,20 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
                                          abExternalSpanId);
 END_IF;
 
-(* If external traceparent not valid, mint fresh trace_id *)
+(* If external traceparent not valid, inspect whether caller already
+   populated _abTraceId (instance-tracer inheriting from innermost open
+   span). Mint fresh only when trace_id is still all zeros. *)
 IF NOT bExternalValid THEN
-    _MintTraceId(pSpan);
+    bHasTraceId := FALSE;
+    FOR i := 0 TO 15 DO
+        IF pSpan^._abTraceId[i] <> 0 THEN
+            bHasTraceId := TRUE;
+            EXIT;
+        END_IF;
+    END_FOR;
+    IF NOT bHasTraceId THEN
+        _MintTraceId(pSpan);
+    END_IF;
 END_IF;
 
 (* Always mint a fresh span_id for this span *)
