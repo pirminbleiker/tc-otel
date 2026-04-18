@@ -40,10 +40,10 @@ END_VAR
       <ST><![CDATA[
 // Bind each span to its controller's tracer once.
 IF NOT bInitialised THEN
-    spnAOuter.BindTracer(ADR(tracerA));
-    spnAInner.BindTracer(ADR(tracerA));
-    spnBOuter.BindTracer(ADR(tracerB));
-    spnBInner.BindTracer(ADR(tracerB));
+    spnAOuter.BindTracer(tracerA);
+    spnAInner.BindTracer(tracerA);
+    spnBOuter.BindTracer(tracerB);
+    spnBInner.BindTracer(tracerB);
     bInitialised := TRUE;
 END_IF
 
