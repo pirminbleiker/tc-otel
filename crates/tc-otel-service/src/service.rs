@@ -108,6 +108,23 @@ impl TcOtelService {
             None
         };
 
+        // Optional active-client bridge (poll + notification sources for
+        // custom_metrics). Behind the `client-bridge` Cargo feature so the
+        // default build keeps the stub behavior until T9 passes.
+        #[cfg(feature = "client-bridge")]
+        let client_bridge: Option<crate::client_bridge::ClientBridge> =
+            match (metric_tx.clone(), config_rx.clone()) {
+                (Some(tx), Some(cfg_rx)) => {
+                    use std::sync::Arc;
+                    let cache = Arc::new(tc_otel_client::cache::SymbolTreeCache::new());
+                    let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+                    let _bridge_task = bridge.spawn(cfg_rx);
+                    tracing::info!("client-bridge spawned");
+                    Some(bridge)
+                }
+                _ => None,
+            };
+
         // Create trace dispatcher (if traces export is enabled)
         let traces_export_enabled = self.settings.traces.enabled;
         #[allow(unused_variables)]
@@ -601,6 +618,8 @@ impl TcOtelService {
                 config_path: Arc::new(config_path),
                 current_settings: self.current_settings.clone(),
                 restart_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                #[cfg(feature = "client-bridge")]
+                client_bridge: client_bridge.clone(),
             };
             let web_config = self.settings.web.clone();
             let shutdown_rx_web = shutdown_tx.subscribe();

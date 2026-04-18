@@ -42,6 +42,7 @@ fn test_notification_metric_valid_config() {
         source: CustomMetricSource::Notification,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: Some(NotificationConfig {
             min_period_ms: 0,
@@ -71,6 +72,7 @@ fn test_notification_metric_missing_net_id() {
         source: CustomMetricSource::Notification,
         ams_net_id: None,
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: Some(NotificationConfig::default()),
     };
@@ -91,6 +93,7 @@ fn test_notification_metric_missing_port() {
         source: CustomMetricSource::Notification,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: None,
+        ams_router_host: None,
         poll: None,
         notification: Some(NotificationConfig::default()),
     };
@@ -111,6 +114,7 @@ fn test_notification_metric_missing_notification_config() {
         source: CustomMetricSource::Notification,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: None,
     };
@@ -131,6 +135,7 @@ fn test_notification_cyclic_mode() {
         source: CustomMetricSource::Notification,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: Some(NotificationConfig {
             min_period_ms: 100,
@@ -161,6 +166,7 @@ fn test_multiple_notification_metrics_different_targets() {
             source: CustomMetricSource::Notification,
             ams_net_id: Some("192.168.1.100.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: None,
             notification: Some(NotificationConfig::default()),
         },
@@ -174,6 +180,7 @@ fn test_multiple_notification_metrics_different_targets() {
             source: CustomMetricSource::Notification,
             ams_net_id: Some("192.168.1.200.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: None,
             notification: Some(NotificationConfig::default()),
         },
@@ -200,6 +207,7 @@ fn test_mixed_notification_transmission_modes() {
             source: CustomMetricSource::Notification,
             ams_net_id: Some("192.168.1.100.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: None,
             notification: Some(NotificationConfig {
                 transmission_mode: NotificationTransmissionMode::OnChange,
@@ -216,6 +224,7 @@ fn test_mixed_notification_transmission_modes() {
             source: CustomMetricSource::Notification,
             ams_net_id: Some("192.168.1.100.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: None,
             notification: Some(NotificationConfig {
                 transmission_mode: NotificationTransmissionMode::Cyclic,

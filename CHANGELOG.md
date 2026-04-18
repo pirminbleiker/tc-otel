@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Active ADS client (`tc-otel-client` crate)** — outbound AMS/TCP client for UI-driven custom metrics. Built on the open-source `ads` crate (pure Rust, no Beckhoff router required). Isolated from the observer path (`tc-otel-ads`); the two roles share no code.
+- **Cached symbol browse** — `SymbolTreeCache` stores one symbol tree per PLC target (uploaded once on bridge connect). Web UI has a new **Symbols** tab for filtering + copy-to-clipboard. `GET /api/client/symbols`, `POST /api/client/symbols/refresh`, `GET /api/client/targets`.
+- **Poll + notification sources** — `custom_metrics` entries with `source: "poll"` now issue periodic ADS reads; `source: "notification"` registers `AddDeviceNotification` subscriptions. Exponential-backoff recovery on read errors, try-send backpressure on the metric channel.
+- **`client-bridge` Cargo feature** on `tc-otel-service` (default-on) wires it all together: on config change, dials new targets, uploads symbols, spawns pollers / subscribes notifications. Build with `--no-default-features` to opt out.
+- **Docs**: [`docs/custom-metrics-client.md`](docs/custom-metrics-client.md) for the active-client pipeline.
+
+### Removed
+- **Stub `custom_metric_poller` / `custom_metric_notifier` / `symbol_handle`** in `tc-otel-ads` — superseded by the real implementations in `tc-otel-client`.
+
 ## [0.0.11] - 2026-04-18
 
 ### Added
@@ -31,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 - Bound-tracer child spans now inherit parent's trace_id (regression introduced by instance-first refactor).
 - PLC emits monotonic `local_id` per span so Rust-dispatcher `SpanKey` stays unique across concurrently-open spans (prevents every new BEGIN flushing the previous as "timed-out").
-- `FB_Span.Begin` without `BindTracer` now logs an internal error and returns FALSE instead of silently mis-attributing the span.
+- `FB_Span.Begin` without `BindTracer` now logs an internal error and returns FALSE instead of silently misattributing the span.
 - `span_dispatcher` orphan WARN demoted to DEBUG; orphan span carries `log4tc.orphan_reason` attribute for downstream queryability.
 - XTI project files (`Log4TC.xti`, `log4Tc_SmokeTest.xti`, `log4Tc_Tester.xti`) renamed and their internal project/path references updated so TwinCAT can load the renamed library.
 - AMS router service name (`b"tc-otel"`) for `ADS_CMD_READ_DEVICE_INFO`.

@@ -1,0 +1,28 @@
+[package]
+name = "tc-otel-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Active ADS client (poll + notification) and cached symbol browse for tc-otel"
+
+[features]
+default = []
+mock-plc = []
+
+[dependencies]
+tc-otel-core = { path = "../tc-otel-core" }
+ads = "0.4"
+crossbeam-channel = "0.5"
+tokio.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

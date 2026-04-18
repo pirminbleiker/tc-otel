@@ -11,6 +11,23 @@ The core insight is that **the ADS protocol logic should be independent of trans
 - **Maintainability**: Protocol handlers evolve independently from transport implementations
 - **Comparison with Beckhoff**: The Beckhoff TwinCAT source code uses a similar layering (AmsRouter → AmsConnection → Frame codec), which informed this design
 
+## Server vs. active-client roles
+
+tc-otel plays two distinct AMS/TCP roles on different crates:
+
+- **Server / observer** (`tc-otel-ads`): listens on port 48898 for inbound
+  frames. The PLC's log and push-metric pipelines, plus optional MQTT-forwarded
+  AMS traffic, enter here. All observer-side frame parsing and diagnostics
+  live in this crate.
+- **Active client** (`tc-otel-client`): dials outbound to a PLC's AMS router
+  on port 48898 to issue `Read` and `AddDeviceNotification`. Built on the
+  open-source [`ads`](https://crates.io/crates/ads) crate. Used for the
+  UI-driven `custom_metrics` feature (`source: poll | notification`). See
+  [`custom-metrics-client.md`](custom-metrics-client.md).
+
+The two crates share no code. Neither depends on the other, so changes to
+the observer path cannot break the client path and vice versa.
+
 ## Layer Diagram
 
 ```

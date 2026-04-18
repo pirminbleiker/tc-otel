@@ -6,9 +6,15 @@ authors.workspace = true
 license.workspace = true
 description = "Integration and end-to-end tests for tc-otel TwinCAT observability bridge"
 
+[features]
+# Enable this with --features live-plc to compile the E2E test that talks to a
+# real TwinCAT runtime. Off in CI because the runner has no PLC.
+live-plc = ["tc-otel-client", "tc-otel-service/client-bridge"]
+
 [dependencies]
 tc-otel-core.workspace = true
 tc-otel-ads.workspace = true
+tc-otel-client = { path = "../tc-otel-client", optional = true }
 tc-otel-export.workspace = true
 tc-otel-service = { path = "../tc-otel-service" }
 

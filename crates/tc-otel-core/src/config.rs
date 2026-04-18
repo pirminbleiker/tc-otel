@@ -749,6 +749,12 @@ pub struct CustomMetricDef {
     /// AMS port of the target PLC (required for non-push sources; default: 851)
     #[serde(default)]
     pub ams_port: Option<u16>,
+    /// Hostname or IP of the target PLC's AMS router (default: derived from
+    /// the first four bytes of `ams_net_id`). Override when the PLC's NetID
+    /// does not match its network address — e.g. when running the PLC inside
+    /// Docker. The port portion is implicit (48898).
+    #[serde(default)]
+    pub ams_router_host: Option<String>,
     /// Poll configuration (required if source == "poll")
     #[serde(default)]
     pub poll: Option<PollConfig>,
@@ -769,6 +775,7 @@ impl Default for CustomMetricDef {
             source: CustomMetricSource::Push,
             ams_net_id: None,
             ams_port: None,
+            ams_router_host: None,
             poll: None,
             notification: None,
         }

@@ -261,6 +261,7 @@ mod tests {
             source: CustomMetricSource::Poll,
             ams_net_id: None,
             ams_port: Some(851),
+            ams_router_host: None,
             poll: Some(crate::config::PollConfig::default()),
             ..CustomMetricDef::default()
         }];
@@ -282,6 +283,7 @@ mod tests {
             source: CustomMetricSource::Poll,
             ams_net_id: Some("192.168.1.1.1.1".to_string()),
             ams_port: None,
+            ams_router_host: None,
             poll: Some(crate::config::PollConfig::default()),
             ..CustomMetricDef::default()
         }];
@@ -303,6 +305,7 @@ mod tests {
             source: CustomMetricSource::Poll,
             ams_net_id: Some("192.168.1.1.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: None,
             ..CustomMetricDef::default()
         }];
@@ -324,6 +327,7 @@ mod tests {
             source: CustomMetricSource::Notification,
             ams_net_id: None,
             ams_port: Some(851),
+            ams_router_host: None,
             notification: Some(crate::config::NotificationConfig::default()),
             ..CustomMetricDef::default()
         }];
