@@ -74,8 +74,8 @@ impl SymbolTreeCache {
         self.insert_with_time(target, tree, Utc::now());
     }
 
-    /// Variant of [`insert`] that accepts an explicit timestamp — useful for
-    /// deterministic tests.
+    /// Variant of [`Self::insert`] that accepts an explicit timestamp — useful
+    /// for deterministic tests.
     pub fn insert_with_time(&self, target: TargetKey, tree: SymbolTree, fetched_at: DateTime<Utc>) {
         let mut guard = self.inner.write();
         guard.insert(

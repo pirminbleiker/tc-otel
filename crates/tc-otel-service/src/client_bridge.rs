@@ -297,8 +297,8 @@ async fn resolve_meta(
 struct TargetDescriptor {
     key: TargetKey,
     ams_target: tc_otel_client::AmsAddr,
-    /// Dial-string for `ads::Client::new`. Format: "<ip>:48898". The IP is the
-    /// first four bytes of the AMS Net ID.
+    /// Dial-string for `ads::Client::new`. Format: `"<host>:48898"`. The host
+    /// is the first four bytes of the AMS Net ID (rendered as an IPv4 address).
     router_addr: String,
 }
 

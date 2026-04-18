@@ -83,7 +83,7 @@ fn parses_three_scalar_symbols() {
     let e1 = build_entry(
         "MAIN.fTemp",
         "REAL",
-        "Kessel-Temperatur",
+        "Boiler temperature",
         0x4040,
         0,
         4,
@@ -113,7 +113,7 @@ fn parses_three_scalar_symbols() {
 
     let n = tree.get("MAIN.fTemp").unwrap();
     assert_eq!(n.type_name, "REAL");
-    assert_eq!(n.comment, "Kessel-Temperatur");
+    assert_eq!(n.comment, "Boiler temperature");
     assert_eq!(n.igroup, 0x4040);
     assert_eq!(n.size, 4);
     assert_eq!(n.datatype, 4);

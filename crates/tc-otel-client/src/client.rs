@@ -45,7 +45,8 @@ impl PlcValue {
 
 /// Metadata captured once at poller startup and reused on every read tick.
 ///
-/// Service layer typically populates this from the cached [`SymbolTree`].
+/// Service layer typically populates this from the cached
+/// [`crate::browse::SymbolTree`].
 #[derive(Debug, Clone)]
 pub struct SymbolMeta {
     pub size: u32,
@@ -127,7 +128,8 @@ impl AdsClient {
 
     /// Resolve a symbol name via the PLC's `GET_SYMINFO_BYNAME` index group.
     /// Returns (index_group, index_offset, size). Type name is not returned —
-    /// it must come from the cached [`SymbolTree`] (or be provided out of band).
+    /// it must come from the cached [`crate::browse::SymbolTree`] (or be
+    /// provided out of band).
     pub fn resolve_location(&self, symbol: &str) -> Result<(u32, u32, u32)> {
         self.with_client(|client, target| {
             let device = client.device(target);

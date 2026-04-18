@@ -41,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 - Bound-tracer child spans now inherit parent's trace_id (regression introduced by instance-first refactor).
 - PLC emits monotonic `local_id` per span so Rust-dispatcher `SpanKey` stays unique across concurrently-open spans (prevents every new BEGIN flushing the previous as "timed-out").
-- `FB_Span.Begin` without `BindTracer` now logs an internal error and returns FALSE instead of silently mis-attributing the span.
+- `FB_Span.Begin` without `BindTracer` now logs an internal error and returns FALSE instead of silently misattributing the span.
 - `span_dispatcher` orphan WARN demoted to DEBUG; orphan span carries `log4tc.orphan_reason` attribute for downstream queryability.
 - XTI project files (`Log4TC.xti`, `log4Tc_SmokeTest.xti`, `log4Tc_Tester.xti`) renamed and their internal project/path references updated so TwinCAT can load the renamed library.
 - AMS router service name (`b"tc-otel"`) for `ADS_CMD_READ_DEVICE_INFO`.
