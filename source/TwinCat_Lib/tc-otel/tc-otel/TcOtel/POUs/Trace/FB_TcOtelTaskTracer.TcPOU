@@ -14,14 +14,9 @@ Wire format documented in docs/traces-design.md Section "Wire Format".
 {attribute 'conditionalshow'}
 FUNCTION_BLOCK FB_TcOtelTaskTracer
 VAR
-    (* Slot allocation and parent tracking. hSpan is USINT (0..254) per the
-       wire format; 0xFF is reserved for 'no parent'. *)
-    aSlots           : ARRAY[0..254] OF ST_SpanSlot;
-    nNextLocalId     : USINT := 0;
-
-    (* Implicit parent stack for nested spans. 16 levels is plenty in practice. *)
-    aStack           : ARRAY[0..15] OF USINT;
-    nStackDepth      : USINT := 0;
+    (* Phase 6 Stage 3: innermost-open span chain. Spans register/unregister
+       as they begin/end. NULL when no spans are open. *)
+    _pInnermost      : POINTER TO FB_Span;
 
     (* Wire format constants *)
     nEventTypeBegin  : BYTE := 5;
@@ -109,10 +104,10 @@ _NextRandom := x;
       </Implementation>
     </Method>
     <Method Name="_MintTraceId" Id="{3c0a4e6b-5d7c-4e8f-9a0b-1c2d3e4f5a6b}">
-      <Declaration><![CDATA[(* Fills the 16-byte trace_id of the slot at index hSpan with two xorshift64 draws. *)
+      <Declaration><![CDATA[(* Fills the 16-byte trace_id of the FB_Span with two xorshift64 draws. *)
 METHOD PRIVATE _MintTraceId
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
     hi  : ULINT;
@@ -121,18 +116,22 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
 hi := _NextRandom();
 lo := _NextRandom();
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[0]), ADR(hi), 8);
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[8]), ADR(lo), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]), ADR(hi), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[8]), ADR(lo), 8);
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
-      <Declaration><![CDATA[(* Fills the 8-byte span_id of the slot at index hSpan with one xorshift64 draw. *)
+      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
 METHOD PRIVATE _MintSpanId
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
     v : ULINT;
@@ -140,8 +139,12 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
 v := _NextRandom();
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].span_id[0]), ADR(v), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -326,44 +329,10 @@ END_IF
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="CopyIdsTo" Id="{8c7d9e1a-2b3c-4d5e-8f6a-1b2c3d4e5f60}">
-      <Declaration><![CDATA[(*
-Copy this slot's freshly minted trace_id (16B) and span_id (8B) into
-the caller's buffers. Used by FB_Span.Begin to mirror the IDs into
-its own _abTraceId/_abSpanId so FB_Span.TraceParent can format the
-W3C header without tracer-internals access.
-
-Stage 3 plumbing: FB_Span owns the canonical trace_id/span_id state;
-this method is the one sanctioned path for FB_Span to learn the IDs
-that the task tracer just minted into the slot.
-*)
-METHOD PUBLIC CopyIdsTo
-VAR_INPUT
-    hSpan    : USINT;
-    pTraceId : POINTER TO BYTE;
-    pSpanId  : POINTER TO BYTE;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[IF hSpan >= 255 THEN
-    RETURN;
-END_IF;
-IF NOT aSlots[hSpan].bInUse THEN
-    RETURN;
-END_IF;
-IF pTraceId <> 0 THEN
-    Tc2_System.MEMCPY(pTraceId, ADR(aSlots[hSpan].trace_id[0]), 16);
-END_IF;
-IF pSpanId <> 0 THEN
-    Tc2_System.MEMCPY(pSpanId, ADR(aSlots[hSpan].span_id[0]), 8);
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
     <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     bVal  : BOOL;
 END_VAR
@@ -381,7 +350,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -397,14 +366,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
 nTotalLen := 20 + 4 + nKeyLen + 1;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -436,7 +404,7 @@ END_IF;
     <Method Name="AddEvent" Id="{731c0681-f28c-468d-9a22-08d93456bc4b}">
       <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sName : STRING(30);
 END_VAR
 VAR
@@ -452,7 +420,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -468,14 +436,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name *)
 nTotalLen := 20 + 4 + nNameLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
@@ -503,7 +470,7 @@ END_IF;
     <Method Name="AddInt" Id="{cebf7902-798a-47a4-b3e5-37d8ad80e0e0}">
       <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     nVal  : DINT;
 END_VAR
@@ -521,7 +488,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -541,14 +508,13 @@ nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
    instead of 4 bytes of stack garbage past the DINT. *)
 nValLint := DINT_TO_LINT(nVal);
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -579,7 +545,7 @@ END_IF;
     <Method Name="AddLInt" Id="{40a748f6-c411-43f0-994d-38e870c92549}">
       <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     nVal  : LINT;
 END_VAR
@@ -596,7 +562,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -612,14 +578,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -650,7 +615,7 @@ END_IF;
     <Method Name="AddReal" Id="{6a9dc70f-5325-45d1-8be5-172af842881e}">
       <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     fVal  : LREAL;
 END_VAR
@@ -667,7 +632,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -683,14 +648,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -721,7 +685,7 @@ END_IF;
     <Method Name="AddString" Id="{59a3fb41-a2f5-4bd0-ad49-dd002f212acc}">
       <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     sVal  : STRING(120);
 END_VAR
@@ -740,7 +704,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -762,14 +726,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
 nTotalLen := 20 + 4 + nKeyLen + nValLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -801,26 +764,24 @@ END_IF;
     </Method>
     <Method Name="Begin" Id="{832e89db-497a-4d07-b3b1-c6e95e2f7e46}">
       <Declaration><![CDATA[(*
-:Description: Allocate a slot, mint IDs, emit SPAN_BEGIN frame.
+:Description: Mint IDs and emit SPAN_BEGIN frame for the given FB_Span.
 
-``bIsolated`` (Phase 6 Stage 1 addition): when TRUE, skip the
-task-global ``aStack`` interactions entirely. The new span is
-treated as a root (no parent_local_id lookup, no trace_id
-inheritance from the task stack, no push onto aStack). Used by
-FB_Span instances bound to an FB_TcOtelTracer — their parent
-relationship is driven exclusively by ``sTraceParent`` (which the
-FB_TcOtelTracer fills in from its own nesting chain). Default FALSE
-preserves Phase-5 behaviour for unbound FB_Span callers.
+Phase 6 Stage 3: FB_Span owns its trace_id and span_id. This method
+populates them directly into the pSpan pointer based on parent resolution.
+
+``bIsolated`` (Phase 6 Stage 1): when TRUE, skip task-tracer chain
+management. Used by FB_Span instances bound to an FB_TcOtelTracer
+whose parent is driven by sTraceParent (not the task chain).
 *)
-METHOD PUBLIC Begin : USINT
+METHOD PUBLIC Begin
 VAR_INPUT
+    pSpan        : POINTER TO FB_Span;
     sName        : STRING(60);
     eKind        : E_SpanKind := E_SpanKind.eInternal;
     sTraceParent : STRING(60) := '';
     bIsolated    : BOOL := FALSE;
 END_VAR
 VAR
-    hSpan            : USINT;
     nTaskIndex       : USINT;
     nNameLen         : UDINT;
     nNameLenUsint    : USINT;
@@ -833,77 +794,73 @@ VAR
     eKindByte        : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
-    hParent          : USINT;
+    abParentSpanId   : ARRAY[0..7] OF BYTE := [16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00];
+    i                : INT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-(* Allocate next slot *)
-hSpan := nNextLocalId;
-IF hSpan > 254 THEN
-    RETURN;  (* Guard against 0xFF reserved value *)
-END_IF
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
 
-(* Mark slot as in-use and record parent.
-   Isolated spans never inherit from the task stack — they are
-   roots of their instance tracer's chain, parent (if any) lives in
-   sTraceParent. *)
-aSlots[hSpan].bInUse := TRUE;
-IF bIsolated OR nStackDepth = 0 THEN
-    aSlots[hSpan].parent_local_id := 16#FF;
-ELSE
-    aSlots[hSpan].parent_local_id := aStack[nStackDepth - 1];
-END_IF
-
-(* Populate the slot's trace_id and span_id so CurrentTraceParent() cites
-   exactly the bytes tc-otel stores. Mirrors Rust's resolution order
-   (span_dispatcher.rs on_begin):
-     1. External W3C traceparent  -> adopt its trace_id
-     2. Parent span on local stack -> inherit parent's trace_id (skipped when isolated)
-     3. True root                  -> mint fresh trace_id
-   span_id is always freshly minted for this span. *)
+(* Seed RNG if not yet seeded *)
 _SeedRng();
+
+(* Initialize parent_span_id to all-zero (root) *)
+FOR i := 0 TO 7 DO
+    abParentSpanId[i] := 16#00;
+END_FOR;
+
+(* Resolution order mirrors Rust span_dispatcher.rs on_begin:
+   1. External W3C traceparent  — adopt its trace_id
+   2. Parent on local chain     — inherit parent's trace_id (if not isolated)
+   3. True root                 — mint fresh trace_id
+   span_id is always freshly minted. *)
 
 bExternalValid := FALSE;
 IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     bExternalValid := _ParseTraceParent(sTraceParent,
-                                         aSlots[hSpan].trace_id,
+                                         pSpan^._abTraceId,
                                          abExternalSpanId);
-END_IF;
-
-IF NOT bExternalValid THEN
-    IF NOT bIsolated AND nStackDepth > 0 THEN
-        hParent := aStack[nStackDepth - 1];
-        IF aSlots[hParent].bInUse THEN
-            Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[0]),
-                              ADR(aSlots[hParent].trace_id[0]),
-                              16);
-        ELSE
-            _MintTraceId(hSpan);
-        END_IF;
-    ELSE
-        _MintTraceId(hSpan);
+    (* If external traceparent parsed, its span_id is parent *)
+    IF bExternalValid THEN
+        FOR i := 0 TO 7 DO
+            abParentSpanId[i] := abExternalSpanId[i];
+        END_FOR;
     END_IF;
 END_IF;
 
-_MintSpanId(hSpan);
+(* If external traceparent not valid, try to inherit from task chain *)
+IF NOT bExternalValid THEN
+    IF NOT bIsolated AND _pInnermost <> 0 THEN
+        (* Inherit parent's trace_id and set parent_span_id *)
+        Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]),
+                          ADR(_pInnermost^._abTraceId[0]),
+                          16);
+        Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
+                          ADR(_pInnermost^._abSpanId[0]),
+                          8);
+    ELSIF NOT bExternalValid THEN
+        (* Root span — mint fresh trace_id *)
+        _MintTraceId(pSpan);
+    END_IF;
+END_IF;
 
-(* Push onto stack unless isolated — isolated spans are off-stack. *)
-IF NOT bIsolated AND nStackDepth < 16 THEN
-    aStack[nStackDepth] := hSpan;
-    nStackDepth := nStackDepth + 1;
-END_IF
+(* Always mint a fresh span_id for this span *)
+_MintSpanId(pSpan);
+
+(* Push onto chain unless isolated *)
+IF NOT bIsolated THEN
+    pSpan^._SetOuterSpan(_pInnermost);
+    _pInnermost := pSpan;
+END_IF;
 
 (* Prepare flags *)
 nFlagsBegin := 0;
-IF aSlots[hSpan].parent_local_id = 16#FF THEN
-    nFlagsBegin := nFlagsBegin OR 1;  (* flag_is_root *)
-END_IF;
 IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     nFlagsBegin := nFlagsBegin OR 2;  (* flag_has_external_parent *)
 END_IF;
-(* flag_local_ids: 24 bytes (trace_id + span_id) appended after reserved *)
-nFlagsBegin := nFlagsBegin OR 8;
 
 (* Get current time and task index *)
 nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
@@ -929,14 +886,9 @@ IF (nFlagsBegin AND 2) <> 0 THEN
     nTpLenUsint := TO_USINT(nTpLen);
 END_IF;
 
-(* Total frame size: header(12) + parent(1) + kind(1) + name_len(1) + reserved(1)
-   + [if flag_local_ids: trace_id(16) + span_id(8)]
-   + name
-   + [if flag_has_external_parent: tp_len(1) + tp] *)
-nTotalLen := 12 + 4 + nNameLen;
-IF (nFlagsBegin AND 8) <> 0 THEN
-    nTotalLen := nTotalLen + 24;
-END_IF;
+(* Total frame size: header(12) + parent_span_id(8) + kind(1) + name_len(1) + reserved(2)
+   + trace_id(16) + span_id(8) + name + [if has_external_parent: tp_len(1) + tp] *)
+nTotalLen := 12 + 8 + 4 + nNameLen;
 IF (nFlagsBegin AND 2) <> 0 THEN
     nTotalLen := nTotalLen + 1 + nTpLen;
 END_IF;
@@ -944,39 +896,41 @@ END_IF;
 (* Write frame *)
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header *)
-    _WriteFrameHeader(pBuffer, nEventTypeBegin, hSpan, nTaskIndex, nFlagsBegin, nDcTime);
+    (* Header (12B) *)
+    _WriteFrameHeader(pBuffer, nEventTypeBegin, 0, nTaskIndex, nFlagsBegin, nDcTime);
 
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(aSlots[hSpan].parent_local_id), 1);
-    pBuffer^.DataAdded(1);
+    (* parent_span_id (8B) *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(abParentSpanId[0]), 8);
+    pBuffer^.DataAdded(8);
 
+    (* kind (1B) *)
     eKindByte := TO_BYTE(eKind);
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(eKindByte), 1);
     pBuffer^.DataAdded(1);
 
+    (* name_len (1B) *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
     pBuffer^.DataAdded(1);
 
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nEventTypeBegin), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
+    (* reserved (2B) *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nFlagsBegin), 2);
+    pBuffer^.DataAdded(2);
 
-    (* Local IDs section — 16 bytes trace_id + 8 bytes span_id.
-       Emitted only when flag_local_ids (bit 3) is set; consumer-side
-       parser knows the layout from the flag. Copied directly from the
-       slot storage so CurrentTraceParent() can cite the same bytes. *)
-    IF (nFlagsBegin AND 8) <> 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(aSlots[hSpan].trace_id[0]), 16);
-        pBuffer^.DataAdded(16);
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(aSlots[hSpan].span_id[0]), 8);
-        pBuffer^.DataAdded(8);
-    END_IF;
+    (* trace_id (16B) — always present *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(pSpan^._abTraceId[0]), 16);
+    pBuffer^.DataAdded(16);
 
+    (* span_id (8B) — always present *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(pSpan^._abSpanId[0]), 8);
+    pBuffer^.DataAdded(8);
+
+    (* name *)
     IF nNameLen > 0 THEN
         Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sName), nNameLen);
         pBuffer^.DataAdded(nNameLen);
     END_IF;
 
+    (* optional external traceparent *)
     IF (nFlagsBegin AND 2) <> 0 THEN
         Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nTpLenUsint), 1);
         pBuffer^.DataAdded(1);
@@ -987,15 +941,6 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
         END_IF;
     END_IF;
 END_IF;
-
-(* Increment for next allocation; wrap at 254 because 0xFF is reserved. *)
-IF nNextLocalId >= 254 THEN
-    nNextLocalId := 0;
-ELSE
-    nNextLocalId := nNextLocalId + 1;
-END_IF;
-
-Begin := hSpan;
 ]]></ST>
       </Implementation>
     </Method>
@@ -1007,85 +952,21 @@ Begin := hSpan;
         <ST><![CDATA[]]></ST>
       </Implementation>
     </Method>
-    <Method Name="TraceParentFor" Id="{9c0d1e2f-3a4b-4c5d-6e7f-8a9b0c1d2e3f}">
-      <Declaration><![CDATA[(*
-:Description: Format a W3C traceparent header for the span occupying
-a specific slot. Instance-scoped — callers pass the hSpan they got
-back from Begin(), so the result cites THAT span regardless of what
-other spans are open on the task.
-
-Returns '' when the slot is not in use. Format: `00-<32hex>-<16hex>-01`.
-Must be called while the span is still open; End() recycles the slot.
-
-This is the primitive used by FB_Span.TraceParent property so each
-FB_Span instance can surface its own context without colliding with
-parallel FB_Span instances on the same task.
-*)
-METHOD PUBLIC TraceParentFor : STRING(60)
-VAR_INPUT
-    hSpan : USINT;
-END_VAR
-VAR
-    i         : INT;
-    sHex      : STRING(60);
-    nNibble   : BYTE;
-    achHex    : ARRAY[0..15] OF BYTE := [16#30, 16#31, 16#32, 16#33, 16#34, 16#35, 16#36, 16#37, 16#38, 16#39, 16#61, 16#62, 16#63, 16#64, 16#65, 16#66];
-    achOut    : ARRAY[0..55] OF BYTE;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
-    TraceParentFor := '';
-    RETURN;
-END_IF;
-
-(* Layout: "00-" (3) + trace_id_hex (32) + "-" (1) + span_id_hex (16) + "-01" (3) = 55 chars *)
-achOut[0] := 16#30;  (* '0' *)
-achOut[1] := 16#30;  (* '0' *)
-achOut[2] := 16#2D;  (* '-' *)
-
-FOR i := 0 TO 15 DO
-    nNibble := SHR(aSlots[hSpan].trace_id[i], 4) AND 16#0F;
-    achOut[3 + i * 2]     := achHex[nNibble];
-    nNibble := aSlots[hSpan].trace_id[i] AND 16#0F;
-    achOut[3 + i * 2 + 1] := achHex[nNibble];
-END_FOR
-
-achOut[35] := 16#2D;  (* '-' *)
-
-FOR i := 0 TO 7 DO
-    nNibble := SHR(aSlots[hSpan].span_id[i], 4) AND 16#0F;
-    achOut[36 + i * 2]     := achHex[nNibble];
-    nNibble := aSlots[hSpan].span_id[i] AND 16#0F;
-    achOut[36 + i * 2 + 1] := achHex[nNibble];
-END_FOR
-
-achOut[52] := 16#2D;  (* '-' *)
-achOut[53] := 16#30;  (* '0' *)
-achOut[54] := 16#31;  (* '1' *)
-
-Tc2_System.MEMCPY(ADR(sHex), ADR(achOut[0]), 55);
-sHex[55] := 0;
-TraceParentFor := sHex;
-]]></ST>
-      </Implementation>
-    </Method>
     <Method Name="CurrentTraceParent" Id="{703b7f93-e680-4a9f-a268-bebc44b81a3d}">
       <Declaration><![CDATA[(*
 :Description: Format a W3C traceparent header for the **innermost
-open span of the task's span stack**.
+open span of the task's span chain**.
+
+Phase 6 Stage 3: reads directly from _pInnermost chain.
 
 WARNING — task-global state. If two or more FB_Span instances hold
 open spans on the same task at the same time (common for parallel
-controllers), this returns whichever was pushed most recently, not
-necessarily the one the caller owns. Prefer the per-instance
-`FB_Span.TraceParent` property instead.
+controllers), this returns whichever is innermost, not necessarily
+the one the caller owns. Prefer the per-instance `FB_Span.TraceParent`
+property instead.
 
 `CurrentTraceParent` is still useful for nested-call contexts where
-you know you are inside a single active span chain (e.g. a function
-reading "the span my caller opened"), but not for parallel
-independent FB_Span instances.
+you know you are inside a single active span chain.
 
 Returns '' when no span is open.
 *)
@@ -1095,19 +976,19 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF nStackDepth = 0 THEN
+IF _pInnermost = 0 THEN
     CurrentTraceParent := '';
     RETURN;
 END_IF;
 
-CurrentTraceParent := TraceParentFor(aStack[nStackDepth - 1]);
+CurrentTraceParent := _pInnermost^.TraceParent;
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="End" Id="{82740a99-7e02-4458-aaa7-fef1872d30eb}">
-      <Declaration><![CDATA[METHOD PUBLIC End : BOOL
+      <Declaration><![CDATA[METHOD PUBLIC End
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
     nTaskIdx   : USINT;
@@ -1121,7 +1002,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -1131,14 +1012,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + status(1) + msg_len(1) + reserved(2) + msg
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
-nTotalLen := 20 + 4 + nMsgLen;
+(* Frame: header(20=12+8) + status(1) + msg_len(1) + reserved(2) *)
+nTotalLen := 20 + 4;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEnd, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEnd, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);
@@ -1147,45 +1027,35 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);
     pBuffer^.DataAdded(1);
 
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);  (* reserved *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);  (* reserved *)
     pBuffer^.DataAdded(1);
 
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);  (* reserved *)
+    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);  (* reserved *)
     pBuffer^.DataAdded(1);
-
-    End := TRUE;
 END_IF;
 
-(* Pop from stack if on top *)
-(* AND_THEN required: `AND` in TwinCAT evaluates both sides, so
-   when nStackDepth = 0 the array index `nStackDepth - 1` wraps
-   via USINT underflow to 255, producing `aStack[255]` — out of
-   bounds on ARRAY[0..15]. Short-circuit skips the lookup entirely
-   when the stack is empty. Triggerable by isolated Begins that
-   never push. *)
-IF nStackDepth > 0 AND_THEN aStack[nStackDepth - 1] = hSpan THEN
-    nStackDepth := nStackDepth - 1;
+(* Pop from chain if this span is currently innermost *)
+IF _pInnermost = pSpan THEN
+    _pInnermost := pSpan^._GetOuterSpan();
+    pSpan^._SetOuterSpan(0);
 END_IF;
-
-(* Free the slot *)
-aSlots[hSpan].bInUse := FALSE;
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="SetError" Id="{1323314a-5f82-499e-a923-f4a110bbfa07}">
       <Declaration><![CDATA[METHOD PUBLIC SetError : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sMsg  : STRING(120) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-(* Phase-1: Store error state. FB_Span will pass error status to End(). *)
+(* Just acknowledge — FB_Span handles error state *)
 SetError := TRUE;
 ]]></ST>
       </Implementation>

@@ -351,9 +351,6 @@
     <Compile Include="POUs\Trace\F_HashTraceId.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\Trace\ST_SpanSlot.TcDUT">
-      <SubType>Code</SubType>
-    </Compile>
     <Compile Include="POUs\Trace\FB_TcOtelTaskTracer.TcPOU">
       <SubType>Code</SubType>
     </Compile>

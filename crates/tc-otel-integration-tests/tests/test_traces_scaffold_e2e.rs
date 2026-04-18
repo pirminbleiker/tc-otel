@@ -252,12 +252,12 @@ async fn test_span_dispatcher_processes_begin_event() {
         task_index: 0,
         flags: 0,
         dc_time: 0,
-        parent_local_id: 0xFF,
+        parent_span_id: [0; 8], // root
         kind: 0,
         name: "operation".to_string(),
         traceparent: None,
-        pregenerated_trace_id: None,
-        pregenerated_span_id: Some(span_id),
+        trace_id: [0; 16],
+        span_id,
     };
 
     dispatcher.on_event(net_id, begin_event);
@@ -300,12 +300,12 @@ async fn test_span_dispatcher_full_lifecycle() {
             task_index: 0,
             flags: 0,
             dc_time: 0,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "span".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(span_id),
+            trace_id: [0; 16],
+            span_id,
         },
     );
 
