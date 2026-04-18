@@ -3,6 +3,7 @@
   <POU Name="PRG_TestTraceApi" Id="{9e8f4a2d-8e3f-4c5b-a1d2-b3c4d5e6f7a8}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM PRG_TestTraceApi
 VAR
+    tracer        : FB_TcOtelTracer;
     spnTick       : FB_Span;
     spnRecipe     : FB_Span;
     spnRecipeStep : FB_Span;
@@ -11,10 +12,19 @@ VAR
     nSeq          : DINT;
     nRecipeStep   : DINT;
     bRecipeActive : BOOL;
+    bInitialised  : BOOL;
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[// --- 1 Hz tick span: demonstrates a simple single-cycle span every second ---
+      <ST><![CDATA[// Bind spans to tracer once
+IF NOT bInitialised THEN
+    spnTick.BindTracer(ADR(tracer));
+    spnRecipe.BindTracer(ADR(tracer));
+    spnRecipeStep.BindTracer(ADR(tracer));
+    bInitialised := TRUE;
+END_IF
+
+// --- 1 Hz tick span: demonstrates a simple single-cycle span every second ---
 tTickAccum := tTickAccum + T#1MS;
 IF tTickAccum >= T#1S THEN
     tTickAccum := T#0S;

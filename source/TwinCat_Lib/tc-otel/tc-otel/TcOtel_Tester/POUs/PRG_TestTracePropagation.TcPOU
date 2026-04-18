@@ -32,6 +32,9 @@ All scenarios use FB_Span methods only — no low-level tracer access.
 *)
 PROGRAM PRG_TestTracePropagation
 VAR
+    tracer         : FB_TcOtelTracer;
+    bInitialised   : BOOL;
+
     (* Scenario 1: explicit handoff *)
     spnProducer    : FB_Span;
     spnConsumer    : FB_Span;
@@ -60,7 +63,20 @@ VAR
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[// ─── Scenario 1: explicit traceparent handoff (every 3 s) ───
+      <ST><![CDATA[// Bind all spans to the shared tracer once
+IF NOT bInitialised THEN
+    spnProducer.BindTracer(ADR(tracer));
+    spnConsumer.BindTracer(ADR(tracer));
+    spnStageA.BindTracer(ADR(tracer));
+    spnStageB.BindTracer(ADR(tracer));
+    spnStageC.BindTracer(ADR(tracer));
+    spnChainA.BindTracer(ADR(tracer));
+    spnChainB.BindTracer(ADR(tracer));
+    spnChainC.BindTracer(ADR(tracer));
+    bInitialised := TRUE;
+END_IF
+
+// ─── Scenario 1: explicit traceparent handoff (every 3 s) ───
 tScenario1Acc := tScenario1Acc + T#1MS;
 
 CASE nScenario1Step OF

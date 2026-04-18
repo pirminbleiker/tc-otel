@@ -5,12 +5,14 @@
 :Description: User-facing OOP trace span object.
 
 Pure OOP interface (no VAR_INPUT / VAR_OUTPUT, no body call). Users declare
-one FB_Span per logical operation and drive it through method calls. The FB
-owns the span lifetime, enforces begin/end pairing, and provides FB_exit
-safety net for abnormal teardown (online change, program stop, FB deletion).
+one FB_Span per logical operation and bind it to an FB_TcOtelTracer via
+BindTracer, then drive it through method calls. The FB owns the span lifetime,
+enforces begin/end pairing, and provides FB_exit safety net for abnormal
+teardown (online change, program stop, FB deletion).
 
-All methods delegate to PRG_TaskLog.Span (the low-level FB_TcOtelTaskTracer
-instance for the current task).
+All methods delegate through the bound tracer's internal _* methods, which
+route to the low-level task tracer for wire emission. Instance isolation is
+achieved by each tracer maintaining its own open-span LIFO chain.
 
 Documented in docs/traces-design.md Section "User-facing API: FB_Span".
 *)
@@ -49,6 +51,34 @@ Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
+    <Method Name="_GetOuterSpan" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
+      <Declaration><![CDATA[(*
+:Description: Internal accessor used by FB_TcOtelTracer to walk its
+LIFO stack. Returns the span that was innermost-open when THIS span
+began — or 0 if this is the outermost / unbound. Not user-visible.
+*)
+METHOD INTERNAL _GetOuterSpan : POINTER TO FB_Span
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_GetOuterSpan := _pOuterSpan;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_SetOuterSpan" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
+      <Declaration><![CDATA[(*
+:Description: Internal mutator used by FB_TcOtelTracer to attach
+and detach this span from its LIFO stack. Not user-visible.
+*)
+METHOD INTERNAL _SetOuterSpan
+VAR_INPUT
+    pOuter : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_pOuterSpan := pOuter;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="AddBool" Id="{7047bbb4-5514-432f-96ef-1c5e7401f9b0}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
@@ -62,7 +92,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddBool := PRG_TaskLog.Span.AddBool(ADR(THIS^), sKey, bVal);
+AddBool := _pTracer^._AddBool(ADR(THIS^), sKey, bVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -78,7 +108,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddEvent := PRG_TaskLog.Span.AddEvent(ADR(THIS^), sName);
+AddEvent := _pTracer^._AddEvent(ADR(THIS^), sName);
 ]]></ST>
       </Implementation>
     </Method>
@@ -95,7 +125,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddInt := PRG_TaskLog.Span.AddInt(ADR(THIS^), sKey, nVal);
+AddInt := _pTracer^._AddInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -112,7 +142,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddLInt := PRG_TaskLog.Span.AddLInt(ADR(THIS^), sKey, nVal);
+AddLInt := _pTracer^._AddLInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -129,7 +159,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddReal := PRG_TaskLog.Span.AddReal(ADR(THIS^), sKey, fVal);
+AddReal := _pTracer^._AddReal(ADR(THIS^), sKey, fVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -146,7 +176,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddString := PRG_TaskLog.Span.AddString(ADR(THIS^), sKey, sVal);
+AddString := _pTracer^._AddString(ADR(THIS^), sKey, sVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -154,15 +184,15 @@ AddString := PRG_TaskLog.Span.AddString(ADR(THIS^), sKey, sVal);
       <Declaration><![CDATA[(*
 :Description: Start a new span on this FB_Span instance.
 
+REQUIRES: BindTracer must be called first. If not, Begin logs an error and returns FALSE.
+
 Pass `sTraceParent` to chain this span onto an incoming W3C traceparent
 header — used for cross-task, cross-PLC, or cross-process propagation.
 Leave empty for locally-rooted spans (the common case).
 
-When this FB_Span is bound to an ``FB_TcOtelTracer`` via
-``BindTracer`` and ``sTraceParent`` is empty, the tracer's
-innermost open span is auto-used as the parent. That gives each
-tracer its own isolated nesting chain, immune to parallel
-controllers on the same task.
+When `sTraceParent` is empty, the tracer's innermost open span is auto-used
+as the parent. This gives each tracer its own isolated nesting chain, immune
+to parallel spans on the same task.
 *)
 METHOD PUBLIC Begin : BOOL
 VAR_INPUT
@@ -173,130 +203,36 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
+(* Guard: BindTracer is now REQUIRED *)
+IF _pTracer = 0 THEN
+    F_InternalLog.Log(
+        eLevel := E_LogLevel.eError,
+        sMsg   := 'FB_Span.Begin called without BindTracer — span skipped');
+    RETURN;
+END_IF;
+
 (* If already open, close the old span with error before starting the new one *)
 IF _bOpen THEN
     _eStatus := E_SpanStatus.eError;
     _sMsg := 'span.begin called twice without end';
     End();
+    RETURN;
 END_IF;
 
-(* Instance-tracer auto-nesting: if the user didn't pass an external
-   traceparent and this FB_Span is bound to an FB_TcOtelTracer that
-   already has an open span, inherit from it. Task-scoped behaviour
-   (default) is unchanged — no tracer → no override. *)
-IF sTraceParent = '' AND _pTracer <> 0 AND_THEN _pTracer^.IsAnyOpen THEN
-    sTraceParent := _pTracer^.CurrentTraceParent;
-END_IF;
-
-(* Begin a new span on the task tracer, passing ADR(THIS^) so the
-   tracer mints IDs directly into THIS FB_Span's _abTraceId/_abSpanId.
-   When bound to an instance tracer, bIsolated := TRUE so the task
-   tracer's chain is bypassed — the instance tracer chain drives
-   parent resolution. *)
-PRG_TaskLog.Span.Begin(
-    pSpan        := ADR(THIS^),
-    sName        := sName,
-    eKind        := eKind,
-    sTraceParent := sTraceParent,
-    bIsolated    := _pTracer <> 0);
+(* Route through the bound tracer's _Begin method, which resolves
+   parent and calls the task tracer. *)
+_pTracer^._Begin(ADR(THIS^), sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
 _eStatus := E_SpanStatus.eOk;
 _sMsg := '';
 
-(* Register with the bound tracer (if any) so CurrentTraceParent and
+(* Register with the bound tracer so CurrentTraceParent and
    future nested Begin calls can see us. *)
-IF _pTracer <> 0 THEN
-    _pTracer^._RegisterOpen(ADR(THIS^));
-END_IF;
+_pTracer^._RegisterOpen(ADR(THIS^));
 
 Begin := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="End" Id="{5c4766aa-b8e0-4102-b1bb-60c9dbdaddcd}">
-      <Declaration><![CDATA[METHOD PUBLIC End : BOOL
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-(* If status is Error, pass the error message to the tracer *)
-IF _eStatus = E_SpanStatus.eError THEN
-    PRG_TaskLog.Span.SetError(ADR(THIS^), _sMsg);
-END_IF;
-
-(* End the span *)
-PRG_TaskLog.Span.End(ADR(THIS^));
-
-(* Unregister from the bound tracer's open stack BEFORE clearing
-   state, so the tracer's _UnregisterOpen can still read our
-   _pOuterSpan to splice the LIFO chain. *)
-IF _pTracer <> 0 THEN
-    _pTracer^._UnregisterOpen(ADR(THIS^));
-END_IF;
-
-(* Clear state *)
-_bOpen := FALSE;
-_eStatus := E_SpanStatus.eOk;
-_sMsg := '';
-
-End := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="FB_exit" Id="{c5f30d75-e9bd-4c36-a9ef-80d3cbbac98f}">
-      <Declaration><![CDATA[METHOD FB_exit : BOOL
-VAR_INPUT
-    bInCopyCode : BOOL;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-(* If the span is still open and we're not in copy code (i.e., the FB is
-   being destroyed), close it with an error so tc-otel doesn't wait out
-   the TTL. End() handles unregistering from any bound tracer. *)
-IF _bOpen AND NOT bInCopyCode THEN
-    _eStatus := E_SpanStatus.eError;
-    _sMsg := 'FB_Span instance destroyed while open';
-    End();
-END_IF;
-
-FB_exit := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Property Name="IsOpen" Id="{d47454d0-966d-4ff4-9068-ccbe2c845e9f}">
-      <Declaration><![CDATA[PROPERTY PUBLIC IsOpen : BOOL]]></Declaration>
-      <Get Name="Get" Id="{313caace-5095-4944-9c48-f70f3e3d5d5b}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[IsOpen := _bOpen;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Method Name="MarkError" Id="{b332727a-e81d-4487-b536-326bafc3658f}">
-      <Declaration><![CDATA[METHOD PUBLIC MarkError : BOOL
-VAR_INPUT
-    sMsg : STRING(80);
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-_eStatus := E_SpanStatus.eError;
-_sMsg := sMsg;
-
-MarkError := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -342,31 +278,101 @@ BindTracer := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_GetOuterSpan" Id="{f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c}">
-      <Declaration><![CDATA[(*
-:Description: Internal accessor used by FB_TcOtelTracer to walk its
-LIFO stack. Returns the span that was innermost-open when THIS span
-began — or 0 if this is the outermost / unbound. Not user-visible.
-*)
-METHOD INTERNAL _GetOuterSpan : POINTER TO FB_Span
+    <Method Name="End" Id="{5c4766aa-b8e0-4102-b1bb-60c9dbdaddcd}">
+      <Declaration><![CDATA[METHOD PUBLIC End : BOOL
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_GetOuterSpan := _pOuterSpan;
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+(* If status is Error, pass the error message through *)
+IF _eStatus = E_SpanStatus.eError THEN
+    _pTracer^._SetError(ADR(THIS^), _sMsg);
+END_IF;
+
+(* End the span via the tracer's wire emitter *)
+_pTracer^._End(ADR(THIS^));
+
+(* Unregister from the bound tracer's open stack BEFORE clearing
+   state, so the tracer's _UnregisterOpen can still read our
+   _pOuterSpan to splice the LIFO chain. *)
+_pTracer^._UnregisterOpen(ADR(THIS^));
+
+(* Clear state *)
+_bOpen := FALSE;
+_eStatus := E_SpanStatus.eOk;
+_sMsg := '';
+
+End := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_SetOuterSpan" Id="{b6c7d8e9-f0a1-4b2c-3d4e-5f6a7b8c9d0e}">
-      <Declaration><![CDATA[(*
-:Description: Internal mutator used by FB_TcOtelTracer to attach
-and detach this span from its LIFO stack. Not user-visible.
-*)
-METHOD INTERNAL _SetOuterSpan
+    <Method Name="FB_exit" Id="{c5f30d75-e9bd-4c36-a9ef-80d3cbbac98f}">
+      <Declaration><![CDATA[METHOD FB_exit : BOOL
 VAR_INPUT
-    pOuter : POINTER TO FB_Span;
+    bInCopyCode : BOOL;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_pOuterSpan := pOuter;
+        <ST><![CDATA[
+(* If the span is still open and we're not in copy code (i.e., the FB is
+   being destroyed), close it with an error so tc-otel doesn't wait out
+   the TTL. End() handles unregistering from any bound tracer. *)
+IF _bOpen AND NOT bInCopyCode THEN
+    _eStatus := E_SpanStatus.eError;
+    _sMsg := 'FB_Span instance destroyed while open';
+    End();
+END_IF;
+
+FB_exit := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FB_Init" Id="{7ed89bcf-f585-01e2-31b6-c7f588f02318}">
+      <Declaration><![CDATA[//FB_Init is always available implicitly and it is used primarily for initialization.
+//The return value is not evaluated. For a specific influence, you can also declare the
+//methods explicitly and provide additional code there with the standard initialization
+//code. You can evaluate the return value.
+METHOD FB_Init: BOOL
+VAR_INPUT
+    bInitRetains: BOOL; // TRUE: the retain variables are initialized (reset warm / reset cold)
+    bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)   
+    pTracer : POINTER TO FB_TcOtelTracer := 0;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="IsOpen" Id="{d47454d0-966d-4ff4-9068-ccbe2c845e9f}">
+      <Declaration><![CDATA[PROPERTY PUBLIC IsOpen : BOOL]]></Declaration>
+      <Get Name="Get" Id="{313caace-5095-4944-9c48-f70f3e3d5d5b}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsOpen := _bOpen;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="MarkError" Id="{b332727a-e81d-4487-b536-326bafc3658f}">
+      <Declaration><![CDATA[METHOD PUBLIC MarkError : BOOL
+VAR_INPUT
+    sMsg : STRING(80);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+_eStatus := E_SpanStatus.eError;
+_sMsg := sMsg;
+
+MarkError := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

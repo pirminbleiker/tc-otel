@@ -172,6 +172,199 @@ END_WHILE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="_Begin" Id="{c0a1b2c3-d4e5-6f7a-8b9c-0d1e2f3a4b5c}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Route FB_Span.Begin through the task tracer's wire emitter.
+
+Resolves parent from _pInnermost (if not overridden by external sTraceParent),
+then calls PRG_TaskLog.TaskTracer.Begin with the resolved parent_span_id.
+
+Must only be called from FB_Span.Begin.
+*)
+METHOD INTERNAL _Begin : BOOL
+VAR_INPUT
+    pSpan        : POINTER TO FB_Span;
+    sName        : STRING(60);
+    eKind        : E_SpanKind := E_SpanKind.eInternal;
+    sTraceParent : STRING(60) := '';
+END_VAR
+VAR
+    abParentSpanId : ARRAY[0..7] OF BYTE;
+    i              : INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+(* Initialize parent_span_id to all-zero (root) *)
+FOR i := 0 TO 7 DO
+    abParentSpanId[i] := 16#00;
+END_FOR;
+
+(* If no external traceparent and tracer has an open span, inherit its span_id as parent *)
+IF sTraceParent = '' AND _pInnermost <> 0 THEN
+    Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
+                      ADR(_pInnermost^._abSpanId[0]),
+                      8);
+END_IF;
+
+(* Call task tracer with resolved parent_span_id *)
+PRG_TaskLog.TaskTracer.Begin(pSpan, sName, eKind, sTraceParent, abParentSpanId);
+_Begin := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_End" Id="{d0b1c2d3-e4f5-6a7b-8c9d-0e1f2a3b4c5d}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Route FB_Span.End through the task tracer's wire emitter.
+
+Called after FB_Span.End finishes its unregister logic on the instance tracer.
+
+Must only be called from FB_Span.End.
+*)
+METHOD INTERNAL _End : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+PRG_TaskLog.TaskTracer.End(pSpan);
+_End := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddBool" Id="{e1c2d3e4-f5a6-6b7c-8d9e-0f101a2b3c4d}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddBool : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    bVal  : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddBool := PRG_TaskLog.TaskTracer.AddBool(pSpan, sKey, bVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddInt" Id="{f2d3e4f5-a6b7-6c7d-8e9f-100a1b2c3d4e}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddInt : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    nVal  : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddInt := PRG_TaskLog.TaskTracer.AddInt(pSpan, sKey, nVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddLInt" Id="{a3e4f5a6-b7c8-6d7e-8f90-101b2c3d4e5f}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddLInt : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    nVal  : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddLInt := PRG_TaskLog.TaskTracer.AddLInt(pSpan, sKey, nVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddReal" Id="{b4f5a6b7-c8d9-6e7f-900a-111c2d3e4f5a}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddReal : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    fVal  : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddReal := PRG_TaskLog.TaskTracer.AddReal(pSpan, sKey, fVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddString" Id="{c5a6b7c8-d9ea-6f70-910b-111d2e3f4a5b}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddString : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    sVal  : STRING(120);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddString := PRG_TaskLog.TaskTracer.AddString(pSpan, sKey, sVal);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AddEvent" Id="{d6b7c8d9-eafb-7071-911c-111e2f3a4b5c}">
+      <Declaration><![CDATA[METHOD INTERNAL _AddEvent : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sName : STRING(30);
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_AddEvent := PRG_TaskLog.TaskTracer.AddEvent(pSpan, sName);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_SetError" Id="{e7c8d9ea-fbac-7172-921d-111f2a3b4c5d}">
+      <Declaration><![CDATA[METHOD INTERNAL _SetError : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sMsg  : STRING(120) := '';
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+_SetError := PRG_TaskLog.TaskTracer.SetError(pSpan, sMsg);
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="FB_exit" Id="{d1e2f3a4-b5c6-4d7e-9f8a-9b0c1d2e3f4a}">
       <Declaration><![CDATA[(*
 :Description: Safety net — when the tracer instance is destroyed
