@@ -209,12 +209,12 @@ Typical usage:
     END_VAR
 
     F_Log(E_LogLevel.eInfo, 'operation started')
-        .WithSpan(ADR(spn))
+        .WithSpan(spn)
         .CreateLog();
 *)
 METHOD PUBLIC WithSpan : I_Logger
-VAR_INPUT
-	pSpan : POINTER TO FB_Span;
+VAR_IN_OUT
+	span : FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -223,7 +223,7 @@ IF NOT _IsLogLevelActive() THEN
 	RETURN;
 END_IF
 
-_pSpan := pSpan;
+_pSpan := ADR(span);
 ]]></ST>
       </Implementation>
     </Method>

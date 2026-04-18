@@ -65,14 +65,14 @@ END_VAR
     <Implementation>
       <ST><![CDATA[// Bind all spans to the shared tracer once
 IF NOT bInitialised THEN
-    spnProducer.BindTracer(ADR(tracer));
-    spnConsumer.BindTracer(ADR(tracer));
-    spnStageA.BindTracer(ADR(tracer));
-    spnStageB.BindTracer(ADR(tracer));
-    spnStageC.BindTracer(ADR(tracer));
-    spnChainA.BindTracer(ADR(tracer));
-    spnChainB.BindTracer(ADR(tracer));
-    spnChainC.BindTracer(ADR(tracer));
+    spnProducer.BindTracer(tracer);
+    spnConsumer.BindTracer(tracer);
+    spnStageA.BindTracer(tracer);
+    spnStageB.BindTracer(tracer);
+    spnStageC.BindTracer(tracer);
+    spnChainA.BindTracer(tracer);
+    spnChainB.BindTracer(tracer);
+    spnChainC.BindTracer(tracer);
     bInitialised := TRUE;
 END_IF
 

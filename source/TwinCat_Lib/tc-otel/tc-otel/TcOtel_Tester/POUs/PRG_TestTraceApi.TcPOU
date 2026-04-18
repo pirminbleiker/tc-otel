@@ -18,9 +18,9 @@ END_VAR
     <Implementation>
       <ST><![CDATA[// Bind spans to tracer once
 IF NOT bInitialised THEN
-    spnTick.BindTracer(ADR(tracer));
-    spnRecipe.BindTracer(ADR(tracer));
-    spnRecipeStep.BindTracer(ADR(tracer));
+    spnTick.BindTracer(tracer);
+    spnRecipe.BindTracer(tracer);
+    spnRecipeStep.BindTracer(tracer);
     bInitialised := TRUE;
 END_IF
 

@@ -92,7 +92,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddBool := _pTracer^._AddBool(ADR(THIS^), sKey, bVal);
+AddBool := _pTracer^._AddBool(THIS, sKey, bVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -108,7 +108,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddEvent := _pTracer^._AddEvent(ADR(THIS^), sName);
+AddEvent := _pTracer^._AddEvent(THIS, sName);
 ]]></ST>
       </Implementation>
     </Method>
@@ -125,7 +125,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddInt := _pTracer^._AddInt(ADR(THIS^), sKey, nVal);
+AddInt := _pTracer^._AddInt(THIS, sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -142,7 +142,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddLInt := _pTracer^._AddLInt(ADR(THIS^), sKey, nVal);
+AddLInt := _pTracer^._AddLInt(THIS, sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -159,7 +159,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddReal := _pTracer^._AddReal(ADR(THIS^), sKey, fVal);
+AddReal := _pTracer^._AddReal(THIS, sKey, fVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -176,7 +176,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddString := _pTracer^._AddString(ADR(THIS^), sKey, sVal);
+AddString := _pTracer^._AddString(THIS, sKey, sVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -221,7 +221,7 @@ END_IF;
 
 (* Route through the bound tracer's _Begin method, which resolves
    parent and calls the task tracer. *)
-_pTracer^._Begin(ADR(THIS^), sName, eKind, sTraceParent);
+_pTracer^._Begin(THIS, sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
@@ -230,7 +230,7 @@ _sMsg := '';
 
 (* Register with the bound tracer so CurrentTraceParent and
    future nested Begin calls can see us. *)
-_pTracer^._RegisterOpen(ADR(THIS^));
+_pTracer^._RegisterOpen(THIS);
 
 Begin := TRUE;
 ]]></ST>
@@ -257,11 +257,11 @@ Typical usage — one tracer per controller:
     END_VAR
 
     // in FB_init or first-cycle init:
-    _spn.BindTracer(ADR(_tracer));
+    _spn.BindTracer(_tracer);
 *)
 METHOD PUBLIC BindTracer : BOOL
-VAR_INPUT
-    pTracer : POINTER TO FB_TcOtelTracer;
+VAR_IN_OUT
+    tracer : FB_TcOtelTracer;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -273,7 +273,7 @@ IF _bOpen THEN
     RETURN;
 END_IF;
 
-_pTracer := pTracer;
+_pTracer := ADR(tracer);
 BindTracer := TRUE;
 ]]></ST>
       </Implementation>
@@ -289,16 +289,16 @@ END_IF;
 
 (* If status is Error, pass the error message through *)
 IF _eStatus = E_SpanStatus.eError THEN
-    _pTracer^._SetError(ADR(THIS^), _sMsg);
+    _pTracer^._SetError(THIS, _sMsg);
 END_IF;
 
 (* End the span via the tracer's wire emitter *)
-_pTracer^._End(ADR(THIS^));
+_pTracer^._End(THIS);
 
 (* Unregister from the bound tracer's open stack BEFORE clearing
    state, so the tracer's _UnregisterOpen can still read our
    _pOuterSpan to splice the LIFO chain. *)
-_pTracer^._UnregisterOpen(ADR(THIS^));
+_pTracer^._UnregisterOpen(THIS);
 
 (* Clear state *)
 _bOpen := FALSE;
