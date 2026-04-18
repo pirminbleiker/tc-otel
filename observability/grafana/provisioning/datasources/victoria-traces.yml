@@ -1,11 +1,13 @@
 apiVersion: 1
 
 datasources:
-  - name: Tempo
-    uid: tempo
-    type: tempo
+  - name: VictoriaTraces
+    uid: victoria-traces
+    type: jaeger
     access: proxy
-    url: http://tempo:3200
+    # VictoriaTraces exposes a Jaeger-compatible query API under /select/jaeger.
+    # Grafana's Jaeger datasource appends /api/services, /api/traces/<id>, etc.
+    url: http://victoria-traces:10428/select/jaeger
     editable: true
     jsonData:
       tracesToLogsV2:
@@ -16,8 +18,6 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
       tracesToMetrics:
-        datasourceUid: victoria-metrics
-      serviceMap:
-        datasourceUid: victoria-metrics
+        datasourceUid: victoriametrics
       nodeGraph:
         enabled: true
