@@ -234,6 +234,7 @@
     </Licenses>
     <CombineIds>true</CombineIds>
     <GlobalVersionStructureIncluded>true</GlobalVersionStructureIncluded>
+    <VirtualLibrary>true</VirtualLibrary>
   </PropertyGroup>
   <ItemGroup>
     <Folder Include="API" />
