@@ -51,6 +51,19 @@ services:
       - tc-otel-obs
     restart: unless-stopped
 
+  jaeger-ui:
+    build:
+      context: ./observability/jaeger-ui
+    image: tc-otel-jaeger-ui:local
+    container_name: jaeger-ui
+    ports:
+      - "16686:80"
+    networks:
+      - tc-otel-obs
+    depends_on:
+      - victoria-traces
+    restart: unless-stopped
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector

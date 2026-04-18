@@ -1,11 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="ApiTest" Id="{d28d37df-7237-480f-92a3-f93252c88566}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM INTERNAL ApiTest
 VAR
 	nInt			: INT;
 	sStr			: STRING;
 	fFloat			: REAL;
+	fbTrace			: FB_TcOtelTracer;
+	fbSpan			: FB_Span();
 END_VAR
 ]]></Declaration>
     <Implementation>

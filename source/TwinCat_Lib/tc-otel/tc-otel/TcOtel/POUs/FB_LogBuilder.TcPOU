@@ -15,6 +15,10 @@ VAR
 	iContextBuilder		: I_ContextBuilder;
 	bStarted			: BOOL;		// TRUE after StartV2 has been called
 	bError				: BOOL;
+	(* Phase 6 Stage 4: span reference for explicit log-to-trace correlation.
+	   Set via WithSpan for logs that should be correlated to a specific span.
+	   NULL (default) means no span correlation. *)
+	_pSpan				: POINTER TO FB_Span;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -71,6 +75,7 @@ IF NOT _IsLogLevelActive() THEN
 END_IF
 THIS^.fbLogEntry.Reset();
 THIS^.iContextBuilder := 0;
+THIS^._pSpan := 0;
 THIS^.sMessage := sMessage;
 IF pLogger <> 0 THEN
 	THIS^.sLogger := pLogger^;
@@ -181,6 +186,44 @@ _EnsureStarted();
 
 // Write arg directly into LogEntry buffer
 fbLogEntry.AddTArg(0, stArg);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithSpan" Id="{e4a59d0f-0a1f-4759-8c0a-1f2d3e4f5a6b}">
+      <Declaration><![CDATA[(*
+:Description: Bind this log entry to a specific FB_Span for explicit
+trace context correlation.
+
+When WithSpan is called, the log message will be associated with the span's
+trace_id and span_id in the tc-otel backend, creating an explicit link in
+the trace timeline.
+
+Call before CreateLog to take effect. Calling after CreateLog has no effect.
+
+Typical usage:
+
+.. code-block:: pascal
+
+    VAR
+        spn : FB_Span;
+    END_VAR
+
+    F_Log(E_LogLevel.eInfo, 'operation started')
+        .WithSpan(ADR(spn))
+        .CreateLog();
+*)
+METHOD PUBLIC WithSpan : I_Logger
+VAR_INPUT
+	pSpan : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithSpan := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+
+_pSpan := pSpan;
 ]]></ST>
       </Implementation>
     </Method>

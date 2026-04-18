@@ -2,13 +2,17 @@
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_TcOtelTaskTracer" Id="{294f80cd-71bb-4a49-ab79-358e75196d66}" SpecialFunc="None">
     <Declaration><![CDATA[(*
-:Description: Per-task low-level OpenTelemetry trace emitter.
+:Description: Per-task low-level OpenTelemetry trace wire transport.
 
-One instance per task lives in PRG_TaskLog.aTaskTracer. Each method emits
-exactly one wire event into the existing ADS write buffer (same path the
-logger uses). Wire events are demuxed by tc-otel into a SpanEventDispatcher.
+INTERNAL — do not call directly from user code. One instance per task lives
+in PRG_TaskLog.aTaskTracer. Wire-emit methods are called only by
+FB_TcOtelTracer (the public instance-tracer API). Each method emits exactly
+one wire event into the existing ADS write buffer (same path the logger uses).
+Wire events are demuxed by tc-otel into a SpanEventDispatcher.
 
 Wire format documented in docs/traces-design.md Section "Wire Format".
+
+Users should use FB_TcOtelTracer and FB_Span instead.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
@@ -330,7 +334,7 @@ END_IF
       </Implementation>
     </Method>
     <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
-      <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddBool : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
@@ -402,7 +406,7 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="AddEvent" Id="{731c0681-f28c-468d-9a22-08d93456bc4b}">
-      <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddEvent : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sName : STRING(30);
@@ -468,7 +472,7 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="AddInt" Id="{cebf7902-798a-47a4-b3e5-37d8ad80e0e0}">
-      <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddInt : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
@@ -543,7 +547,7 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="AddLInt" Id="{40a748f6-c411-43f0-994d-38e870c92549}">
-      <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddLInt : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
@@ -613,7 +617,7 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="AddReal" Id="{6a9dc70f-5325-45d1-8be5-172af842881e}">
-      <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddReal : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
@@ -683,7 +687,7 @@ END_IF;
       </Implementation>
     </Method>
     <Method Name="AddString" Id="{59a3fb41-a2f5-4bd0-ad49-dd002f212acc}">
-      <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL AddString : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
@@ -764,22 +768,23 @@ END_IF;
     </Method>
     <Method Name="Begin" Id="{832e89db-497a-4d07-b3b1-c6e95e2f7e46}">
       <Declaration><![CDATA[(*
-:Description: Mint IDs and emit SPAN_BEGIN frame for the given FB_Span.
+:Description: INTERNAL — Mint IDs and emit SPAN_BEGIN frame for the given FB_Span.
 
-Phase 6 Stage 3: FB_Span owns its trace_id and span_id. This method
-populates them directly into the pSpan pointer based on parent resolution.
+Phase 6 Stage 3 refactored: FB_Span owns its trace_id and span_id. This method
+populates them directly into the pSpan pointer. Parent trace_id is resolved
+from sTraceParent (external) or minted fresh. parent_span_id must be supplied
+by the caller (typically FB_TcOtelTracer._Begin, which reads its own
+_pInnermost^._abSpanId or passes [0u8;8] for root).
 
-``bIsolated`` (Phase 6 Stage 1): when TRUE, skip task-tracer chain
-management. Used by FB_Span instances bound to an FB_TcOtelTracer
-whose parent is driven by sTraceParent (not the task chain).
+Called only from FB_TcOtelTracer._Begin.
 *)
-METHOD PUBLIC Begin
+METHOD INTERNAL Begin
 VAR_INPUT
-    pSpan        : POINTER TO FB_Span;
-    sName        : STRING(60);
-    eKind        : E_SpanKind := E_SpanKind.eInternal;
-    sTraceParent : STRING(60) := '';
-    bIsolated    : BOOL := FALSE;
+    pSpan          : POINTER TO FB_Span;
+    sName          : STRING(60);
+    eKind          : E_SpanKind := E_SpanKind.eInternal;
+    sTraceParent   : STRING(60) := '';
+    abParentSpanId : ARRAY[0..7] OF BYTE;
 END_VAR
 VAR
     nTaskIndex       : USINT;
@@ -794,8 +799,6 @@ VAR
     eKindByte        : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
-    abParentSpanId   : ARRAY[0..7] OF BYTE := [16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00];
-    i                : INT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -807,15 +810,9 @@ END_IF;
 (* Seed RNG if not yet seeded *)
 _SeedRng();
 
-(* Initialize parent_span_id to all-zero (root) *)
-FOR i := 0 TO 7 DO
-    abParentSpanId[i] := 16#00;
-END_FOR;
-
 (* Resolution order mirrors Rust span_dispatcher.rs on_begin:
    1. External W3C traceparent  — adopt its trace_id
-   2. Parent on local chain     — inherit parent's trace_id (if not isolated)
-   3. True root                 — mint fresh trace_id
+   2. True root                 — mint fresh trace_id
    span_id is always freshly minted. *)
 
 bExternalValid := FALSE;
@@ -823,38 +820,15 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     bExternalValid := _ParseTraceParent(sTraceParent,
                                          pSpan^._abTraceId,
                                          abExternalSpanId);
-    (* If external traceparent parsed, its span_id is parent *)
-    IF bExternalValid THEN
-        FOR i := 0 TO 7 DO
-            abParentSpanId[i] := abExternalSpanId[i];
-        END_FOR;
-    END_IF;
 END_IF;
 
-(* If external traceparent not valid, try to inherit from task chain *)
+(* If external traceparent not valid, mint fresh trace_id *)
 IF NOT bExternalValid THEN
-    IF NOT bIsolated AND _pInnermost <> 0 THEN
-        (* Inherit parent's trace_id and set parent_span_id *)
-        Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]),
-                          ADR(_pInnermost^._abTraceId[0]),
-                          16);
-        Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
-                          ADR(_pInnermost^._abSpanId[0]),
-                          8);
-    ELSIF NOT bExternalValid THEN
-        (* Root span — mint fresh trace_id *)
-        _MintTraceId(pSpan);
-    END_IF;
+    _MintTraceId(pSpan);
 END_IF;
 
 (* Always mint a fresh span_id for this span *)
 _MintSpanId(pSpan);
-
-(* Push onto chain unless isolated *)
-IF NOT bIsolated THEN
-    pSpan^._SetOuterSpan(_pInnermost);
-    _pInnermost := pSpan;
-END_IF;
 
 (* Prepare flags *)
 nFlagsBegin := 0;
@@ -986,7 +960,13 @@ CurrentTraceParent := _pInnermost^.TraceParent;
       </Implementation>
     </Method>
     <Method Name="End" Id="{82740a99-7e02-4458-aaa7-fef1872d30eb}">
-      <Declaration><![CDATA[METHOD PUBLIC End
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Emit SPAN_END frame for the given FB_Span.
+
+Called only from FB_TcOtelTracer._End. Does not manage the tracer's chain —
+that is the responsibility of FB_TcOtelTracer.
+*)
+METHOD INTERNAL End
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
 END_VAR
@@ -1033,17 +1013,11 @@ IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);  (* reserved *)
     pBuffer^.DataAdded(1);
 END_IF;
-
-(* Pop from chain if this span is currently innermost *)
-IF _pInnermost = pSpan THEN
-    _pInnermost := pSpan^._GetOuterSpan();
-    pSpan^._SetOuterSpan(0);
-END_IF;
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="SetError" Id="{1323314a-5f82-499e-a923-f4a110bbfa07}">
-      <Declaration><![CDATA[METHOD PUBLIC SetError : BOOL
+      <Declaration><![CDATA[METHOD INTERNAL SetError : BOOL
 VAR_INPUT
     pSpan : POINTER TO FB_Span;
     sMsg  : STRING(120) := '';

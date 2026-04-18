@@ -280,7 +280,7 @@
       },
       "id": 108,
       "options": {
-        "text": "### Trace exploration\n\n- [**VictoriaTraces Explorer (VMUI)**](http://localhost:10428/select/vmui/) \u2014 native trace UI: group by span name / service, timeline view, JSON inspector, live tail. Best for deep trace analysis.\n- [**Grafana Explore \u2192 VictoriaTraces**](/explore?left=%7B%22datasource%22:%22victoria-traces%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22search%22%7D%5D,%22range%22:%7B%22from%22:%22now-15m%22,%22to%22:%22now%22%7D%7D) \u2014 Jaeger-compatible search from within Grafana, for correlation with logs/metrics panels.",
+        "text": "### Trace exploration\n\n- [**Jaeger UI**](http://localhost:16686/) \u2014 the Jaeger trace-explorer bundled as a static SPA with an nginx reverse-proxy onto VictoriaTraces' Jaeger-compatible query API. Service-dropdown search, span tree, critical-path, compare. Best general trace UX.\n- [**VictoriaTraces Explorer (VMUI)**](http://localhost:10428/select/vmui/) \u2014 VictoriaTraces-native UI: group by span name / service, timeline view, JSON inspector, live tail. Good for storage-level inspection and live tailing.\n- [**Grafana Explore \u2192 VictoriaTraces**](/explore?left=%7B%22datasource%22:%22victoria-traces%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22search%22%7D%5D,%22range%22:%7B%22from%22:%22now-15m%22,%22to%22:%22now%22%7D%7D) \u2014 Jaeger-compatible search inside Grafana, for side-by-side correlation with logs/metrics panels.",
         "mode": "markdown"
       }
     },
