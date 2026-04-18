@@ -326,6 +326,40 @@ END_IF
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="CopyIdsTo" Id="{8c7d9e1a-2b3c-4d5e-8f6a-1b2c3d4e5f60}">
+      <Declaration><![CDATA[(*
+Copy this slot's freshly minted trace_id (16B) and span_id (8B) into
+the caller's buffers. Used by FB_Span.Begin to mirror the IDs into
+its own _abTraceId/_abSpanId so FB_Span.TraceParent can format the
+W3C header without tracer-internals access.
+
+Stage 3 plumbing: FB_Span owns the canonical trace_id/span_id state;
+this method is the one sanctioned path for FB_Span to learn the IDs
+that the task tracer just minted into the slot.
+*)
+METHOD PUBLIC CopyIdsTo
+VAR_INPUT
+    hSpan    : USINT;
+    pTraceId : POINTER TO BYTE;
+    pSpanId  : POINTER TO BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF hSpan >= 255 THEN
+    RETURN;
+END_IF;
+IF NOT aSlots[hSpan].bInUse THEN
+    RETURN;
+END_IF;
+IF pTraceId <> 0 THEN
+    Tc2_System.MEMCPY(pTraceId, ADR(aSlots[hSpan].trace_id[0]), 16);
+END_IF;
+IF pSpanId <> 0 THEN
+    Tc2_System.MEMCPY(pSpanId, ADR(aSlots[hSpan].span_id[0]), 8);
+END_IF;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
