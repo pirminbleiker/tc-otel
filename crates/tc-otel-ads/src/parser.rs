@@ -601,7 +601,7 @@ impl AdsParser {
 
                 let kind = reader.read_u8()?;
                 let name_len = reader.read_u8()? as usize;
-                let _reserved = reader.read_bytes(2)?;  // 2-byte reserved field
+                let _reserved = reader.read_bytes(2)?; // 2-byte reserved field
 
                 if name_len > 127 {
                     return Err(AdsError::ParseError(
@@ -2552,17 +2552,19 @@ mod tests {
             0x88, 0x99,
         ];
         let expected_span: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xF0, 0x0D];
+        let parent_span_id: [u8; 8] = [0; 8]; // root
 
         let mut data = Vec::new();
         data.push(5u8); // SPAN_BEGIN outer
         data.push(42); // local_id
         data.push(7); // task_index
-        data.push(0x08); // flag_local_ids
+        data.push(0); // flags (no external parent)
         data.extend_from_slice(&9_999i64.to_le_bytes()); // dc_time
-        data.push(0xFF); // parent_local_id (root)
+                                                         // payload starts at +0x0C
+        data.extend_from_slice(&parent_span_id); // parent_span_id (8B)
         data.push(3); // kind (Producer)
         data.push(4); // name_len = 4 ("ship")
-        data.push(0); // reserved
+        data.extend_from_slice(&[0u8; 2]); // reserved (2B)
         data.extend_from_slice(&expected_trace);
         data.extend_from_slice(&expected_span);
         data.extend_from_slice(b"ship");
@@ -2576,18 +2578,18 @@ mod tests {
             flags,
             kind,
             name,
-            pregenerated_trace_id,
-            pregenerated_span_id,
+            trace_id,
+            span_id,
             ..
         } = &result.trace_events[0]
         {
             assert_eq!(*local_id, 42);
             assert_eq!(*task_index, 7);
-            assert_eq!(*flags, 0x08);
+            assert_eq!(*flags, 0);
             assert_eq!(*kind, 3);
             assert_eq!(name, "ship");
-            assert_eq!(*pregenerated_trace_id, Some(expected_trace));
-            assert_eq!(*pregenerated_span_id, Some(expected_span));
+            assert_eq!(*trace_id, expected_trace);
+            assert_eq!(*span_id, expected_span);
         } else {
             panic!("Expected Begin variant");
         }
@@ -2601,17 +2603,19 @@ mod tests {
         let trace_bytes: [u8; 16] = [0x11; 16];
         let span_bytes: [u8; 8] = [0x22; 8];
         let tp = "00-aabbccddeeff00112233445566778899-1122334455667788-01";
+        let parent_span_id: [u8; 8] = [0; 8]; // root
 
         let mut data = Vec::new();
-        data.push(5u8);
-        data.push(1);
-        data.push(1);
-        data.push(0x02 | 0x08); // external parent + local ids
-        data.extend_from_slice(&1_000i64.to_le_bytes());
-        data.push(0xFF);
+        data.push(5u8); // event_type
+        data.push(1); // local_id
+        data.push(1); // task_index
+        data.push(0x02); // flags: external parent set, no local_ids flag (Stage 3)
+        data.extend_from_slice(&1_000i64.to_le_bytes()); // dc_time
+                                                         // payload starts at +0x0C
+        data.extend_from_slice(&parent_span_id); // parent_span_id (8B)
         data.push(1); // kind
         data.push(2); // name_len
-        data.push(0); // reserved
+        data.extend_from_slice(&[0u8; 2]); // reserved (2B)
         data.extend_from_slice(&trace_bytes);
         data.extend_from_slice(&span_bytes);
         data.extend_from_slice(b"op");
@@ -2622,14 +2626,14 @@ mod tests {
         assert_eq!(result.trace_events.len(), 1);
         if let TraceWireEvent::Begin {
             traceparent,
-            pregenerated_trace_id,
-            pregenerated_span_id,
+            trace_id,
+            span_id,
             ..
         } = &result.trace_events[0]
         {
             assert_eq!(traceparent.as_deref(), Some(tp));
-            assert_eq!(*pregenerated_trace_id, Some(trace_bytes));
-            assert_eq!(*pregenerated_span_id, Some(span_bytes));
+            assert_eq!(*trace_id, trace_bytes);
+            assert_eq!(*span_id, span_bytes);
         } else {
             panic!("Expected Begin");
         }

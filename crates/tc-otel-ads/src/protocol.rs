@@ -25,12 +25,12 @@ pub enum TraceWireEvent {
         task_index: u8,
         flags: u8,
         dc_time: i64,
-        parent_span_id: [u8; 8],  // All-zero means root
+        parent_span_id: [u8; 8], // All-zero means root
         kind: u8,
         name: String,
         traceparent: Option<String>,
-        trace_id: [u8; 16],  // Always present, minted by PLC
-        span_id: [u8; 8],    // Always present, minted by PLC
+        trace_id: [u8; 16], // Always present, minted by PLC
+        span_id: [u8; 8],   // Always present, minted by PLC
     },
     /// SPAN_ATTR (event_type=6): adds an attribute to a pending span
     /// Phase 6 Stage 3: span_id now identifies the span (not local_id)

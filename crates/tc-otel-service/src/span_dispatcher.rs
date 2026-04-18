@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent};
 use tc_otel_core::{SpanStatusCode, TraceRecord};
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 /// Span attributes from the wire
 #[derive(Debug, Clone)]
@@ -190,7 +189,11 @@ impl SpanDispatcher {
                     } else {
                         // Consistency check failure (index != pending consistency)
                         tracing::warn!("parent_span_id found in index but not in pending");
-                        (trace_id, None, Some("parent_span_id_not_in_pending".to_string()))
+                        (
+                            trace_id,
+                            None,
+                            Some("parent_span_id_not_in_pending".to_string()),
+                        )
                     }
                 }
                 None => {
@@ -511,18 +514,6 @@ impl SpanDispatcher {
 
         best.map(|(_, _, trace_hex, span_hex)| (trace_hex, span_hex))
     }
-
-    fn new_trace_id(&self) -> [u8; 16] {
-        *Uuid::new_v4().as_bytes()
-    }
-
-    fn new_span_id(&self) -> [u8; 8] {
-        let uuid = Uuid::new_v4();
-        let uuid_bytes = uuid.as_bytes();
-        let mut id = [0u8; 8];
-        id.copy_from_slice(&uuid_bytes[0..8]);
-        id
-    }
 }
 
 /// Parse W3C traceparent format: 00-<32hex>-<16hex>-<2hex>
@@ -585,6 +576,14 @@ pub fn dc_time_to_datetime(dc_nanos: i64) -> DateTime<Utc> {
 mod tests {
     use super::*;
 
+    // Test constants for Stage 3 IDs (always present, not optional)
+    const TEST_TRACE_ID: [u8; 16] = [
+        0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47,
+        0x36,
+    ];
+    const TEST_SPAN_ID: [u8; 8] = [0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7];
+    const TEST_PARENT_SPAN_ID_ROOT: [u8; 8] = [0; 8]; // All zeros = root
+
     #[test]
     fn test_parse_w3c_traceparent_valid() {
         let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
@@ -642,12 +641,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test_span".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
 
         assert_eq!(dispatcher.pending_count(), 1);
@@ -666,12 +665,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "first_span".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -681,12 +680,12 @@ mod tests {
             1,
             0,
             100,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "second_span".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -708,12 +707,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test".to_string(),
             None,
-            None,
-            Some(span_id),
+            TEST_TRACE_ID,
+            span_id,
         );
         dispatcher.on_attr(net_id, span_id, 0, "key1".to_string(), AttrValue::I64(42));
 
@@ -740,12 +739,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test".to_string(),
             None,
-            None,
-            Some(span_id),
+            TEST_TRACE_ID,
+            span_id,
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -767,17 +766,18 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // Parent span
+        let parent_span_id_bytes = [1u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "parent".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            parent_span_id_bytes,
         );
 
         let parent_key = SpanKey {
@@ -788,18 +788,18 @@ mod tests {
         let parent_trace_id = dispatcher.pending.get(&parent_key).unwrap().trace_id;
         let parent_span_id = dispatcher.pending.get(&parent_key).unwrap().span_id;
 
-        // Child span with parent_local_id pointing to parent
+        // Child span with parent_span_id pointing to parent
         dispatcher.on_begin(
             net_id,
             2,
             0,
             100,
-            1,
+            parent_span_id_bytes,
             0,
             "child".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
 
         let child_key = SpanKey {
@@ -824,12 +824,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -857,19 +857,20 @@ mod tests {
 
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
-        // BEGIN with parent_local_id=5 but no span with local_id=5 in pending
+        // BEGIN with parent_span_id pointing to non-existent parent
         let span_id = [10u8, 2, 3, 4, 5, 6, 7, 8];
+        let orphan_parent = [5u8, 0, 0, 0, 0, 0, 0, 0]; // non-existent parent
         dispatcher.on_begin(
             net_id,
             10,
             0,
             0,
-            5, // non-existent parent
+            orphan_parent,
             0,
             "orphan_span".to_string(),
             None,
-            None,
-            Some(span_id),
+            TEST_TRACE_ID,
+            span_id,
         );
 
         // Should create a pending span with orphan_reason set
@@ -882,16 +883,14 @@ mod tests {
 
         // Check that orphan_reason is set
         assert!(pending.orphan_reason.is_some());
-        assert_eq!(
-            pending.orphan_reason.as_ref().unwrap(),
-            "parent_local_id_5_not_found"
-        );
+        let expected_reason = "parent_span_id_[5, 0, 0, 0, 0, 0, 0, 0]_not_found";
+        assert_eq!(pending.orphan_reason.as_ref().unwrap(), expected_reason);
 
         // Check that the orphan_reason attribute is attached
         let orphan_attr = pending.attrs.get("TCOTEL.orphan_reason");
         assert!(orphan_attr.is_some());
         match orphan_attr.unwrap() {
-            AttrValue::String(s) => assert_eq!(s, "parent_local_id_5_not_found"),
+            AttrValue::String(s) => assert_eq!(s, expected_reason),
             _ => panic!("Expected string attribute"),
         }
 
@@ -920,18 +919,20 @@ mod tests {
 
         assert_eq!(dispatcher.orphan_counter(), 0);
 
+        let orphan_parent = [99u8, 0, 0, 0, 0, 0, 0, 0]; // non-existent parent
+
         // First orphan
         dispatcher.on_begin(
             net_id,
             1,
             0,
             0,
-            99, // non-existent parent
+            orphan_parent,
             0,
             "orphan1".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.orphan_counter(), 1);
 
@@ -941,27 +942,28 @@ mod tests {
             2,
             0,
             100,
-            99, // non-existent parent again
+            orphan_parent,
             0,
             "orphan2".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.orphan_counter(), 2);
 
         // Normal parent-child (no increment)
+        let root_span_id = [3u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
             3,
             0,
             200,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "root".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            root_span_id,
         );
         assert_eq!(dispatcher.orphan_counter(), 2); // still 2
 
@@ -970,12 +972,12 @@ mod tests {
             4,
             0,
             300,
-            3, // points to existing span 3
+            root_span_id, // points to existing span 3
             0,
             "child".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
         assert_eq!(dispatcher.orphan_counter(), 2); // still 2
     }
@@ -988,17 +990,18 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
 
         // Parent span
+        let parent_span_id = [1u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "parent".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            parent_span_id,
         );
 
         let parent_key = SpanKey {
@@ -1016,12 +1019,12 @@ mod tests {
             2,
             0,
             100,
-            1, // points to existing parent
+            parent_span_id, // points to existing parent
             0,
             "child".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
 
         let child_key = SpanKey {
@@ -1050,12 +1053,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test_span".to_string(),
             None,
-            None,
-            Some(pregenerated_id),
+            TEST_TRACE_ID,
+            pregenerated_id,
         );
 
         // Should be retrievable via pending_by_span_id
@@ -1078,12 +1081,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test_span".to_string(),
             None,
-            None,
-            None,
+            TEST_TRACE_ID,
+            TEST_SPAN_ID,
         );
 
         // Get the generated span_id from pending
@@ -1113,12 +1116,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "test_span".to_string(),
             None,
-            None,
-            Some(pregenerated_id),
+            TEST_TRACE_ID,
+            pregenerated_id,
         );
 
         // Verify it's indexed
@@ -1149,12 +1152,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "span1".to_string(),
             None,
-            None,
-            Some(id1),
+            TEST_TRACE_ID,
+            id1,
         );
 
         dispatcher.on_begin(
@@ -1162,12 +1165,12 @@ mod tests {
             2,
             0,
             100,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "span2".to_string(),
             None,
-            None,
-            Some(id2),
+            TEST_TRACE_ID,
+            id2,
         );
 
         // Both should be retrievable
@@ -1194,12 +1197,12 @@ mod tests {
             1,
             0,
             0,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "first_span".to_string(),
             None,
-            None,
-            Some(pregenerated_id),
+            TEST_TRACE_ID,
+            pregenerated_id,
         );
 
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
@@ -1210,12 +1213,12 @@ mod tests {
             1,
             0,
             100,
-            0xFF,
+            TEST_PARENT_SPAN_ID_ROOT,
             0,
             "second_span".to_string(),
             None,
-            None,
-            Some(pregenerated_id),
+            TEST_TRACE_ID,
+            pregenerated_id,
         );
 
         // Old span should be finalized

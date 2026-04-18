@@ -16,17 +16,22 @@ use tokio::sync::mpsc;
 fn test_round_trip_begin_attr_event_end() {
     let mut data = Vec::new();
     let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let trace_id = [
+        11u8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    ];
 
-    // BEGIN (Phase 6 Stage 3: uses parent_local_id still, but ATTR/EVENT/END use full span_id)
-    data.push(5);
-    data.push(5);
-    data.push(2);
-    data.push(0);
+    // BEGIN (Phase 6 Stage 3: parent_span_id(8) + kind(1) + name_len(1) + reserved(2) + trace_id(16) + span_id(8) + name)
+    data.push(5); // event_type
+    data.push(5); // local_id (for header)
+    data.push(2); // task_index
+    data.push(0); // flags
     data.extend_from_slice(&1000i64.to_le_bytes());
-    data.push(0xFF);
-    data.push(0);
-    data.push(9);
-    data.push(0);
+    data.extend_from_slice(&[0u8; 8]); // parent_span_id (all-zero = root)
+    data.push(0); // kind
+    data.push(9); // name_len
+    data.extend_from_slice(&0u16.to_le_bytes()); // reserved(2)
+    data.extend_from_slice(&trace_id); // trace_id(16)
+    data.extend_from_slice(&span_id); // span_id(8)
     data.extend_from_slice(b"test_span");
 
     // ATTR i64 (Phase 6 Stage 3: first byte of span_id in position 1, rest after dc_time)
@@ -114,17 +119,22 @@ fn test_round_trip_begin_attr_event_end() {
 fn test_multi_frame_dispatch() {
     let mut data = Vec::new();
     let span_id = [10u8, 11, 12, 13, 14, 15, 16, 17];
+    let trace_id = [
+        30u8, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+    ];
 
-    // BEGIN
-    data.push(5);
-    data.push(1);
-    data.push(2);
-    data.push(0);
+    // BEGIN (Phase 6 Stage 3 format)
+    data.push(5); // event_type
+    data.push(1); // local_id (for header)
+    data.push(2); // task_index
+    data.push(0); // flags
     data.extend_from_slice(&100i64.to_le_bytes());
-    data.push(0xFF);
-    data.push(0);
-    data.push(2);
-    data.push(0);
+    data.extend_from_slice(&[0u8; 8]); // parent_span_id (all-zero = root)
+    data.push(0); // kind
+    data.push(2); // name_len
+    data.extend_from_slice(&0u16.to_le_bytes()); // reserved(2)
+    data.extend_from_slice(&trace_id); // trace_id(16)
+    data.extend_from_slice(&span_id); // span_id(8)
     data.extend_from_slice(b"op");
 
     // ATTR (Phase 6 Stage 3: span_id in header)
@@ -227,16 +237,19 @@ fn test_coexistence_with_legacy_v2_logs() {
 
     let span_id = [20u8, 21, 22, 23, 24, 25, 26, 27];
 
-    // BEGIN
-    data.push(5);
-    data.push(1);
-    data.push(2);
-    data.push(0);
-    data.extend_from_slice(&500i64.to_le_bytes());
-    data.push(0xFF);
-    data.push(0);
-    data.push(4);
-    data.push(0);
+    // BEGIN (Phase 6 Stage 3)
+    data.push(5); // event_type
+    data.push(1); // local_id
+    data.push(2); // task_index
+    data.push(0); // flags
+    data.extend_from_slice(&500i64.to_le_bytes()); // dc_time
+                                                   // payload starts at +0x0C
+    data.extend_from_slice(&[0u8; 8]); // parent_span_id (all-zero = root)
+    data.push(0); // kind
+    data.push(4); // name_len = "span".len()
+    data.extend_from_slice(&0u16.to_le_bytes()); // reserved(2)
+    data.extend_from_slice(&[0u8; 16]); // trace_id(16)
+    data.extend_from_slice(&span_id); // span_id(8)
     data.extend_from_slice(b"span");
 
     // END (Phase 6 Stage 3: span_id in header)
@@ -269,12 +282,12 @@ fn test_dispatcher_lifecycle() {
             task_index: 2,
             flags: 0,
             dc_time: 1_000_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "test_op".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(span_id),
+            trace_id: [0; 16],
+            span_id,
         },
     );
 
@@ -347,6 +360,10 @@ fn test_nested_spans_parent_child() {
     let parent_span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
     let child_span_id = [2u8, 3, 4, 5, 6, 7, 8, 9];
 
+    let trace_id = [
+        11u8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    ];
+
     dispatcher.on_event(
         net_id,
         TraceWireEvent::Begin {
@@ -354,12 +371,12 @@ fn test_nested_spans_parent_child() {
             task_index: 2,
             flags: 0,
             dc_time: 900_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "parent".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(parent_span_id),
+            trace_id,
+            span_id: parent_span_id,
         },
     );
 
@@ -370,12 +387,12 @@ fn test_nested_spans_parent_child() {
             task_index: 2,
             flags: 0,
             dc_time: 1_000_000_000_000_000_000,
-            parent_local_id: 1,
+            parent_span_id, // points to parent's span_id
             kind: 0,
             name: "child".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(child_span_id),
+            trace_id,
+            span_id: child_span_id,
         },
     );
 
@@ -430,7 +447,7 @@ fn test_unknown_outer_byte_doesnt_panic() {
 fn build_begin_with_local_ids(
     local_id: u8,
     task_index: u8,
-    parent_local_id: u8,
+    _parent_local_id: u8, // Deprecated in Stage 3, now use parent_span_id
     name: &[u8],
     trace_id: [u8; 16],
     span_id: [u8; 8],
@@ -439,12 +456,13 @@ fn build_begin_with_local_ids(
     data.push(5); // SPAN_BEGIN
     data.push(local_id);
     data.push(task_index);
-    data.push(0x08); // flag_local_ids only
+    data.push(0); // flags (no external parent)
     data.extend_from_slice(&1_000i64.to_le_bytes()); // dc_time
-    data.push(parent_local_id);
+                                                     // payload starts at +0x0C
+    data.extend_from_slice(&[0u8; 8]); // parent_span_id (all-zero = root)
     data.push(0); // kind
     data.push(name.len() as u8);
-    data.push(0); // reserved
+    data.extend_from_slice(&0u16.to_le_bytes()); // reserved (2 bytes)
     data.extend_from_slice(&trace_id); // 16 bytes
     data.extend_from_slice(&span_id); // 8 bytes
     data.extend_from_slice(name);
@@ -464,23 +482,19 @@ fn test_begin_with_local_ids_round_trip() {
     assert_eq!(result.trace_events.len(), 1);
 
     if let TraceWireEvent::Begin {
-        pregenerated_trace_id,
-        pregenerated_span_id,
+        trace_id,
+        span_id,
         name,
-        flags,
         ..
     } = &result.trace_events[0]
     {
-        assert_eq!(flags & 0x08, 0x08, "flag_local_ids should round-trip");
         assert_eq!(name, "hello");
         assert_eq!(
-            *pregenerated_trace_id,
-            Some(expected_trace),
+            *trace_id, expected_trace,
             "trace_id must survive the wire exactly"
         );
         assert_eq!(
-            *pregenerated_span_id,
-            Some(expected_span),
+            *span_id, expected_span,
             "span_id must survive the wire exactly"
         );
     } else {
@@ -490,29 +504,37 @@ fn test_begin_with_local_ids_round_trip() {
 
 #[test]
 fn test_begin_without_local_ids_leaves_options_none() {
-    // Same frame as the existing round_trip test — no flag_local_ids,
-    // no 24-byte trailer.
+    // Stage 3 BEGIN frame: parent_span_id(8) + kind(1) + name_len(1) + reserved(2) + trace_id(16) + span_id(8) + name
     let mut data = Vec::new();
-    data.push(5);
-    data.push(5);
-    data.push(2);
-    data.push(0);
-    data.extend_from_slice(&1000i64.to_le_bytes());
-    data.push(0xFF);
-    data.push(0);
-    data.push(9);
-    data.push(0);
+    let trace_id = [
+        11u8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    ];
+    let span_id = [30u8, 31, 32, 33, 34, 35, 36, 37];
+
+    data.push(5); // event_type
+    data.push(5); // local_id
+    data.push(2); // task_index
+    data.push(0); // flags
+    data.extend_from_slice(&1000i64.to_le_bytes()); // dc_time
+                                                    // payload starts at +0x0C
+    data.extend_from_slice(&[0u8; 8]); // parent_span_id (all-zero = root)
+    data.push(0); // kind
+    data.push(9); // name_len = "test_span".len()
+    data.extend_from_slice(&0u16.to_le_bytes()); // reserved(2)
+    data.extend_from_slice(&trace_id); // trace_id(16)
+    data.extend_from_slice(&span_id); // span_id(8)
     data.extend_from_slice(b"test_span");
 
     let result = AdsParser::parse_all(&data).unwrap();
     if let TraceWireEvent::Begin {
-        pregenerated_trace_id,
-        pregenerated_span_id,
+        trace_id: parsed_trace_id,
+        span_id: parsed_span_id,
         ..
     } = &result.trace_events[0]
     {
-        assert!(pregenerated_trace_id.is_none());
-        assert!(pregenerated_span_id.is_none());
+        // Stage 3: IDs are always present
+        assert_eq!(*parsed_trace_id, trace_id);
+        assert_eq!(*parsed_span_id, span_id);
     } else {
         panic!("expected Begin");
     }
@@ -539,12 +561,12 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
             task_index: 2,
             flags: 0x08,
             dc_time: 1_776_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "producer_op".to_string(),
             traceparent: None,
-            pregenerated_trace_id: Some(expected_trace),
-            pregenerated_span_id: Some(expected_span),
+            trace_id: expected_trace,
+            span_id: expected_span,
         },
     );
     dispatcher.on_event(
@@ -593,12 +615,12 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
             task_index: 2,
             flags: 0x02 | 0x08, // external parent + local IDs
             dc_time: 1_776_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "consumer_op".to_string(),
             traceparent: Some(traceparent),
-            pregenerated_trace_id: Some(pregen_trace),
-            pregenerated_span_id: Some(pregen_span),
+            trace_id: pregen_trace,
+            span_id: pregen_span,
         },
     );
     dispatcher.on_event(
@@ -654,12 +676,12 @@ async fn test_span_dispatcher_indexes_pregenerated_span_ids() {
             task_index: 2,
             flags: 0x08, // flag_local_ids
             dc_time: 1_776_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "indexed_span".to_string(),
             traceparent: None,
-            pregenerated_trace_id: Some(pregenerated_trace_id),
-            pregenerated_span_id: Some(pregenerated_span_id),
+            trace_id: pregenerated_trace_id,
+            span_id: pregenerated_span_id,
         },
     );
 
@@ -688,12 +710,12 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
             task_index: 2,
             flags: 0x08,
             dc_time: 1_000_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "span_to_end".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(pregenerated_span_id),
+            trace_id: [0; 16],
+            span_id: pregenerated_span_id,
         },
     );
 
@@ -742,12 +764,12 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
             task_index: 2,
             flags: 0x08,
             dc_time: 1_000_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "span_a".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(span_id_1),
+            trace_id: [0; 16],
+            span_id: span_id_1,
         },
     );
 
@@ -758,12 +780,12 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
             task_index: 2,
             flags: 0x08,
             dc_time: 1_050_000_000_000_000_000,
-            parent_local_id: 0xFF,
+            parent_span_id: [0; 8], // root
             kind: 0,
             name: "span_b".to_string(),
             traceparent: None,
-            pregenerated_trace_id: None,
-            pregenerated_span_id: Some(span_id_2),
+            trace_id: [0; 16],
+            span_id: span_id_2,
         },
     );
 

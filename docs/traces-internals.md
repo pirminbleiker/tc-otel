@@ -14,27 +14,31 @@ Architecture and implementation details for distributed tracing in tc-otel. See 
 
 All frames are little-endian. Frame layout depends on type.
 
-### SPAN_BEGIN Frame (event_type=5)
+### SPAN_BEGIN Frame (event_type=5) — Phase 6 Stage 3+
 
-Traditional 12-byte header:
+12-byte header + payload with always-embedded trace_id/span_id:
 
 ```
 +0x00  u8    event_type    5 = SPAN_BEGIN
-+0x01  u8    local_id      1-byte local_id (legacy; ignored by Stage 3+)
++0x01  u8    local_id      1-byte local_id (transport counter; semantic meaning deprecated in Stage 3)
 +0x02  u8    task_index    output of GETCURTASKINDEXEX
 +0x03  u8    flags         per-event flags (see below)
 +0x04  i64   dc_time       ns since DC epoch 2000-01-01 UTC
 +0x0C  payload:
-         u8  parent_local_id  0xFF = root; else parent's local_id (Stage 2)
-                            or [reserved for parent_span_id in Stage 4]
-         u8  kind          E_SpanKind: 0=INTERNAL, 1=SERVER, 2=CLIENT, ...
-         u8  name_len      length of span name (0..127)
-         u8  reserved      unused
-       [16B trace_id]      if flag_local_ids (bit 3) set
-       [8B span_id]        if flag_local_ids (bit 3) set
+         8B  parent_span_id   [0u8;8] = root; else parent's 8B span_id
+         u8  kind             E_SpanKind: 0=INTERNAL, 1=SERVER, 2=CLIENT, ...
+         u8  name_len         length of span name (0..127)
+         u16 reserved         unused
+         16B trace_id         PLC-minted 128-bit trace_id (always present, Stage 3+)
+         8B  span_id          PLC-minted 64-bit span_id (always present, Stage 3+)
        name[name_len]
        [1B tp_len + traceparent] if flag_has_external_parent (bit 1) set
 ```
+
+**Key changes in Stage 3:**
+- `parent_local_id` (1B) → `parent_span_id` (8B) for span-id-keyed parent lookup (no 1B→8B slot translation)
+- `trace_id` and `span_id` now **always** embedded (no `flag_local_ids` gating)
+- `flag_local_ids` flag removed; reserve space for future flags
 
 ### SPAN_ATTR Frame (event_type=6) — Phase 6 Stage 3+
 
@@ -95,34 +99,37 @@ Extended 20-byte header carrying 8-byte span_id:
 
 ### Flags (BEGIN frame only)
 
-- `flag_is_root (1<<0)` — parent_local_id ignored, tc-otel mints new trace_id
-- `flag_has_external_parent (1<<1)` — payload contains W3C traceparent string; tc-otel parses for trace_id + parent_span_id
+- `flag_has_external_parent (1<<1)` — payload contains W3C traceparent string; tc-otel parses for trace_id + parent_span_id. Stage 3+: trace_id/span_id always present; external traceparent overrides wire trace_id
 - `flag_sampled (1<<2)` — reserved for future PLC-side sampling opt-out; currently always treated as sampled
-- `flag_local_ids (1<<3)` — SPAN_BEGIN payload includes 16B trace_id + 8B span_id (Phase 5+)
+
+**Retired in Stage 3:**
+- `flag_is_root (1<<0)` — no longer needed (parent_span_id=[0u8;8] indicates root)
+- `flag_local_ids (1<<3)` — no longer needed (trace_id/span_id always present, never gated)
 
 Unknown flags must be ignored by decoders.
 
 ### Migration: Phase 2 to Phase 6 Stage 3
 
-- **Phase 2 (legacy)**: SPAN_ATTR/EVENT/END use 1-byte local_id, 12-byte header
-- **Phase 6 Stage 3 (current)**: SPAN_ATTR/EVENT/END use 8-byte span_id, 20-byte header
-- **SPAN_BEGIN**: unchanged (still carries local_id in header, though semantically deprecated)
-- **Breaking**: PLC and tc-otel must redeploy together. Mismatch → corrupted spans.
+- **Phase 2 (legacy)**: SPAN_BEGIN carries parent_local_id, flags gate trace_id/span_id; SPAN_ATTR/EVENT/END use 1-byte local_id, 12-byte header
+- **Phase 6 Stage 3 (current)**: SPAN_BEGIN always carries 8B parent_span_id and always-embedded trace_id/span_id; SPAN_ATTR/EVENT/END use 8-byte span_id, 20-byte header
+- **Breaking change**: PLC and tc-otel must redeploy together atomically. Mismatch → corrupted spans, protocol violations.
+- **Side effect**: `ST_SpanSlot`, `aSlots`, `aStack` arrays retired. `FB_Span` owns state; task tracer holds only RNG + `_pInnermost` chain pointer.
 
 ### Responsibility Split
 
 | Concern | PLC | Rust (tc-otel) |
 |---------|-----|---|
 | DC timestamps | generates per event | consumes verbatim |
-| trace_id (128 bit) | — | generates on root span |
-| span_id (64 bit) | — | generates on every BEGIN |
-| Parent linkage | emits parent_local_id (u8) | maps to actual span_id |
-| Attribute accumulation | emits as stream | holds in PendingSpan buffer |
-| Event accumulation | emits as stream | holds in PendingSpan buffer |
+| trace_id (128 bit) | mints via xorshift64 RNG; emits on SPAN_BEGIN | override only if W3C traceparent supplied |
+| span_id (64 bit) | mints via xorshift64 RNG; emits on SPAN_BEGIN | accepts PLC-minted value; no regeneration |
+| Parent linkage | emits parent_span_id (8B, all-zero=root) | looks up pending span by span_id; inherit trace_id or treat as orphan |
+| Attribute accumulation | emits as stream via SPAN_ATTR | holds in PendingSpan buffer |
+| Event accumulation | emits as stream via SPAN_EVENT | holds in PendingSpan buffer |
 | String storage | fixed STRING(N) buffers | String allocations OK |
-| Serialisation | writes wire events | builds OTLP JSON |
+| Serialisation | writes wire frames | builds OTLP JSON |
 | Timeout recovery | — | TTL sweeper evicts incomplete spans |
-| W3C traceparent parsing | passes string through | parses on SPAN_BEGIN |
+| W3C traceparent parsing | passes string through; option to override parent | parses on SPAN_BEGIN if flag_has_external_parent |
+| Span ownership (Stage 3+) | FB_Span instance holds trace_id/span_id bytes | task tracer RNG + _pInnermost chain only |
 
 ## Distributed Trace Propagation
 
