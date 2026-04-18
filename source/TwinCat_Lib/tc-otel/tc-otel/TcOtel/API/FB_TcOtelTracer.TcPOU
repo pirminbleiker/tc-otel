@@ -8,7 +8,7 @@ controller's span tree from parallel controllers on the same task.
 Phase 6 — Stage 1. The task-scoped ``FB_TcOtelTaskTracer``
 (accessed via ``PRG_TaskLog.Span``) remains the default. Bind an
 instance of ``FB_TcOtelTracer`` to an ``FB_Span`` via
-``FB_Span.BindTracer(ADR(myTracer))`` to get:
+``FB_Span.BindTracer(myTracer)`` to get:
 
 * **Isolated nesting.** Nested ``FB_Span.Begin`` under this tracer
   picks its parent from THIS tracer's own innermost-open span, not
@@ -41,7 +41,7 @@ Lifecycle:
         spn      : FB_Span;
     END_VAR
 
-    spn.BindTracer(ADR(myTracer));   // once, before first Begin
+    spn.BindTracer(myTracer);   // once, before first Begin
     spn.Begin('my_op');
     // ... work ...
     spn.End();
