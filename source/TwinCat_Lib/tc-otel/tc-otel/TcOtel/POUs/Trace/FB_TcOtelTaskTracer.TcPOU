@@ -35,6 +35,13 @@ VAR
        ~6 ops per 64-bit draw. *)
     _nXorState       : ULINT := 16#DEADBEEFCAFEF00D;
     _bRngSeeded      : BOOL  := FALSE;
+
+    (* Monotonic span counter feeding the wire header's local_id field.
+       Wraps at 255. Required so the tc-otel SpanKey — currently
+       (net_id, task, local_id) — stays unique across concurrently open
+       spans on the same task. Without this, multiple BEGINs share a
+       SpanKey and each new BEGIN flushes the previous as "timed-out". *)
+    _nNextLocalId    : USINT := 0;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -874,8 +881,10 @@ END_IF;
 (* Write frame *)
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header (12B) *)
-    _WriteFrameHeader(pBuffer, nEventTypeBegin, 0, nTaskIndex, nFlagsBegin, nDcTime);
+    (* Header (12B) — local_id is a monotonic counter so SpanKey on the
+       Rust dispatcher stays unique across concurrent open spans. *)
+    _WriteFrameHeader(pBuffer, nEventTypeBegin, _nNextLocalId, nTaskIndex, nFlagsBegin, nDcTime);
+    _nNextLocalId := _nNextLocalId + 1;
 
     (* parent_span_id (8B) *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(abParentSpanId[0]), 8);
