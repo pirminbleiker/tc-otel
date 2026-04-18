@@ -190,8 +190,11 @@
     {
       "type": "timeseries",
       "title": "Span rate (spans/s) \u2014 by service",
-      "description": "Rate of span creation across all services. Expected ~1 span/s from tester in steady state.",
-      "datasource": "Tempo",
+      "description": "Rate of span creation across all services. Derived from the otel-collector spanmetrics connector.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -216,21 +219,23 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "tempo",
-            "uid": "tempo"
+            "type": "prometheus",
+            "uid": "victoriametrics"
           },
-          "queryType": "traceql",
-          "query": "{} | rate() by (resource.service.name)",
-          "metricsQueryType": "range",
-          "filters": []
+          "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total[$__rate_interval]))",
+          "legendFormat": "{{service_name}}",
+          "range": true
         }
       ]
     },
     {
       "type": "timeseries",
       "title": "Span duration p95 \u2014 by span name",
-      "description": "95th percentile of root span duration. Rising indicates slower operations.",
-      "datasource": "Tempo",
+      "description": "95th percentile of span duration. Derived from the otel-collector spanmetrics histogram buckets.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -254,109 +259,29 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "tempo",
-            "uid": "tempo"
+            "type": "prometheus",
+            "uid": "victoriametrics"
           },
-          "queryType": "traceql",
-          "query": "{} | quantile_over_time(duration, .95) by (name)",
-          "metricsQueryType": "range",
-          "filters": []
-        }
-      ]
-    },
-    {
-      "type": "table",
-      "title": "Recent traces (limit 20)",
-      "description": "Latest traces by start time. Click trace ID to open in Tempo explorer.",
-      "datasource": "Tempo",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 26
-      },
-      "id": 108,
-      "interval": "5s",
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "startTime"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeAsUS"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "durationMs"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "ms"
-              }
-            ]
-          }
-        ]
-      },
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {},
-            "indexByName": {
-              "startTime": 0,
-              "rootServiceName": 1,
-              "rootName": 2,
-              "durationMs": 3
-            },
-            "renameByName": {
-              "startTime": "Start Time",
-              "rootServiceName": "Service",
-              "rootName": "Root Span",
-              "durationMs": "Duration (ms)",
-              "traceID": "Trace ID"
-            }
-          }
-        }
-      ],
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "tempo",
-            "uid": "tempo"
-          },
-          "queryType": "traceqlSearch",
-          "query": "{}",
-          "tableType": "traces",
-          "limit": 20,
-          "filters": []
+          "expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{span_name}}",
+          "range": true
         }
       ]
     },
     {
       "type": "text",
-      "title": "",
-      "description": "Navigate to detailed trace explorer for deep-dive analysis.",
+      "title": "Explore traces",
+      "description": "Navigate to the VictoriaTraces datasource in Explore for trace search and span-tree analysis.",
       "gridPos": {
-        "h": 3,
+        "h": 6,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 26
       },
-      "id": 109,
+      "id": 108,
       "options": {
-        "text": "### Need deeper analysis?\n\nOpen the [**Traces Drilldown** app](/a/grafana-exploretraces-app/explore?var-ds=tempo&var-primarySignal=nestedSetParent%3C0&actionView=traceList) \u2014 filter by service, span name, duration, and explore the full span tree of any trace.",
-        "mode": "markdown",
-        "content": "### Need deeper analysis?\n\nOpen the [**Traces Drilldown** app](/a/grafana-exploretraces-app/explore?var-ds=tempo&var-primarySignal=nestedSetParent%3C0&actionView=traceList) \u2014 filter by service, span name, duration, and explore the full span tree of any trace."
+        "text": "### Trace exploration\n\n- [**VictoriaTraces Explorer (VMUI)**](http://localhost:10428/select/vmui/) \u2014 native trace UI: group by span name / service, timeline view, JSON inspector, live tail. Best for deep trace analysis.\n- [**Grafana Explore \u2192 VictoriaTraces**](/explore?left=%7B%22datasource%22:%22victoria-traces%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22search%22%7D%5D,%22range%22:%7B%22from%22:%22now-15m%22,%22to%22:%22now%22%7D%7D) \u2014 Jaeger-compatible search from within Grafana, for correlation with logs/metrics panels.",
+        "mode": "markdown"
       }
     },
     {
@@ -525,7 +450,7 @@
     {
       "type": "logs",
       "title": "Task logs in range",
-      "description": "All PLC logs in the dashboard time range. For deeper analysis open Grafana Explore on the VictoriaLogs data source and query by task.cycle, severity, etc.\n\nTODO (Phase 3 \u2014 log-trace correlation): Add derivedField for `traceId` to enable clicking log rows with trace IDs to jump directly to Tempo traces. Once available, add this to fieldConfig.defaults.custom.dataLinks:\n```json\n{\"title\": \"Open Trace\", \"url\": \"/explore?var-ds=tempo&var-primarySignal=traceID&var-traceID=${traceId}\"}\n```",
+      "description": "All PLC logs in the dashboard time range. For deeper analysis open Grafana Explore on the VictoriaLogs data source and query by task.cycle, severity, etc.\n\nLog rows with `trace_id=...` / `span_id=...` are turned into clickable links by the VictoriaLogs derivedFields config and jump to the VictoriaTraces datasource.",
       "datasource": {
         "type": "victoriametrics-logs-datasource",
         "uid": "victoria-logs"

@@ -14,8 +14,8 @@ processors:
 exporters:
   debug:
     verbosity: detailed
-  otlphttp/tempo:
-    endpoint: http://tempo:4318
+  otlphttp/victoria-traces:
+    traces_endpoint: http://victoria-traces:10428/insert/opentelemetry/v1/traces
     tls:
       insecure: true
   otlphttp/victoria-logs:
@@ -26,6 +26,21 @@ exporters:
     endpoint: http://victoria-metrics:8428/api/v1/write
     tls:
       insecure: true
+
+# Connectors replace Tempo's built-in metrics-generator: spanmetrics produces
+# RED (calls_total, duration_milliseconds) series, servicegraph produces the
+# traces_service_graph_* series that Grafana's service map panel needs.
+connectors:
+  spanmetrics:
+    namespace: traces.spanmetrics
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s]
+  servicegraph:
+    latency_histogram_buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s]
+    store:
+      ttl: 2s
+      max_items: 1000
 
 extensions:
   health_check:
@@ -41,8 +56,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/tempo, debug]
+      exporters: [otlphttp/victoria-traces, spanmetrics, servicegraph, debug]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, spanmetrics, servicegraph]
       processors: [batch]
       exporters: [prometheusremotewrite/victoria-metrics]
