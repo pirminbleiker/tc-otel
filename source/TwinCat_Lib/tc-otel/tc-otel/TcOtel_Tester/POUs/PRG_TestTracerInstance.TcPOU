@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="PRG_TestTracerInstance" Id="{a9b0c1d2-e3f4-4a5b-8c6d-7e8f9a0b1c2d}" SpecialFunc="None">
     <Declaration><![CDATA[(*
@@ -23,31 +23,20 @@ PROGRAM PRG_TestTracerInstance
 VAR
     tAccum        : TIME;
     nStep         : USINT;
-    bInitialised  : BOOL;
 
     (* Controller A: tracer + its two spans *)
     tracerA       : FB_TcOtelTracer;
-    spnAOuter     : FB_Span;
-    spnAInner     : FB_Span;
+    spnAOuter     : FB_Span(tracerA);
+    spnAInner     : FB_Span(tracerA);
 
     (* Controller B: tracer + its two spans *)
     tracerB       : FB_TcOtelTracer;
-    spnBOuter     : FB_Span;
-    spnBInner     : FB_Span;
+    spnBOuter     : FB_Span(tracerB);
+    spnBInner     : FB_Span(tracerB);
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[
-// Bind each span to its controller's tracer once.
-IF NOT bInitialised THEN
-    spnAOuter.BindTracer(tracerA);
-    spnAInner.BindTracer(tracerA);
-    spnBOuter.BindTracer(tracerB);
-    spnBInner.BindTracer(tracerB);
-    bInitialised := TRUE;
-END_IF
-
-tAccum := tAccum + T#1MS;
+      <ST><![CDATA[tAccum := tAccum + T#1MS;
 
 // Every 4 s run the interleaved dance. Both controllers open outer,
 // open inner, close inner, close outer — but in shuffled order so

@@ -33,27 +33,26 @@ All scenarios use FB_Span methods only — no low-level tracer access.
 PROGRAM PRG_TestTracePropagation
 VAR
     tracer         : FB_TcOtelTracer;
-    bInitialised   : BOOL;
 
     (* Scenario 1: explicit handoff *)
-    spnProducer    : FB_Span;
-    spnConsumer    : FB_Span;
+    spnProducer    : FB_Span(tracer);
+    spnConsumer    : FB_Span(tracer);
     tScenario1Acc  : TIME;
     nScenario1Step : USINT;  (* 0 idle, 1 producer open, 2 producer ended, 3 consumer open *)
 
     (* Scenario 2: hash-based, no handoff *)
-    spnStageA      : FB_Span;
-    spnStageB      : FB_Span;
-    spnStageC      : FB_Span;
+    spnStageA      : FB_Span(tracer);
+    spnStageB      : FB_Span(tracer);
+    spnStageC      : FB_Span(tracer);
     tScenario2Acc  : TIME;
     nScenario2Step : USINT;  (* 0..3 *)
     nWorkpieceSeq  : DINT;
     sTraceParentHash : STRING(60);
 
     (* Scenario 3: chained *)
-    spnChainA      : FB_Span;
-    spnChainB      : FB_Span;
-    spnChainC      : FB_Span;
+    spnChainA      : FB_Span(tracer);
+    spnChainB      : FB_Span(tracer);
+    spnChainC      : FB_Span(tracer);
     tScenario3Acc  : TIME;
     nScenario3Step : USINT;
     sChainTp1      : STRING(60);
@@ -63,19 +62,7 @@ VAR
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[// Bind all spans to the shared tracer once
-IF NOT bInitialised THEN
-    spnProducer.BindTracer(tracer);
-    spnConsumer.BindTracer(tracer);
-    spnStageA.BindTracer(tracer);
-    spnStageB.BindTracer(tracer);
-    spnStageC.BindTracer(tracer);
-    spnChainA.BindTracer(tracer);
-    spnChainB.BindTracer(tracer);
-    spnChainC.BindTracer(tracer);
-    bInitialised := TRUE;
-END_IF
-
+      <ST><![CDATA[
 // ─── Scenario 1: explicit traceparent handoff (every 3 s) ───
 tScenario1Acc := tScenario1Acc + T#1MS;
 
