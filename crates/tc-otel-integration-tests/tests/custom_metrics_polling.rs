@@ -26,6 +26,7 @@ fn test_poll_metric_valid_config() {
         source: CustomMetricSource::Poll,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: Some(PollConfig { interval_ms: 500 }),
         notification: None,
     };
@@ -50,6 +51,7 @@ fn test_poll_metric_missing_net_id() {
         source: CustomMetricSource::Poll,
         ams_net_id: None,
         ams_port: Some(851),
+        ams_router_host: None,
         poll: Some(PollConfig::default()),
         notification: None,
     };
@@ -70,6 +72,7 @@ fn test_poll_metric_missing_port() {
         source: CustomMetricSource::Poll,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: None,
+        ams_router_host: None,
         poll: Some(PollConfig::default()),
         notification: None,
     };
@@ -90,6 +93,7 @@ fn test_poll_metric_missing_poll_config() {
         source: CustomMetricSource::Poll,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: None,
     };
@@ -111,6 +115,7 @@ fn test_multiple_poll_metrics_different_targets() {
             source: CustomMetricSource::Poll,
             ams_net_id: Some("192.168.1.100.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: Some(PollConfig { interval_ms: 500 }),
             notification: None,
         },
@@ -124,6 +129,7 @@ fn test_multiple_poll_metrics_different_targets() {
             source: CustomMetricSource::Poll,
             ams_net_id: Some("192.168.1.200.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: Some(PollConfig { interval_ms: 1000 }),
             notification: None,
         },
@@ -150,6 +156,7 @@ fn test_mixed_push_and_poll_metrics() {
             source: CustomMetricSource::Push,
             ams_net_id: None,
             ams_port: None,
+            ams_router_host: None,
             poll: None,
             notification: None,
         },
@@ -163,6 +170,7 @@ fn test_mixed_push_and_poll_metrics() {
             source: CustomMetricSource::Poll,
             ams_net_id: Some("192.168.1.100.1.1".to_string()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: Some(PollConfig::default()),
             notification: None,
         },
@@ -188,6 +196,7 @@ fn test_poll_interval_custom_value() {
         source: CustomMetricSource::Poll,
         ams_net_id: Some("192.168.1.100.1.1".to_string()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: Some(PollConfig { interval_ms: 2500 }),
         notification: None,
     };

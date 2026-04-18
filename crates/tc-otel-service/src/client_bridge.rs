@@ -46,6 +46,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 const DEFAULT_AMS_PORT: u16 = 851;
+#[allow(dead_code)]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Shared handle to the bridge — allows the web layer (T7) to access the cache
@@ -127,6 +128,11 @@ impl ClientBridge {
 
     /// Teardown and rebuild state for all targets described by `settings`.
     pub async fn reconcile(&self, settings: &AppSettings) -> Result<()> {
+        // Our own NetID (used as AMS source when dialing). Derived from the
+        // main receiver config so the PLC sees a consistent peer identity.
+        let source_netid = tc_otel_client::AmsNetId::from_str(&settings.receiver.ams_net_id)
+            .unwrap_or(tc_otel_client::AmsNetId([10, 10, 10, 10, 1, 1]));
+
         let desired: Vec<&CustomMetricDef> = settings
             .metrics
             .custom_metrics
@@ -168,8 +174,10 @@ impl ClientBridge {
         }
 
         for (_key, (tgt, defs)) in by_target {
-            if let Err(e) = self.rebuild_target(tgt, defs).await {
-                warn!(error = ?e, "client-bridge: rebuild failed for target");
+            if let Err(e) = self.rebuild_target(tgt, defs, source_netid).await {
+                // Use Debug formatting on the whole chain so the root cause is
+                // surfaced in the log instead of just the outermost context.
+                warn!("client-bridge: rebuild failed for target: {:#}", e);
             }
         }
 
@@ -180,6 +188,7 @@ impl ClientBridge {
         &self,
         tgt: TargetDescriptor,
         defs: Vec<CustomMetricDef>,
+        source_netid: tc_otel_client::AmsNetId,
     ) -> Result<()> {
         // Tear down any previous state for this target (subscriptions will be
         // dropped server-side automatically).
@@ -189,13 +198,41 @@ impl ClientBridge {
         }
 
         // Dial the PLC. Blocking — done off the runtime.
+        //
+        // We do *not* pre-register via UDP `add_route` here: many TwinCAT
+        // containers (incl. the test xar-base) reject unauthenticated
+        // route-add (error 0x704). Instead, we try to connect directly with
+        // the configured source NetID; if the PLC has a matching route (or
+        // enforces it permissively), the connection succeeds.
         let router_addr = tgt.router_addr.clone();
         let ams_target = tgt.ams_target;
-        let client =
-            tokio::task::spawn_blocking(move || AdsClient::connect_auto(&router_addr, ams_target))
+        let client = tokio::task::spawn_blocking(move || {
+            AdsClient::connect_with_source_netid(&router_addr, source_netid, ams_target)
+        })
+        .await
+        .context("connect task join")?;
+
+        // If direct connect failed, try to register a route and reconnect.
+        let client = match client {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, host = %tgt.router_host,
+                    "client-bridge: direct connect failed, attempting add_route + retry");
+                let host_for_route = tgt.router_host.clone();
+                let route_host = our_host_label();
+                let _ = tokio::task::spawn_blocking(move || {
+                    AdsClient::add_route(&host_for_route, source_netid, &route_host)
+                })
+                .await;
+                let router_addr2 = tgt.router_addr.clone();
+                tokio::task::spawn_blocking(move || {
+                    AdsClient::connect_with_source_netid(&router_addr2, source_netid, ams_target)
+                })
                 .await
-                .context("connect task join")?
-                .context("ads connect")?;
+                .context("retry connect join")?
+                .context("ads connect retry")?
+            }
+        };
 
         // Populate or refresh the symbol cache for this target.
         let bridge_client = client.clone();
@@ -297,8 +334,11 @@ async fn resolve_meta(
 struct TargetDescriptor {
     key: TargetKey,
     ams_target: tc_otel_client::AmsAddr,
-    /// Dial-string for `ads::Client::new`. Format: `"<host>:48898"`. The host
-    /// is the first four bytes of the AMS Net ID (rendered as an IPv4 address).
+    /// Hostname or IP used to dial the PLC's AMS router. Either
+    /// `def.ams_router_host` verbatim, or the first four bytes of
+    /// `ams_net_id` rendered as an IPv4 address.
+    router_host: String,
+    /// `"<router_host>:48898"` — pre-built dial-string for `ads::Client::new`.
     router_addr: String,
 }
 
@@ -312,11 +352,18 @@ impl TargetDescriptor {
             .map_err(|e| anyhow::anyhow!("invalid ams_net_id '{id_str}': {e}"))?;
         let port = def.ams_port.unwrap_or(DEFAULT_AMS_PORT);
         let key = TargetKey::from(netid);
-        let [a, b, c, d, _, _] = netid.0;
-        let router_addr = format!("{a}.{b}.{c}.{d}:48898");
+        let router_host = match def.ams_router_host.as_deref() {
+            Some(h) if !h.is_empty() => h.to_string(),
+            _ => {
+                let [a, b, c, d, _, _] = netid.0;
+                format!("{a}.{b}.{c}.{d}")
+            }
+        };
+        let router_addr = format!("{router_host}:48898");
         Ok(Self {
             key,
             ams_target: tc_otel_client::AmsAddr::new(netid, port),
+            router_host,
             router_addr,
         })
     }
@@ -328,10 +375,12 @@ impl std::fmt::Debug for TargetDescriptor {
     }
 }
 
-// AdsClient isn't Clone by default? Actually I derived Clone — good.
-// The Poller constructor takes Arc<R> so we wrap. Timeouts above are const.
-// We unused CONNECT_TIMEOUT but keep for future wiring into Timeouts::new.
-#[allow(dead_code)]
-fn _connect_timeout_unused() -> Duration {
-    CONNECT_TIMEOUT
+/// Our hostname as reported to the PLC's route-add handler. Kept short — the
+/// PLC uses it only for display. `hostname()` fallback to a compile-time
+/// constant so the test works inside containers without `/etc/hostname`.
+fn our_host_label() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "tc-otel".to_string())
 }

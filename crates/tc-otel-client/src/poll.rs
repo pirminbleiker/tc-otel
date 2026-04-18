@@ -161,6 +161,7 @@ mod tests {
             source: tc_otel_core::config::CustomMetricSource::Poll,
             ams_net_id: Some("10.0.0.1.1.1".into()),
             ams_port: Some(851),
+            ams_router_host: None,
             poll: Some(PollConfig { interval_ms: 100 }),
             notification: None,
         }

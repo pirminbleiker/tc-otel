@@ -89,6 +89,7 @@ fn def_for(symbol: &str, name: &str, min_period_ms: u32) -> CustomMetricDef {
         source: CustomMetricSource::Notification,
         ams_net_id: Some("10.0.0.1.1.1".into()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: None,
         notification: Some(NotificationConfig {
             min_period_ms,

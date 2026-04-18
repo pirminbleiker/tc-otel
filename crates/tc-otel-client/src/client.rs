@@ -116,6 +116,45 @@ impl AdsClient {
         )
     }
 
+    /// Connect using a caller-supplied source NetID (ephemeral port 58913).
+    ///
+    /// This is the typical constructor used by the service bridge — it ensures
+    /// the peer identity matches the NetID the PLC expects in its route table.
+    pub fn connect_with_source_netid(
+        router_addr: &str,
+        source_netid: ads::AmsNetId,
+        target: ads::AmsAddr,
+    ) -> Result<Self> {
+        Self::connect(
+            router_addr,
+            AdsSource::Addr(ads::AmsAddr::new(source_netid, 58913)),
+            target,
+            ads::Timeouts::new(Duration::from_secs(5)),
+        )
+    }
+
+    /// Register an AMS route on the target PLC via its UDP discovery port
+    /// (48899). Necessary before `connect_*` on a PLC that doesn't already
+    /// have a static route to our NetID.
+    ///
+    /// `source_netid` is our own NetID. `our_host` is a short hostname or IP
+    /// the PLC should record as the route's peer — used by the PLC only for
+    /// display and rDNS.
+    ///
+    /// Blocking — call from `spawn_blocking` in async contexts.
+    pub fn add_route(target_host: &str, source_netid: ads::AmsNetId, our_host: &str) -> Result<()> {
+        ads::udp::add_route(
+            (target_host, 48899),
+            source_netid,
+            our_host,
+            None,
+            None,
+            None,
+            /* temporary */ true,
+        )
+        .map_err(|e| ClientError::Ads(format!("add_route: {e}")))
+    }
+
     /// Access the underlying `ads::Client` under the mutex. Mainly used by
     /// `poll` and `notify` modules to issue domain-specific calls.
     pub fn with_client<F, R>(&self, f: F) -> R

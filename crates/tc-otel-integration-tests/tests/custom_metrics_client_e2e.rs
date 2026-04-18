@@ -84,6 +84,7 @@ fn def(
         source,
         ams_net_id: Some(format!("{}", fmt_netid(netid))),
         ams_port: Some(port),
+        ams_router_host: None,
         poll: Some(PollConfig { interval_ms: 200 }),
         notification: Some(NotificationConfig {
             min_period_ms: 50,

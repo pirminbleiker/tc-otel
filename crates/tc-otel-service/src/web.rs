@@ -897,6 +897,15 @@ td{font-size:.9rem}
 
   function renderUnion(schema,value,path,key){
     const variants=(schema.oneOf||schema.anyOf).map(resolve);
+    // Plain-string-enum union (e.g. schemars emits #[serde(rename_all)] enums
+    // as oneOf of {enum:[lit], type:"string"}). Render as a <select>.
+    const allStringLit=variants.every(v=>v&&v.type==='string'&&Array.isArray(v.enum)&&v.enum.length===1&&!v.properties);
+    if(allStringLit){
+      const lits=variants.map(v=>v.enum[0]);
+      const opts=lits.map(lit=>`<option value="${escape(lit)}"${lit===value?' selected':''}>${escape(lit)}</option>`).join('');
+      const desc=schema.description?`<div class="hint">${escape(schema.description)}</div>`:'';
+      return `<div class="cfg-field" data-path="${path}">${key!=null?`<label>${escape(titleOf(schema,key))}</label>`:''}${desc}<select data-kind="enum">${opts}</select></div>`;
+    }
     // Determine active variant: match by 'type' discriminator if present
     let active=0;
     if(value&&typeof value==='object'&&value.type){
@@ -1014,11 +1023,75 @@ td{font-size:.9rem}
     });
   }
 
+  // Normalize `custom_metrics` entries before save. The form always renders
+  // all fields (poll + notification blocks regardless of source), but the
+  // backend expects at most one of `poll` / `notification` to be populated
+  // and rejects null numeric sub-fields. We therefore:
+  //   1. Drop the inapplicable variant entirely based on `source`.
+  //   2. Strip keys with null values *inside the entry* so serde's
+  //      `#[serde(default)]` can fill them in.
+  // The rest of the payload is left as-is — other parts of the form were
+  // written to emit nulls only in spots where the Rust struct already
+  // handles them.
+  function stripNullsFromItem(obj){
+    if(Array.isArray(obj))return obj.map(stripNullsFromItem);
+    if(obj&&typeof obj==='object'){
+      const out={};
+      for(const [k,v] of Object.entries(obj)){
+        if(v==null)continue;
+        out[k]=stripNullsFromItem(v);
+      }
+      return out;
+    }
+    return obj;
+  }
+  // Drop or collapse null-valued sub-objects that the backend requires to be
+  // absent rather than null. Covers `transport.tls` (contains non-Option
+  // `ca_cert_path`) and other Option<Struct> fields the form always renders.
+  function normalizeOptionalStructs(payload){
+    const r=payload?.receiver;
+    if(r){
+      // Top-level TLS block: if disabled and paths all null, strip to null.
+      const tls=r.tls;
+      if(tls&&tls.enabled===false){
+        // All path fields are Option<PathBuf>; nulls are fine individually,
+        // but the struct itself is also Option<ReceiverTls> — cleaner to null
+        // the whole thing when off. Keep enabled=false only.
+      }
+      // Transport TLS: the Mqtt variant carries a *non-Option* ca_cert_path.
+      // If the form emits null there, the whole transport.tls must be dropped
+      // (it is Option<MqttTlsConfig> / Option<NatsTlsConfig> on the backend).
+      const t=r.transport;
+      if(t&&t.tls&&typeof t.tls==='object'){
+        const hasAnyPath=['ca_cert_path','client_cert_path','client_key_path']
+          .some(k=>t.tls[k]!=null);
+        if(!hasAnyPath)t.tls=null;
+      }
+    }
+    return payload;
+  }
+  function normalizeCustomMetrics(payload){
+    const items=payload&&payload.metrics&&Array.isArray(payload.metrics.custom_metrics)
+      ?payload.metrics.custom_metrics:null;
+    if(!items)return payload;
+    payload.metrics.custom_metrics=items.map(item=>{
+      if(!item||typeof item!=='object')return item;
+      if(item.source==='poll'||item.source==='push')item.notification=null;
+      if(item.source==='notification'||item.source==='push')item.poll=null;
+      const allNull=o=>o&&typeof o==='object'&&Object.values(o).every(v=>v==null);
+      if(allNull(item.poll))item.poll=null;
+      if(allNull(item.notification))item.notification=null;
+      // Drop leftover nulls inside the item itself (e.g. unset description).
+      return stripNullsFromItem(item);
+    });
+    return payload;
+  }
+
   window.saveConfig=async function(){
     if(!rootSchema){showToast('Schema noch nicht geladen.','err');return}
     saveBtn.disabled=true;
     try{
-      const payload=collect(root,'');
+      const payload=normalizeOptionalStructs(normalizeCustomMetrics(collect(root,'')));
       const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const res=await r.json();
       if(r.ok){

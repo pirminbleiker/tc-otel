@@ -55,6 +55,7 @@ fn def(interval_ms: u64, kind: MetricKindConfig) -> CustomMetricDef {
         source: CustomMetricSource::Poll,
         ams_net_id: Some("10.0.0.1.1.1".into()),
         ams_port: Some(851),
+        ams_router_host: None,
         poll: Some(PollConfig { interval_ms }),
         notification: None,
     }
