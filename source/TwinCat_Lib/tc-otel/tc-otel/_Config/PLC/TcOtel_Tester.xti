@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <TcSmItem xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2012/07/TcSmProject" TcSmVersion="1.0" TcVersion="3.1.4026.22" ClassName="CNestedPlcProjDef">
 	<Project GUID="{BE380BFA-BE18-45AC-98AA-FF1ACCC650C5}" Name="TcOtel_Tester" PrjFilePath="..\..\TcOtel_Tester\TcOtel_Tester.plcproj" TmcFilePath="..\..\TcOtel_Tester\TcOtel_Tester.tmc" ReloadTmc="true" AmsPort="852" FileArchiveSettings="#x000e" SymbolicMapping="true">
-		<Instance Id="#x08502040" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{C476FC62-EEAE-3629-067C-FB204D031EFE}" TmcPath="TcOtel_Tester\TcOtel_Tester.tmc">
+		<Instance Id="#x08502040" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{5E84B922-DA8B-9051-9AC2-E1D8160FDED2}" TmcPath="TcOtel_Tester\TcOtel_Tester.tmc">
 			<Name>TcOtel_Tester Instance</Name>
 			<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 			<Contexts>
