@@ -200,16 +200,6 @@ PRG_TaskLog.Span.Begin(
     sTraceParent := sTraceParent,
     bIsolated    := _pTracer <> 0);
 
-(* Stage 3: mirror the just-minted trace_id + span_id into THIS FB_Span so
-   TraceParent reads the canonical bytes and child spans inherit a valid
-   context. Without this, _abTraceId / _abSpanId stay zero and isolated
-   children (bound tracer) adopt an all-zero trace_id from the parent's
-   CurrentTraceParent. *)
-PRG_TaskLog.Span.CopyIdsTo(
-    hSpan    := _hSpan,
-    pTraceId := ADR(_abTraceId),
-    pSpanId  := ADR(_abSpanId));
-
 (* Mark open and reset status *)
 _bOpen := TRUE;
 _eStatus := E_SpanStatus.eOk;
