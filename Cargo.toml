@@ -2,6 +2,7 @@
 members = [
     "crates/tc-otel-core",
     "crates/tc-otel-ads",
+    "crates/tc-otel-client",
     "crates/tc-otel-export",
     "crates/tc-otel-service",
     "crates/tc-otel-benches",
@@ -53,6 +54,7 @@ clap = { version = "4.4", features = ["derive"] }
 # Internal crates
 tc-otel-core = { path = "crates/tc-otel-core" }
 tc-otel-ads = { path = "crates/tc-otel-ads" }
+tc-otel-client = { path = "crates/tc-otel-client" }
 tc-otel-export = { path = "crates/tc-otel-export" }
 tc-otel-service = { path = "crates/tc-otel-service" }
 

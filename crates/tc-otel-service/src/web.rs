@@ -110,6 +110,12 @@ pub struct WebState {
     pub config_path: Arc<std::path::PathBuf>,
     pub current_settings: Arc<RwLock<tc_otel_core::AppSettings>>,
     pub restart_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// Handle to the active-client bridge (poll + notification sources).
+    /// `None` when the `client-bridge` feature is disabled or no bridge was
+    /// spawned. Endpoints under `/api/client/*` short-circuit to 503 when
+    /// `None`.
+    #[cfg(feature = "client-bridge")]
+    pub client_bridge: Option<crate::client_bridge::ClientBridge>,
 }
 
 // --- API response types ---
@@ -437,7 +443,7 @@ async fn get_config_schema() -> Json<serde_json::Value> {
 
 /// Build the axum router for the web UI
 pub fn router(state: WebState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(dashboard))
         .route("/health", get(health))
         .route("/api/status", get(status))
@@ -448,8 +454,234 @@ pub fn router(state: WebState) -> Router {
         .route("/api/cycle-metrics", get(cycle_metrics))
         .route("/api/config", get(get_config))
         .route("/api/config", post(post_config))
-        .route("/api/config/schema", get(get_config_schema))
-        .with_state(state)
+        .route("/api/config/schema", get(get_config_schema));
+    let router = attach_client_routes(router);
+    router.with_state(state)
+}
+
+/// Routes for the active-client bridge (poll + notification symbols).
+///
+/// These exist unconditionally — the handlers return 503 when the
+/// `client-bridge` feature is disabled or no bridge was attached to the
+/// state. UI code can therefore render a "disabled" banner based on the
+/// HTTP response rather than needing a separate build.
+fn attach_client_routes(router: Router<WebState>) -> Router<WebState> {
+    router
+        .route("/api/client/symbols", get(client_get_symbols))
+        .route("/api/client/symbols/refresh", post(client_refresh_symbols))
+        .route("/api/client/targets", get(client_list_targets))
+}
+
+#[cfg(feature = "client-bridge")]
+#[derive(Serialize)]
+struct ClientSymbolsResponse {
+    target: String,
+    fetched_at: Option<String>,
+    count: usize,
+    symbols: Vec<ClientSymbolNode>,
+}
+
+#[cfg(feature = "client-bridge")]
+#[derive(Serialize)]
+struct ClientSymbolNode {
+    name: String,
+    type_name: String,
+    igroup: u32,
+    ioffset: u32,
+    size: u32,
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(not(feature = "client-bridge"), allow(dead_code))]
+struct SymbolsQuery {
+    target: Option<String>,
+    filter: Option<String>,
+}
+
+#[cfg(feature = "client-bridge")]
+async fn client_get_symbols(
+    State(state): State<WebState>,
+    axum::extract::Query(q): axum::extract::Query<SymbolsQuery>,
+) -> Result<Json<ClientSymbolsResponse>, (StatusCode, String)> {
+    let bridge = state.client_bridge.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge not running".into(),
+    ))?;
+    let target_str = q.target.ok_or((
+        StatusCode::BAD_REQUEST,
+        "missing 'target' query param".into(),
+    ))?;
+    let netid = parse_net_id(&target_str).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("invalid AMS Net ID: {target_str}"),
+    ))?;
+    let key = tc_otel_client::cache::TargetKey(netid);
+    let cache = bridge.cache();
+    let tree = cache.get(key).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("no cached symbols for target {target_str}"),
+    ))?;
+    let fetched_at = cache.fetched_at(key).map(|t| t.to_rfc3339());
+    let filter = q.filter.unwrap_or_default();
+    let filtered: Vec<ClientSymbolNode> = if filter.is_empty() {
+        tree.nodes
+            .iter()
+            .map(|n| ClientSymbolNode {
+                name: n.name.clone(),
+                type_name: n.type_name.clone(),
+                igroup: n.igroup,
+                ioffset: n.ioffset,
+                size: n.size,
+            })
+            .collect()
+    } else {
+        tree.iter_prefix(&filter)
+            .map(|n| ClientSymbolNode {
+                name: n.name.clone(),
+                type_name: n.type_name.clone(),
+                igroup: n.igroup,
+                ioffset: n.ioffset,
+                size: n.size,
+            })
+            .collect()
+    };
+    Ok(Json(ClientSymbolsResponse {
+        target: target_str,
+        fetched_at,
+        count: filtered.len(),
+        symbols: filtered,
+    }))
+}
+
+#[cfg(not(feature = "client-bridge"))]
+async fn client_get_symbols(
+    State(_state): State<WebState>,
+    axum::extract::Query(_q): axum::extract::Query<SymbolsQuery>,
+) -> (StatusCode, &'static str) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge feature is not compiled in",
+    )
+}
+
+#[derive(serde::Deserialize)]
+#[cfg_attr(not(feature = "client-bridge"), allow(dead_code))]
+struct RefreshQuery {
+    target: String,
+}
+
+#[cfg(feature = "client-bridge")]
+#[derive(Serialize)]
+struct RefreshResponse {
+    target: String,
+    invalidated: bool,
+}
+
+#[cfg(feature = "client-bridge")]
+async fn client_refresh_symbols(
+    State(state): State<WebState>,
+    axum::extract::Query(q): axum::extract::Query<RefreshQuery>,
+) -> Result<Json<RefreshResponse>, (StatusCode, String)> {
+    let bridge = state.client_bridge.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge not running".into(),
+    ))?;
+    let netid = parse_net_id(&q.target).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("invalid AMS Net ID: {}", q.target),
+    ))?;
+    let key = tc_otel_client::cache::TargetKey(netid);
+    // Invalidate. Next reconcile or an explicit rebuild will repopulate.
+    let cache = bridge.cache();
+    let had = cache.get(key).is_some();
+    cache.invalidate(key);
+    Ok(Json(RefreshResponse {
+        target: q.target,
+        invalidated: had,
+    }))
+}
+
+#[cfg(not(feature = "client-bridge"))]
+async fn client_refresh_symbols(
+    State(_state): State<WebState>,
+    axum::extract::Query(_q): axum::extract::Query<RefreshQuery>,
+) -> (StatusCode, &'static str) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge feature is not compiled in",
+    )
+}
+
+#[cfg(feature = "client-bridge")]
+#[derive(Serialize)]
+struct ClientTargetInfo {
+    ams_net_id: String,
+    cached: bool,
+    symbol_count: usize,
+    fetched_at: Option<String>,
+}
+
+#[cfg(feature = "client-bridge")]
+async fn client_list_targets(
+    State(state): State<WebState>,
+) -> Result<Json<Vec<ClientTargetInfo>>, (StatusCode, String)> {
+    let bridge = state.client_bridge.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge not running".into(),
+    ))?;
+    // Enumerate targets from the config (ground truth for "what's desired")
+    // rather than the cache (which only shows what's been fetched).
+    let settings = state.current_settings.read().unwrap();
+    use std::collections::HashSet;
+    let mut desired: HashSet<String> = HashSet::new();
+    for def in &settings.metrics.custom_metrics {
+        if matches!(def.source, tc_otel_core::config::CustomMetricSource::Push) {
+            continue;
+        }
+        if let Some(id) = def.ams_net_id.as_deref() {
+            desired.insert(id.to_string());
+        }
+    }
+    let cache = bridge.cache();
+    let mut out: Vec<ClientTargetInfo> = desired
+        .into_iter()
+        .map(|id| {
+            let key = parse_net_id(&id).map(tc_otel_client::cache::TargetKey);
+            let (cached, count, ts) = match key.and_then(|k| cache.get(k).map(|t| (k, t))) {
+                Some((k, t)) => (true, t.len(), cache.fetched_at(k).map(|x| x.to_rfc3339())),
+                None => (false, 0, None),
+            };
+            ClientTargetInfo {
+                ams_net_id: id,
+                cached,
+                symbol_count: count,
+                fetched_at: ts,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.ams_net_id.cmp(&b.ams_net_id));
+    Ok(Json(out))
+}
+
+#[cfg(not(feature = "client-bridge"))]
+async fn client_list_targets(State(_state): State<WebState>) -> (StatusCode, &'static str) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "client-bridge feature is not compiled in",
+    )
+}
+
+#[cfg(feature = "client-bridge")]
+fn parse_net_id(s: &str) -> Option<[u8; 6]> {
+    let parts: Vec<_> = s.split('.').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let mut out = [0u8; 6];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p.parse().ok()?;
+    }
+    Some(out)
 }
 
 /// Start the web server. Returns when shutdown signal is received.
@@ -507,7 +739,7 @@ td{font-size:.9rem}
 <body>
 <div class="container">
 <h1>tc-otel Dashboard</h1>
-<nav id="topnav" style="display:flex;gap:.5rem;margin-bottom:1rem"><a href="#/" class="btn" id="nav-dash">Dashboard</a><a href="#/config" class="btn" id="nav-cfg">Config</a></nav>
+<nav id="topnav" style="display:flex;gap:.5rem;margin-bottom:1rem"><a href="#/" class="btn" id="nav-dash">Dashboard</a><a href="#/config" class="btn" id="nav-cfg">Config</a><a href="#/symbols" class="btn" id="nav-sym">Symbols</a></nav>
 <div id="error"></div>
 
 <div id="dashboard-view">
@@ -537,6 +769,27 @@ td{font-size:.9rem}
 <button id="config-save-btn" class="btn" onclick="saveConfig()">Speichern</button>
 <div id="config-toast" class="toast" style="display:none;background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1rem;margin-top:1rem"></div>
 </section>
+
+<section id="symbols-view" style="display:none">
+<h2>PLC Symbol Browser</h2>
+<div id="sym-banner" style="color:#fbbf24;background:#422006;border:1px solid #ca8a04;border-radius:.25rem;padding:.5rem;margin-bottom:1rem;display:none"></div>
+<div class="section">
+  <h2 style="font-size:.9rem">Configured Targets</h2>
+  <table style="margin-bottom:1rem"><thead><tr><th>AMS Net ID</th><th>Cached</th><th>Symbols</th><th>Fetched At</th><th></th></tr></thead><tbody id="sym-targets"></tbody></table>
+</div>
+<div class="section">
+  <h2 style="font-size:.9rem">Symbols for <span id="sym-selected-target" style="color:#38bdf8">—</span></h2>
+  <div style="display:flex;gap:.5rem;margin-bottom:.5rem;align-items:center">
+    <input id="sym-filter" type="text" placeholder="filter by prefix (e.g. MAIN.)" style="flex:1;padding:.4rem .6rem;background:#0f172a;border:1px solid #475569;border-radius:.25rem;color:#e2e8f0">
+    <button class="btn" onclick="symRefreshCurrent()">Refresh</button>
+  </div>
+  <div id="sym-stats" style="font-size:.8rem;color:#64748b;margin-bottom:.5rem"></div>
+  <div style="max-height:60vh;overflow-y:auto">
+    <table><thead><tr><th>Symbol</th><th>Type</th><th>Size</th><th>IG</th><th>IO</th><th></th></tr></thead><tbody id="sym-rows"></tbody></table>
+  </div>
+</div>
+</section>
+
 </div>
 <style id="cfg-style">
 .cfg-section{background:#1e293b;border:1px solid #334155;border-radius:.5rem;margin-bottom:1rem;overflow:hidden}
@@ -781,15 +1034,110 @@ td{font-size:.9rem}
   };
 
   function route(){
-    const isCfg=location.hash==='#/config';
-    document.getElementById('dashboard-view').style.display=isCfg?'none':'';
+    const h=location.hash;
+    const isCfg=h==='#/config';
+    const isSym=h==='#/symbols';
+    document.getElementById('dashboard-view').style.display=(isCfg||isSym)?'none':'';
     document.getElementById('config-view').style.display=isCfg?'':'none';
+    document.getElementById('symbols-view').style.display=isSym?'':'none';
     document.getElementById('nav-cfg').style.background=isCfg?'#1d4ed8':'';
-    document.getElementById('nav-dash').style.background=isCfg?'':'#1d4ed8';
+    document.getElementById('nav-sym').style.background=isSym?'#1d4ed8':'';
+    document.getElementById('nav-dash').style.background=(isCfg||isSym)?'':'#1d4ed8';
     if(isCfg&&!rootSchema)loadAndRender();
+    if(isSym)window.symLoadTargets&&window.symLoadTargets();
   }
   window.addEventListener('hashchange',route);
   route();
+})();
+</script>
+
+<!-- T8: Symbol browser -->
+<script>
+(function(){
+  let currentTarget=null;
+  let lastSymbols=[];
+
+  async function fetchJson(url,opts){
+    const r=await fetch(url,opts);
+    if(r.status===503){throw new Error('client-bridge is not enabled (HTTP 503)')}
+    if(!r.ok){let t='';try{t=await r.text()}catch(_){}throw new Error(t||r.statusText)}
+    return r.json();
+  }
+
+  function banner(msg,kind){
+    const el=document.getElementById('sym-banner');
+    if(!msg){el.style.display='none';return}
+    el.textContent=msg;
+    el.style.display='block';
+    el.style.color=kind==='err'?'#fecaca':'#fbbf24';
+    el.style.background=kind==='err'?'#450a0a':'#422006';
+    el.style.borderColor=kind==='err'?'#dc2626':'#ca8a04';
+  }
+
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])}
+
+  async function loadTargets(){
+    banner('','');
+    try{
+      const list=await fetchJson('/api/client/targets');
+      const tb=document.getElementById('sym-targets');
+      if(!list.length){tb.innerHTML='<tr><td colspan="5" style="color:#64748b">No custom_metrics with poll/notification source configured.</td></tr>';return}
+      tb.innerHTML=list.map(t=>{
+        const cachedCell=t.cached?`<span style="color:#4ade80">✓</span>`:`<span style="color:#64748b">—</span>`;
+        const when=t.fetched_at||'never';
+        const pickLabel=currentTarget===t.ams_net_id?'Selected':'Browse';
+        return `<tr><td><code>${esc(t.ams_net_id)}</code></td><td>${cachedCell}</td><td>${t.symbol_count}</td><td style="color:#94a3b8;font-size:.8rem">${esc(when)}</td><td><button class="btn" onclick="symPick('${esc(t.ams_net_id)}')">${pickLabel}</button></td></tr>`;
+      }).join('');
+    }catch(e){banner('Failed to load targets: '+e.message,'err')}
+  }
+
+  window.symLoadTargets=loadTargets;
+
+  window.symPick=async function(target){
+    currentTarget=target;
+    document.getElementById('sym-selected-target').textContent=target;
+    await loadSymbols();
+    loadTargets();
+  };
+
+  async function loadSymbols(){
+    if(!currentTarget){return}
+    const filter=document.getElementById('sym-filter').value.trim();
+    const url='/api/client/symbols?target='+encodeURIComponent(currentTarget)+(filter?('&filter='+encodeURIComponent(filter)):'');
+    try{
+      const res=await fetchJson(url);
+      lastSymbols=res.symbols;
+      document.getElementById('sym-stats').textContent=`${res.count} symbol(s) — fetched ${res.fetched_at||'—'}`;
+      renderSymbols();
+    }catch(e){
+      document.getElementById('sym-rows').innerHTML=`<tr><td colspan="6" style="color:#fecaca">Error: ${esc(e.message)}</td></tr>`;
+      document.getElementById('sym-stats').textContent='';
+    }
+  }
+
+  function renderSymbols(){
+    const body=document.getElementById('sym-rows');
+    if(!lastSymbols.length){body.innerHTML='<tr><td colspan="6" style="color:#64748b">No symbols match.</td></tr>';return}
+    const limit=500;
+    const shown=lastSymbols.slice(0,limit);
+    body.innerHTML=shown.map(s=>
+      `<tr><td><code>${esc(s.name)}</code></td><td>${esc(s.type_name)}</td><td>${s.size}</td><td>0x${s.igroup.toString(16)}</td><td>${s.ioffset}</td><td><button class="btn" style="padding:.2rem .5rem;font-size:.75rem" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(s.name)}')">copy</button></td></tr>`
+    ).join('') + (lastSymbols.length>limit?`<tr><td colspan="6" style="color:#64748b">… ${lastSymbols.length-limit} more, narrow the filter.</td></tr>`:'');
+  }
+
+  window.symRefreshCurrent=async function(){
+    if(!currentTarget){return}
+    try{
+      await fetchJson('/api/client/symbols/refresh?target='+encodeURIComponent(currentTarget),{method:'POST'});
+      banner('Cache invalidated — waiting for next reconcile to repopulate.','');
+      await loadTargets();
+    }catch(e){banner('Refresh failed: '+e.message,'err')}
+  };
+
+  document.getElementById('sym-filter').addEventListener('input',()=>{
+    clearTimeout(window._symFilterTimer);
+    window._symFilterTimer=setTimeout(loadSymbols,200);
+  });
 })();
 </script>
 <!-- CONFIG-FORM-JS-INJECTION-POINT -->
@@ -857,6 +1205,8 @@ mod tests {
             config_path: Arc::new(std::path::PathBuf::from("/tmp/config.json")),
             current_settings: Arc::new(RwLock::new(AppSettings::default())),
             restart_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "client-bridge")]
+            client_bridge: None,
         }
     }
 
@@ -1249,5 +1599,177 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // --- T7: client-bridge routes ----------------------------------------
+
+    #[tokio::test]
+    async fn client_symbols_503_when_bridge_absent() {
+        // In default builds (feature off) the handler always returns 503.
+        // In feature-on builds the state.client_bridge is None by default in
+        // tests (test_state() sets it to None), so the handler also returns
+        // 503. Either way the response is the same.
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/client/symbols?target=10.0.0.1.1.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn client_refresh_503_when_bridge_absent() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post("/api/client/symbols/refresh?target=10.0.0.1.1.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn client_targets_503_when_bridge_absent() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/client/targets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[cfg(feature = "client-bridge")]
+    #[tokio::test]
+    async fn client_symbols_returns_cached_tree() {
+        use std::sync::Arc;
+        use tc_otel_client::browse::{SymbolNode, SymbolTree};
+        use tc_otel_client::cache::{SymbolTreeCache, TargetKey};
+
+        let cache = Arc::new(SymbolTreeCache::new());
+        let mut tree = SymbolTree::default();
+        tree.nodes.push(SymbolNode {
+            name: "MAIN.fTemp".into(),
+            type_name: "LREAL".into(),
+            comment: String::new(),
+            igroup: 0x4040,
+            ioffset: 0,
+            size: 8,
+            datatype: 5,
+            flags: 0,
+        });
+        let key = TargetKey([10, 0, 0, 1, 1, 1]);
+        cache.insert(key, tree);
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let mut state = test_state();
+        state.client_bridge = Some(bridge);
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/client/symbols?target=10.0.0.1.1.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["symbols"][0]["name"], "MAIN.fTemp");
+        assert_eq!(json["symbols"][0]["type_name"], "LREAL");
+    }
+
+    #[cfg(feature = "client-bridge")]
+    #[tokio::test]
+    async fn client_symbols_404_for_unknown_target() {
+        use std::sync::Arc;
+        use tc_otel_client::cache::SymbolTreeCache;
+
+        let cache = Arc::new(SymbolTreeCache::new());
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let mut state = test_state();
+        state.client_bridge = Some(bridge);
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/client/symbols?target=99.99.99.99.1.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "client-bridge")]
+    #[tokio::test]
+    async fn client_refresh_invalidates_cache() {
+        use std::sync::Arc;
+        use tc_otel_client::browse::SymbolTree;
+        use tc_otel_client::cache::{SymbolTreeCache, TargetKey};
+
+        let cache = Arc::new(SymbolTreeCache::new());
+        let key = TargetKey([10, 0, 0, 1, 1, 1]);
+        cache.insert(key, SymbolTree::default());
+        assert!(cache.get(key).is_some());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache.clone());
+        let mut state = test_state();
+        state.client_bridge = Some(bridge);
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::post("/api/client/symbols/refresh?target=10.0.0.1.1.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(cache.get(key).is_none());
+    }
+
+    #[cfg(feature = "client-bridge")]
+    #[tokio::test]
+    async fn client_symbols_bad_netid_rejected() {
+        use std::sync::Arc;
+        use tc_otel_client::cache::SymbolTreeCache;
+
+        let cache = Arc::new(SymbolTreeCache::new());
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let mut state = test_state();
+        state.client_bridge = Some(bridge);
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/client/symbols?target=not-a-netid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

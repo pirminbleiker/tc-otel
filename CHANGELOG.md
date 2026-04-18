@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Active ADS client (`tc-otel-client` crate)** — outbound AMS/TCP client for UI-driven custom metrics. Built on the open-source `ads` crate (pure Rust, no Beckhoff router required). Isolated from the observer path (`tc-otel-ads`); the two roles share no code.
+- **Cached symbol browse** — `SymbolTreeCache` stores one symbol tree per PLC target (uploaded once on bridge connect). Web UI has a new **Symbols** tab for filtering + copy-to-clipboard. `GET /api/client/symbols`, `POST /api/client/symbols/refresh`, `GET /api/client/targets`.
+- **Poll + notification sources** — `custom_metrics` entries with `source: "poll"` now issue periodic ADS reads; `source: "notification"` registers `AddDeviceNotification` subscriptions. Exponential-backoff recovery on read errors, try-send backpressure on the metric channel.
+- **`client-bridge` Cargo feature** on `tc-otel-service` (default-on) wires it all together: on config change, dials new targets, uploads symbols, spawns pollers / subscribes notifications. Build with `--no-default-features` to opt out.
+- **Docs**: [`docs/custom-metrics-client.md`](docs/custom-metrics-client.md) for the active-client pipeline.
+
+### Removed
+- **Stub `custom_metric_poller` / `custom_metric_notifier` / `symbol_handle`** in `tc-otel-ads` — superseded by the real implementations in `tc-otel-client`.
+
 ## [0.0.11] - 2026-04-18
 
 ### Added

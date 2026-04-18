@@ -8,6 +8,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use tc_otel_core::AppSettings;
 
+#[cfg(feature = "client-bridge")]
+mod client_bridge;
 mod config_watcher;
 pub mod cycle_time;
 mod diagnostics_bridge;

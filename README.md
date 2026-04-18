@@ -14,6 +14,7 @@ TcOtel provides a complete observability pipeline for TwinCAT PLCs: Push logs, t
 - **Structured logging** — `F_Log(E_LogLevel.eInfo, 'Motor {0} started').WithAnyArg(sMotorName).CreateLog()` with typed placeholders
 - **Distributed traces** — W3C `traceparent` propagation across tasks and multiple PLCs; span lifecycle (Begin/Attribute/Event/End) emitted as OTLP to Grafana Tempo or Jaeger
 - **Push-based diagnostics** — Per-task cycle time, RT-violation detection, and custom metrics via active ADS writes; no polling needed
+- **UI-driven custom metrics** — Select PLC symbols in the web UI and register them as OTLP metrics at runtime (poll or ADS notification), no PLC rebuild required; see [`docs/custom-metrics-client.md`](docs/custom-metrics-client.md)
 - **Log-to-trace correlation** — Logs automatically linked to trace context for fast root-cause analysis in Grafana
 - **Multi-transport** — TCP (direct ADS route) or MQTT (publish-subscribe for fan-out and NAT traversal)
 - **High performance** — Zero-allocation hot path, handles thousands of log/span/metric entries per second

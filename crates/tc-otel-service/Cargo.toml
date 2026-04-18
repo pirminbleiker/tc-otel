@@ -14,9 +14,17 @@ path = "src/lib.rs"
 name = "tc-otel"
 path = "src/main.rs"
 
+[features]
+default = ["client-bridge"]
+# Enables the active-client bridge (outbound ADS poll + notification).
+# Shipped as default now that T9 exists. Consumers who don't want the
+# outbound-client dependency can build with `--no-default-features`.
+client-bridge = ["dep:tc-otel-client"]
+
 [dependencies]
 tc-otel-core = { path = "../tc-otel-core" }
 tc-otel-ads = { path = "../tc-otel-ads" }
+tc-otel-client = { path = "../tc-otel-client", optional = true }
 tc-otel-export = { path = "../tc-otel-export" }
 tokio.workspace = true
 async-trait.workspace = true
