@@ -189,8 +189,11 @@ VAR_INPUT
     sTraceParent : STRING(60) := '';
 END_VAR
 VAR
-    abParentSpanId : ARRAY[0..7] OF BYTE;
-    i              : INT;
+    abParentSpanId  : ARRAY[0..7] OF BYTE;
+    bInheritTraceId : BOOL;
+END_VAR
+VAR CONSTANT
+    abZero8 : ARRAY[0..7] OF BYTE := [8(16#00)];
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -199,20 +202,31 @@ IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-(* Initialize parent_span_id to all-zero (root) *)
-FOR i := 0 TO 7 DO
-    abParentSpanId[i] := 16#00;
-END_FOR;
+(* Reset parent_span_id to all-zero via MEMCPY from a constant.
+   Direct element assignment across FBs can be rejected by TwinCAT
+   strict access; MEMCPY is the portable pattern. *)
+Tc2_System.MEMCPY(ADR(abParentSpanId[0]), ADR(abZero8[0]), 8);
 
-(* If no external traceparent and tracer has an open span, inherit its span_id as parent *)
+bInheritTraceId := FALSE;
+
+(* Inherit from innermost open span on THIS tracer (unless the caller
+   supplied an explicit W3C traceparent — that takes priority inside the
+   task tracer). Copies both the parent's span_id (for parent linkage)
+   and the parent's trace_id (so child lands in the same trace). *)
 IF sTraceParent = '' AND _pInnermost <> 0 THEN
     Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
                       ADR(_pInnermost^._abSpanId[0]),
                       8);
+    Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]),
+                      ADR(_pInnermost^._abTraceId[0]),
+                      16);
+    bInheritTraceId := TRUE;
 END_IF;
 
-(* Call task tracer with resolved parent_span_id *)
-PRG_TaskLog.TaskTracer.Begin(pSpan, sName, eKind, sTraceParent, abParentSpanId);
+(* Call task tracer with resolved parent_span_id. bInheritTraceId tells
+   it explicitly whether the caller has already populated _abTraceId
+   (inherit from parent) or whether a fresh one still needs minting. *)
+PRG_TaskLog.TaskTracer.Begin(pSpan, sName, eKind, sTraceParent, abParentSpanId, bInheritTraceId);
 _Begin := TRUE;
 ]]></ST>
       </Implementation>

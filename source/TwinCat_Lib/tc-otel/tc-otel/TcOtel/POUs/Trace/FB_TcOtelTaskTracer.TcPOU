@@ -780,11 +780,12 @@ Called only from FB_TcOtelTracer._Begin.
 *)
 METHOD INTERNAL Begin
 VAR_INPUT
-    pSpan          : POINTER TO FB_Span;
-    sName          : STRING(60);
-    eKind          : E_SpanKind := E_SpanKind.eInternal;
-    sTraceParent   : STRING(60) := '';
-    abParentSpanId : ARRAY[0..7] OF BYTE;
+    pSpan           : POINTER TO FB_Span;
+    sName           : STRING(60);
+    eKind           : E_SpanKind := E_SpanKind.eInternal;
+    sTraceParent    : STRING(60) := '';
+    abParentSpanId  : ARRAY[0..7] OF BYTE;
+    bInheritTraceId : BOOL;
 END_VAR
 VAR
     nTaskIndex       : USINT;
@@ -811,8 +812,9 @@ END_IF;
 _SeedRng();
 
 (* Resolution order mirrors Rust span_dispatcher.rs on_begin:
-   1. External W3C traceparent  — adopt its trace_id
-   2. True root                 — mint fresh trace_id
+   1. External W3C traceparent     — adopt its trace_id
+   2. Caller-populated _abTraceId  — bound-tracer inherit from parent
+   3. True root                    — mint fresh trace_id
    span_id is always freshly minted. *)
 
 bExternalValid := FALSE;
@@ -822,8 +824,10 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
                                          abExternalSpanId);
 END_IF;
 
-(* If external traceparent not valid, mint fresh trace_id *)
-IF NOT bExternalValid THEN
+(* If external traceparent didn't populate trace_id, either the caller
+   already copied the parent's trace_id into _abTraceId (bInheritTraceId)
+   or we need to mint a fresh root trace_id. *)
+IF NOT bExternalValid AND NOT bInheritTraceId THEN
     _MintTraceId(pSpan);
 END_IF;
 
