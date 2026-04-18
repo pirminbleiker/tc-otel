@@ -4,9 +4,13 @@
 # official jaeger-query binary. Instead we bundle the Jaeger UI static assets
 # with an nginx reverse-proxy that rewrites /api/* → victoria-traces:10428.
 #
+# Pinned to v1.70.0: Jaeger UI v2.x calls /api/v3/services which VictoriaTraces
+# (as of v0.8.1) does not implement — it only serves the v1 Jaeger query API.
+# v1.70.0 is the version VictoriaMetrics documents in their Jaeger-frontend guide.
+#
 # Pattern documented at:
 #   https://docs.victoriametrics.com/victoriatraces/querying/jaeger-frontend/
-ARG JAEGER_UI_VERSION=v2.17.0
+ARG JAEGER_UI_VERSION=v1.70.0
 
 FROM node:24-bookworm-slim AS build
 ARG JAEGER_UI_VERSION

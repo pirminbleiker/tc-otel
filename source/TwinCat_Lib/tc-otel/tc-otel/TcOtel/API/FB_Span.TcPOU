@@ -29,7 +29,7 @@ VAR
        own open-span stack for parent resolution and
        CurrentTraceParent, isolating it from parallel FB_Spans on
        the same task. Set once via BindTracer before first Begin. *)
-    _pTracer    : POINTER TO FB_TcOtelTracer;
+    _pTracer    : REFERENCE TO FB_TcOtelTracer;
 
     (* Pointer to the span that was the tracer's innermost-open span
        at the moment THIS span's Begin() ran. Forms the outer-chain
@@ -92,7 +92,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddBool := _pTracer^._AddBool(ADR(THIS^), sKey, bVal);
+AddBool := _pTracer._AddBool(ADR(THIS^), sKey, bVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -108,7 +108,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddEvent := _pTracer^._AddEvent(ADR(THIS^), sName);
+AddEvent := _pTracer._AddEvent(ADR(THIS^), sName);
 ]]></ST>
       </Implementation>
     </Method>
@@ -125,7 +125,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddInt := _pTracer^._AddInt(ADR(THIS^), sKey, nVal);
+AddInt := _pTracer._AddInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -142,7 +142,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddLInt := _pTracer^._AddLInt(ADR(THIS^), sKey, nVal);
+AddLInt := _pTracer._AddLInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -159,7 +159,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddReal := _pTracer^._AddReal(ADR(THIS^), sKey, fVal);
+AddReal := _pTracer._AddReal(ADR(THIS^), sKey, fVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -176,7 +176,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddString := _pTracer^._AddString(ADR(THIS^), sKey, sVal);
+AddString := _pTracer._AddString(ADR(THIS^), sKey, sVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -204,10 +204,14 @@ END_VAR
       <Implementation>
         <ST><![CDATA[
 (* Guard: BindTracer is now REQUIRED *)
-IF _pTracer = 0 THEN
-    F_InternalLog.Log(
-        eLevel := E_LogLevel.eError,
-        sMsg   := 'FB_Span.Begin called without BindTracer — span skipped');
+IF NOT __ISVALIDREF(_pTracer) THEN
+    F_InternalLog(
+        eLogLevel := E_LogLevel.eError,
+        sMessageFmt   := 'FB_Span.Begin called without BindTracer — span skipped',
+		stArg1 := Tc2_Utilities.EMPTY_ARG_VALUE,
+		stArg2 := Tc2_Utilities.EMPTY_ARG_VALUE,
+		stArg3 := Tc2_Utilities.EMPTY_ARG_VALUE,
+		stArg4 := Tc2_Utilities.EMPTY_ARG_VALUE);
     RETURN;
 END_IF;
 
@@ -221,7 +225,7 @@ END_IF;
 
 (* Route through the bound tracer's _Begin method, which resolves
    parent and calls the task tracer. *)
-_pTracer^._Begin(ADR(THIS^), sName, eKind, sTraceParent);
+_pTracer._Begin(ADR(THIS^), sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
@@ -230,7 +234,7 @@ _sMsg := '';
 
 (* Register with the bound tracer so CurrentTraceParent and
    future nested Begin calls can see us. *)
-_pTracer^._RegisterOpen(ADR(THIS^));
+_pTracer._RegisterOpen(ADR(THIS^));
 
 Begin := TRUE;
 ]]></ST>
@@ -261,7 +265,7 @@ Typical usage — one tracer per controller:
 *)
 METHOD PUBLIC BindTracer : BOOL
 VAR_INPUT
-    pTracer : POINTER TO FB_TcOtelTracer;
+    pTracer : REFERENCE TO FB_TcOtelTracer;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -273,7 +277,7 @@ IF _bOpen THEN
     RETURN;
 END_IF;
 
-_pTracer := pTracer;
+_pTracer REF= pTracer;
 BindTracer := TRUE;
 ]]></ST>
       </Implementation>
@@ -289,16 +293,16 @@ END_IF;
 
 (* If status is Error, pass the error message through *)
 IF _eStatus = E_SpanStatus.eError THEN
-    _pTracer^._SetError(ADR(THIS^), _sMsg);
+    _pTracer._SetError(ADR(THIS^), _sMsg);
 END_IF;
 
 (* End the span via the tracer's wire emitter *)
-_pTracer^._End(ADR(THIS^));
+_pTracer._End(ADR(THIS^));
 
 (* Unregister from the bound tracer's open stack BEFORE clearing
    state, so the tracer's _UnregisterOpen can still read our
    _pOuterSpan to splice the LIFO chain. *)
-_pTracer^._UnregisterOpen(ADR(THIS^));
+_pTracer._UnregisterOpen(ADR(THIS^));
 
 (* Clear state *)
 _bOpen := FALSE;
@@ -339,10 +343,20 @@ METHOD FB_Init: BOOL
 VAR_INPUT
     bInitRetains: BOOL; // TRUE: the retain variables are initialized (reset warm / reset cold)
     bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)   
-    pTracer : POINTER TO FB_TcOtelTracer := 0;
+    pTracer : REFERENCE TO FB_TcOtelTracer := 0;
 END_VAR]]></Declaration>
       <Implementation>
-        <ST><![CDATA[]]></ST>
+        <ST><![CDATA[
+IF _bOpen THEN
+    (* Rebinding mid-span would strand this FB on the old tracer's
+       list. Reject to keep the invariant clean. *)
+    FB_Init := FALSE;
+    RETURN;
+END_IF;
+
+_pTracer REF= pTracer;
+FB_Init := TRUE;
+]]></ST>
       </Implementation>
     </Method>
     <Property Name="IsOpen" Id="{d47454d0-966d-4ff4-9068-ccbe2c845e9f}">

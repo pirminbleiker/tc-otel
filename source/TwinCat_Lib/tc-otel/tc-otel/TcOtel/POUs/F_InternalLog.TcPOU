@@ -1,12 +1,12 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="F_InternalLog" Id="{8a461a6a-6d1a-4114-9343-a1b060b1c536}" SpecialFunc="None">
     <Declaration><![CDATA[{attribute 'conditionalshow'}
 FUNCTION INTERNAL F_InternalLog : BOOL
 VAR_INPUT
 	eLogLevel 			: E_LogLevel;
-	sContext			: Tc2_System.T_MaxString;
 	sMessageFmt			: Tc2_System.T_MaxString;
+	sContext			: Tc2_System.T_MaxString := '';
 	stArg1				: Tc2_Utilities.T_Arg;
 	stArg2				: Tc2_Utilities.T_Arg;
 	stArg3				: Tc2_Utilities.T_Arg;

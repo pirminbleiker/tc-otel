@@ -7,7 +7,7 @@ VAR
 	sStr			: STRING;
 	fFloat			: REAL;
 	fbTrace			: FB_TcOtelTracer;
-	fbSpan			: FB_Span();
+	fbSpan			: FB_Span(fbTrace);
 END_VAR
 ]]></Declaration>
     <Implementation>
