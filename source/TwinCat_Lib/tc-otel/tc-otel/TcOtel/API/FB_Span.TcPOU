@@ -16,7 +16,6 @@ Documented in docs/traces-design.md Section "User-facing API: FB_Span".
 *)
 FUNCTION_BLOCK FB_Span
 VAR
-    _hSpan   : USINT;
     _bOpen   : BOOL;
     _eStatus : E_SpanStatus := E_SpanStatus.eOk;
     _sMsg    : STRING(80);
@@ -37,13 +36,9 @@ VAR
        Accessed only via _GetOuterSpan / _SetOuterSpan below. *)
     _pOuterSpan : POINTER TO FB_Span;
 
-    (* Phase 6 — Stage 3: span state moved from ST_SpanSlot into FB_Span itself.
-       _nLocalId is the legacy slot index (0 = closed/not-yet-begun, still
-       allocated per-tracer for backward compat). Retired after Stage 4. *)
-    _nLocalId : USINT := 0;
-
-    (* Owned trace_id and span_id bytes. Populated during Begin().
-       TraceParent property now computes directly from these. *)
+    (* Phase 6 — Stage 3: span state owned by FB_Span, not in tracer slot.
+       Trace_id and span_id bytes. Populated during Begin().
+       TraceParent property computes directly from these. *)
     _abTraceId : ARRAY[0..15] OF BYTE;
     _abSpanId  : ARRAY[0..7] OF BYTE;
 END_VAR
@@ -67,7 +62,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddBool := PRG_TaskLog.Span.AddBool(_hSpan, sKey, bVal);
+AddBool := PRG_TaskLog.Span.AddBool(ADR(THIS^), sKey, bVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -83,7 +78,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddEvent := PRG_TaskLog.Span.AddEvent(_hSpan, sName);
+AddEvent := PRG_TaskLog.Span.AddEvent(ADR(THIS^), sName);
 ]]></ST>
       </Implementation>
     </Method>
@@ -100,7 +95,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddInt := PRG_TaskLog.Span.AddInt(_hSpan, sKey, nVal);
+AddInt := PRG_TaskLog.Span.AddInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -117,7 +112,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddLInt := PRG_TaskLog.Span.AddLInt(_hSpan, sKey, nVal);
+AddLInt := PRG_TaskLog.Span.AddLInt(ADR(THIS^), sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -134,7 +129,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddReal := PRG_TaskLog.Span.AddReal(_hSpan, sKey, fVal);
+AddReal := PRG_TaskLog.Span.AddReal(ADR(THIS^), sKey, fVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -151,7 +146,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddString := PRG_TaskLog.Span.AddString(_hSpan, sKey, sVal);
+AddString := PRG_TaskLog.Span.AddString(ADR(THIS^), sKey, sVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -193,14 +188,13 @@ IF sTraceParent = '' AND _pTracer <> 0 AND_THEN _pTracer^.IsAnyOpen THEN
     sTraceParent := _pTracer^.CurrentTraceParent;
 END_IF;
 
-(* Begin a new span on the task tracer, forwarding the (possibly
-   tracer-derived) traceparent. Empty string + no tracer = locally
-   rooted via task stack. When bound to an instance tracer, pass
-   bIsolated := TRUE so the task stack is bypassed entirely — the
-   tracer already decided our parent via sTraceParent. Without this,
-   a parallel FB_Span on the same task would end up as our parent
-   just because it happened to be on aStack. *)
-_hSpan := PRG_TaskLog.Span.Begin(
+(* Begin a new span on the task tracer, passing ADR(THIS^) so the
+   tracer mints IDs directly into THIS FB_Span's _abTraceId/_abSpanId.
+   When bound to an instance tracer, bIsolated := TRUE so the task
+   tracer's chain is bypassed — the instance tracer chain drives
+   parent resolution. *)
+PRG_TaskLog.Span.Begin(
+    pSpan        := ADR(THIS^),
     sName        := sName,
     eKind        := eKind,
     sTraceParent := sTraceParent,
@@ -242,11 +236,11 @@ END_IF;
 
 (* If status is Error, pass the error message to the tracer *)
 IF _eStatus = E_SpanStatus.eError THEN
-    PRG_TaskLog.Span.SetError(_hSpan, _sMsg);
+    PRG_TaskLog.Span.SetError(ADR(THIS^), _sMsg);
 END_IF;
 
 (* End the span *)
-PRG_TaskLog.Span.End(_hSpan);
+PRG_TaskLog.Span.End(ADR(THIS^));
 
 (* Unregister from the bound tracer's open stack BEFORE clearing
    state, so the tracer's _UnregisterOpen can still read our
@@ -257,7 +251,6 @@ END_IF;
 
 (* Clear state *)
 _bOpen := FALSE;
-_hSpan := 0;
 _eStatus := E_SpanStatus.eOk;
 _sMsg := '';
 
@@ -286,18 +279,6 @@ FB_exit := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Property Name="Handle" Id="{56f68b38-eaef-45f0-9c31-34dc46c965b8}">
-      <Declaration><![CDATA[PROPERTY PUBLIC Handle : USINT]]></Declaration>
-      <Get Name="Get" Id="{fee58c78-ec10-452f-9c15-5fc5863251c7}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[Handle := _hSpan;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
     <Property Name="IsOpen" Id="{d47454d0-966d-4ff4-9068-ccbe2c845e9f}">
       <Declaration><![CDATA[PROPERTY PUBLIC IsOpen : BOOL]]></Declaration>
       <Get Name="Get" Id="{313caace-5095-4944-9c48-f70f3e3d5d5b}">

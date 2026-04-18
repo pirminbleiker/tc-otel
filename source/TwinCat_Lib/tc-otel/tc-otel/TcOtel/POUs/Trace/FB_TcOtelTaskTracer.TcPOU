@@ -14,14 +14,9 @@ Wire format documented in docs/traces-design.md Section "Wire Format".
 {attribute 'conditionalshow'}
 FUNCTION_BLOCK FB_TcOtelTaskTracer
 VAR
-    (* Slot allocation and parent tracking. hSpan is USINT (0..254) per the
-       wire format; 0xFF is reserved for 'no parent'. *)
-    aSlots           : ARRAY[0..254] OF ST_SpanSlot;
-    nNextLocalId     : USINT := 0;
-
-    (* Implicit parent stack for nested spans. 16 levels is plenty in practice. *)
-    aStack           : ARRAY[0..15] OF USINT;
-    nStackDepth      : USINT := 0;
+    (* Phase 6 Stage 3: innermost-open span chain. Spans register/unregister
+       as they begin/end. NULL when no spans are open. *)
+    _pInnermost      : POINTER TO FB_Span;
 
     (* Wire format constants *)
     nEventTypeBegin  : BYTE := 5;
@@ -109,10 +104,10 @@ _NextRandom := x;
       </Implementation>
     </Method>
     <Method Name="_MintTraceId" Id="{3c0a4e6b-5d7c-4e8f-9a0b-1c2d3e4f5a6b}">
-      <Declaration><![CDATA[(* Fills the 16-byte trace_id of the slot at index hSpan with two xorshift64 draws. *)
+      <Declaration><![CDATA[(* Fills the 16-byte trace_id of the FB_Span with two xorshift64 draws. *)
 METHOD PRIVATE _MintTraceId
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
     hi  : ULINT;
@@ -121,18 +116,22 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
 hi := _NextRandom();
 lo := _NextRandom();
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[0]), ADR(hi), 8);
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].trace_id[8]), ADR(lo), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]), ADR(hi), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[8]), ADR(lo), 8);
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
-      <Declaration><![CDATA[(* Fills the 8-byte span_id of the slot at index hSpan with one xorshift64 draw. *)
+      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
 METHOD PRIVATE _MintSpanId
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
     v : ULINT;
@@ -140,8 +139,12 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
 v := _NextRandom();
-Tc2_System.MEMCPY(ADR(aSlots[hSpan].span_id[0]), ADR(v), 8);
+Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -363,7 +366,7 @@ END_IF;
     <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     bVal  : BOOL;
 END_VAR
@@ -381,7 +384,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -397,14 +400,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
 nTotalLen := 20 + 4 + nKeyLen + 1;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -436,7 +438,7 @@ END_IF;
     <Method Name="AddEvent" Id="{731c0681-f28c-468d-9a22-08d93456bc4b}">
       <Declaration><![CDATA[METHOD PUBLIC AddEvent : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sName : STRING(30);
 END_VAR
 VAR
@@ -452,7 +454,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -468,14 +470,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name *)
 nTotalLen := 20 + 4 + nNameLen;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
@@ -503,7 +504,7 @@ END_IF;
     <Method Name="AddInt" Id="{cebf7902-798a-47a4-b3e5-37d8ad80e0e0}">
       <Declaration><![CDATA[METHOD PUBLIC AddInt : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     nVal  : DINT;
 END_VAR
@@ -521,7 +522,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -541,14 +542,13 @@ nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
    instead of 4 bytes of stack garbage past the DINT. *)
 nValLint := DINT_TO_LINT(nVal);
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -579,7 +579,7 @@ END_IF;
     <Method Name="AddLInt" Id="{40a748f6-c411-43f0-994d-38e870c92549}">
       <Declaration><![CDATA[METHOD PUBLIC AddLInt : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     nVal  : LINT;
 END_VAR
@@ -596,7 +596,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -612,14 +612,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -650,7 +649,7 @@ END_IF;
     <Method Name="AddReal" Id="{6a9dc70f-5325-45d1-8be5-172af842881e}">
       <Declaration><![CDATA[METHOD PUBLIC AddReal : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     fVal  : LREAL;
 END_VAR
@@ -667,7 +666,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT aSlots[hSpan].bInUse THEN
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
@@ -683,14 +682,13 @@ IF nDcTime = 0 THEN
 END_IF;
 nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8)
-   Phase 6 Stage 3: header now includes 8-byte span_id *)
+(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
 nTotalLen := 20 + 4 + nKeyLen + 8;
 
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
 IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
     (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, aSlots[hSpan].span_id, nTaskIdx, nFlags, nDcTime);
+    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
 
     (* Payload *)
     Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
@@ -721,7 +719,7 @@ END_IF;
     <Method Name="AddString" Id="{59a3fb41-a2f5-4bd0-ad49-dd002f212acc}">
       <Declaration><![CDATA[METHOD PUBLIC AddString : BOOL
 VAR_INPUT
-    hSpan : USINT;
+    pSpan : POINTER TO FB_Span;
     sKey  : STRING(30);
     sVal  : STRING(120);
 END_VAR

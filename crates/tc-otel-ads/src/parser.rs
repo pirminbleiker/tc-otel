@@ -590,15 +590,18 @@ impl AdsParser {
 
         match event_type {
             5 => {
-                // SPAN_BEGIN payload layout:
-                //   parent_local_id(1) + kind(1) + name_len(1) + reserved(1)
-                //   [if flag_local_ids (0x08): trace_id(16) + span_id(8)]
+                // SPAN_BEGIN payload layout (Phase 6 Stage 3):
+                //   parent_span_id(8) + kind(1) + name_len(1) + reserved(2)
+                //   trace_id(16) + span_id(8)
                 //   name(name_len)
                 //   [if flag_has_external_parent (0x02): tp_len(1) + traceparent(tp_len)]
-                let parent_local_id = reader.read_u8()?;
+                let parent_span_id_bytes = reader.read_bytes(8)?;
+                let mut parent_span_id = [0u8; 8];
+                parent_span_id.copy_from_slice(parent_span_id_bytes);
+
                 let kind = reader.read_u8()?;
                 let name_len = reader.read_u8()? as usize;
-                let _reserved = reader.read_u8()?;
+                let _reserved = reader.read_bytes(2)?;  // 2-byte reserved field
 
                 if name_len > 127 {
                     return Err(AdsError::ParseError(
@@ -606,20 +609,15 @@ impl AdsParser {
                     ));
                 }
 
-                // Pregenerated IDs section (flag_local_ids). The PLC emits
-                // this so CurrentTraceParent() on the producer side can
-                // format a matching W3C header for outbound propagation.
-                let (pregenerated_trace_id, pregenerated_span_id) = if (flags & 0x08) != 0 {
-                    let tid_bytes = reader.read_bytes(16)?;
-                    let mut tid = [0u8; 16];
-                    tid.copy_from_slice(tid_bytes);
-                    let sid_bytes = reader.read_bytes(8)?;
-                    let mut sid = [0u8; 8];
-                    sid.copy_from_slice(sid_bytes);
-                    (Some(tid), Some(sid))
-                } else {
-                    (None, None)
-                };
+                // Trace_id and span_id are always present (no flag gating).
+                // Minted by PLC so CurrentTraceParent() can cite exact bytes.
+                let tid_bytes = reader.read_bytes(16)?;
+                let mut trace_id = [0u8; 16];
+                trace_id.copy_from_slice(tid_bytes);
+
+                let sid_bytes = reader.read_bytes(8)?;
+                let mut span_id = [0u8; 8];
+                span_id.copy_from_slice(sid_bytes);
 
                 let name_bytes = reader.read_bytes(name_len)?;
                 let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
@@ -647,12 +645,12 @@ impl AdsParser {
                     task_index,
                     flags,
                     dc_time,
-                    parent_local_id,
+                    parent_span_id,
                     kind,
                     name,
                     traceparent,
-                    pregenerated_trace_id,
-                    pregenerated_span_id,
+                    trace_id,
+                    span_id,
                 })
             }
             6 => {

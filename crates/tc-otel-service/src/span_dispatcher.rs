@@ -92,24 +92,24 @@ impl SpanDispatcher {
                 task_index,
                 flags: _,
                 dc_time,
-                parent_local_id,
+                parent_span_id,
                 kind,
                 name,
                 traceparent,
-                pregenerated_trace_id,
-                pregenerated_span_id,
+                trace_id,
+                span_id,
             } => {
                 self.on_begin(
                     net_id,
                     local_id,
                     task_index,
                     dc_time,
-                    parent_local_id,
+                    parent_span_id,
                     kind,
                     name,
                     traceparent,
-                    pregenerated_trace_id,
-                    pregenerated_span_id,
+                    trace_id,
+                    span_id,
                 );
             }
             TraceWireEvent::Attr {
@@ -152,12 +152,12 @@ impl SpanDispatcher {
         local_id: u8,
         task_index: u8,
         dc_time: i64,
-        parent_local_id: u8,
+        parent_span_id: [u8; 8],
         kind: u8,
         name: String,
         traceparent: Option<String>,
-        pregenerated_trace_id: Option<[u8; 16]>,
-        pregenerated_span_id: Option<[u8; 8]>,
+        trace_id: [u8; 16],
+        span_id: [u8; 8],
     ) {
         let key = SpanKey {
             ams_net_id: net_id,
@@ -165,66 +165,51 @@ impl SpanDispatcher {
             local_id,
         };
 
-        // Resolution order for trace_id + parent_span_id:
-        //   1. External W3C traceparent  — upstream propagation wins
-        //   2. PLC-local parent lookup    — nested-span stack (inherits trace_id)
-        //   3. Fresh mint                 — root span without upstream context
+        // Resolution order for trace_id + resolved_parent_span_id:
+        //   1. External W3C traceparent     — upstream propagation, adopt its trace_id
+        //   2. parent_span_id non-zero     — lookup in pending_by_span_id, inherit trace_id
+        //   3. parent_span_id all-zero     — root span, use wire trace_id
         //
-        // For span_id specifically, the PLC-minted ID (when present) is
-        // preferred over a fresh UUID so `CurrentTraceParent()` on the
-        // producer side can cite the exact bytes that tc-otel stores and
-        // downstream consumers can set parent_span_id accordingly.
-        let (trace_id, parent_span_id, orphan_reason) = if let Some(tp) = &traceparent {
+        // Trace_id and span_id are always minted by PLC and present on the wire.
+        let (final_trace_id, final_parent_span_id, orphan_reason) = if let Some(tp) = &traceparent {
+            // External traceparent takes precedence: adopt its trace_id + span_id
             match parse_w3c_traceparent(tp) {
                 Some((tid, sid)) => (tid, Some(sid), None),
                 None => {
                     tracing::warn!("Failed to parse W3C traceparent: {}", tp);
-                    (
-                        pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
-                        None,
-                        None,
-                    )
+                    (trace_id, None, None)
                 }
             }
-        } else if parent_local_id != 0xFF {
-            // Try to find parent by local_id
-            let parent_key = SpanKey {
-                ams_net_id: net_id,
-                task_index,
-                local_id: parent_local_id,
-            };
-            match self.pending.get(&parent_key) {
-                Some(p) => (p.trace_id, Some(p.span_id), None),
+        } else if parent_span_id != [0u8; 8] {
+            // Try to find parent by span_id in pending_by_span_id
+            match self.pending_by_span_id.get(&parent_span_id) {
+                Some(&parent_key) => {
+                    // Found parent: inherit its trace_id
+                    if let Some(parent_pending) = self.pending.get(&parent_key) {
+                        (parent_pending.trace_id, Some(parent_span_id), None)
+                    } else {
+                        // Consistency check failure (index != pending consistency)
+                        tracing::warn!("parent_span_id found in index but not in pending");
+                        (trace_id, None, Some("parent_span_id_not_in_pending".to_string()))
+                    }
+                }
                 None => {
-                    let reason = format!("parent_local_id_{}_not_found", parent_local_id);
+                    // Parent not found — treat as root with orphan marker
+                    let reason = format!("parent_span_id_{:?}_not_found", parent_span_id);
                     tracing::debug!(
-                        parent_local_id = parent_local_id,
                         net_id = %net_id,
                         task_index = task_index,
-                        "parent span not found for local_id {}, treating as root",
-                        parent_local_id
+                        parent_span_id = ?parent_span_id,
+                        "parent span not found, treating as root"
                     );
                     self.orphan_counter.fetch_add(1, Ordering::SeqCst);
-                    (
-                        pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
-                        None,
-                        Some(reason),
-                    )
+                    (trace_id, None, Some(reason))
                 }
             }
         } else {
-            // Root span — use PLC-minted trace_id when offered.
-            (
-                pregenerated_trace_id.unwrap_or_else(|| self.new_trace_id()),
-                None,
-                None,
-            )
+            // Root span — parent_span_id is all-zero
+            (trace_id, None, None)
         };
-
-        // Honour PLC-minted span_id when offered. External traceparent
-        // identifies the PARENT, so pregenerated local span_id is still
-        // the right identifier for THIS span.
-        let span_id = pregenerated_span_id.unwrap_or_else(|| self.new_span_id());
 
         // Check capacity and evict if needed
         if self.pending.len() >= self.max_pending {
@@ -250,9 +235,9 @@ impl SpanDispatcher {
         }
 
         let pending = PendingSpan {
-            trace_id,
+            trace_id: final_trace_id,
             span_id,
-            parent_span_id,
+            parent_span_id: final_parent_span_id,
             name,
             kind,
             start_time: dc_time_to_datetime(dc_time),
@@ -264,7 +249,7 @@ impl SpanDispatcher {
             task_index,
         };
 
-        // Phase 6 Stage 3: Always insert into secondary index (span_id is now primary)
+        // Always insert into secondary index (span_id keying)
         self.pending_by_span_id.insert(span_id, key);
 
         self.pending.insert(key, pending);

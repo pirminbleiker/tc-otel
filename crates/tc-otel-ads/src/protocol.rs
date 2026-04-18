@@ -18,26 +18,19 @@ pub enum AttrValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TraceWireEvent {
     /// SPAN_BEGIN (event_type=5): starts a new span
+    /// Phase 6 Stage 3: parent identified by span_id (8B), not local_id (1B).
+    /// Trace_id and span_id are always embedded (no flag gating).
     Begin {
         local_id: u8,
         task_index: u8,
         flags: u8,
         dc_time: i64,
-        parent_local_id: u8,
+        parent_span_id: [u8; 8],  // All-zero means root
         kind: u8,
         name: String,
         traceparent: Option<String>,
-        /// Trace_id minted locally by the PLC (16 bytes). Set only when
-        /// `flag_local_ids` (flags bit 3) is on. When present,
-        /// `SpanDispatcher` uses it verbatim instead of minting its own
-        /// trace_id — this lets the PLC format a matching W3C
-        /// traceparent header via `CurrentTraceParent()` for outbound
-        /// propagation. External traceparent (bit 1) still takes
-        /// precedence when both are set.
-        pregenerated_trace_id: Option<[u8; 16]>,
-        /// Span_id minted locally by the PLC (8 bytes). Same gating as
-        /// `pregenerated_trace_id` — both are set together or neither.
-        pregenerated_span_id: Option<[u8; 8]>,
+        trace_id: [u8; 16],  // Always present, minted by PLC
+        span_id: [u8; 8],    // Always present, minted by PLC
     },
     /// SPAN_ATTR (event_type=6): adds an attribute to a pending span
     /// Phase 6 Stage 3: span_id now identifies the span (not local_id)
