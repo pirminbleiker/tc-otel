@@ -12,8 +12,7 @@ mock-plc = []
 
 [dependencies]
 tc-otel-core = { path = "../tc-otel-core" }
-ads = "0.4"
-crossbeam-channel = "0.5"
+tc-otel-ads = { path = "../tc-otel-ads" }
 tokio.workspace = true
 bytes.workspace = true
 chrono.workspace = true

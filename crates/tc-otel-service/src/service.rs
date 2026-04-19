@@ -116,8 +116,31 @@ impl TcOtelService {
             match (metric_tx.clone(), config_rx.clone()) {
                 (Some(tx), Some(cfg_rx)) => {
                     use std::sync::Arc;
+                    // The bridge's dispatcher attaches to the same MQTT broker the
+                    // observer uses. For TCP-only deployments (no `transport.mqtt`
+                    // in config) the bridge falls back to MQTT anyway — static
+                    // TCP peers from `ams_router_host` overrides still work.
+                    let (broker_host, broker_port, topic_prefix) =
+                        match &self.settings.receiver.transport {
+                            tc_otel_core::config::TransportConfig::Mqtt(mqtt) => {
+                                let parts: Vec<&str> = mqtt.broker.split(':').collect();
+                                let host = parts[0].to_string();
+                                let port = parts
+                                    .get(1)
+                                    .and_then(|p| p.parse::<u16>().ok())
+                                    .unwrap_or(1883);
+                                (host, port, mqtt.topic_prefix.clone())
+                            }
+                            _ => ("mosquitto".to_string(), 1883, "AdsOverMqtt".to_string()),
+                        };
                     let cache = Arc::new(tc_otel_client::cache::SymbolTreeCache::new());
-                    let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+                    let bridge = crate::client_bridge::ClientBridge::new(
+                        tx,
+                        cache,
+                        broker_host,
+                        broker_port,
+                        topic_prefix,
+                    );
                     let _bridge_task = bridge.spawn(cfg_rx);
                     tracing::info!("client-bridge spawned");
                     Some(bridge)

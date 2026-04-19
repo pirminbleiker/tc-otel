@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_SpanEventFrame" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c03}">
+    <Declaration><![CDATA[(*
+Fixed 23-byte header of a SPAN_EVENT frame. Followed by name (nNameLen bytes).
+Layout matches Rust parser_v2 EVENT case.
+*)
+{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_SpanEventFrame :
+STRUCT
+    nEventType      : BYTE;     (* 7 = SPAN_EVENT *)
+    nSpanIdByte0    : BYTE;
+    nTaskIdx        : BYTE;
+    nFlags          : BYTE;
+    nDcTime         : LINT;
+    abSpanIdRest    : ARRAY[0..6] OF BYTE;
+    nNameLen        : BYTE;     (* ≤31 *)
+    nAttrCount      : BYTE;     (* always 0 — inline attrs unused *)
+    nReserved       : ARRAY[0..1] OF BYTE;
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

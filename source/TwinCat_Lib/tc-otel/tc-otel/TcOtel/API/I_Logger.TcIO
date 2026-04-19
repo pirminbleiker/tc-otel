@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <Itf Name="I_Logger" Id="{8b7a3ede-9c91-0d75-34fd-1cfbab5e4360}">
     <Declaration><![CDATA[// Fluent builder interface for composing log entries.
 // Obtain an instance via F_Log() or FB_Log.Log(), chain methods, and call CreateLog() to emit.
@@ -18,6 +18,35 @@ METHOD CreateLog
 METHOD WithAnyArg : I_Logger
 VAR_INPUT
 	stArg		: ANY;
+END_VAR
+]]></Declaration>
+    </Method>
+    <Method Name="WithSpan" Id="{eefac63a-7e1f-0e5b-2261-2143375d8616}">
+      <Declaration><![CDATA[(*
+:Description: Bind this log entry to a specific FB_Span for explicit
+trace context correlation.
+
+When WithSpan is called, the log message will be associated with the span's
+trace_id and span_id in the tc-otel backend, creating an explicit link in
+the trace timeline.
+
+Call before CreateLog to take effect. Calling after CreateLog has no effect.
+
+Typical usage:
+
+.. code-block:: pascal
+
+    VAR
+        spn : FB_Span;
+    END_VAR
+
+    F_Log(E_LogLevel.eInfo, 'operation started')
+        .WithSpan(spn)
+        .CreateLog();
+*)
+METHOD PUBLIC WithSpan : I_Logger
+VAR_IN_OUT
+	span : FB_Span;
 END_VAR
 ]]></Declaration>
     </Method>

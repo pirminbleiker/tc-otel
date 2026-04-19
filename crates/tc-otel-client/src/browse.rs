@@ -10,9 +10,11 @@
 //! Each entry in the upload blob has a fixed-size header (30 B) followed by three
 //! null-terminated strings (name, type, comment) and padding to `entry_length`.
 //!
-//! This module does **no I/O** — it takes bytes returned by `ads::Device::read`
-//! (or a fixture file) and returns parsed structs. The active-client side lives
-//! in `crate::client`.
+//! This module's **parser functions do no I/O** — they take bytes returned
+//! by a prior AMS Read (or a fixture file) and return parsed structs.
+//! [`upload_via_dispatcher`] is the convenience that issues the three
+//! SYM_* Reads against a target through `tc-otel-ads`'s dispatcher and
+//! returns a populated [`SymbolTree`].
 
 use crate::error::{ClientError, Result};
 use serde::{Deserialize, Serialize};
@@ -92,33 +94,6 @@ impl SymbolTree {
         self.index_by_name
             .get(name)
             .and_then(|&i| self.nodes.get(i))
-    }
-
-    /// Build a [`SymbolTree`] from the `ads` crate's already-decoded symbols.
-    ///
-    /// Used by the service bridge when it leverages `ads::symbol::get_symbol_info`
-    /// (which does the full upload + type-map decode in one call) rather than
-    /// running our own byte-level parser.
-    pub fn from_ads_symbols(symbols: Vec<ads::symbol::Symbol>) -> Self {
-        let mut nodes = Vec::with_capacity(symbols.len());
-        let mut index_by_name = HashMap::with_capacity(symbols.len());
-        for (i, s) in symbols.into_iter().enumerate() {
-            index_by_name.insert(s.name.clone(), i);
-            nodes.push(SymbolNode {
-                name: s.name,
-                type_name: s.typ,
-                comment: String::new(),
-                igroup: s.ix_group,
-                ioffset: s.ix_offset,
-                size: s.size as u32,
-                datatype: s.base_type,
-                flags: s.flags,
-            });
-        }
-        Self {
-            nodes,
-            index_by_name,
-        }
     }
 
     /// Iterate names with a prefix (case-insensitive). Useful for UI filters.
@@ -253,4 +228,92 @@ fn read_ascii(bytes: &[u8]) -> Result<String> {
     std::str::from_utf8(bytes)
         .map(|s| s.to_owned())
         .map_err(|e| ClientError::Decode(format!("non-utf8 in symbol string: {e}")))
+}
+
+/// Issue the three ADS Reads required to dump a PLC's symbol table via an
+/// [`tc_otel_ads::dispatcher::AmsDispatcher`], and assemble a [`SymbolTree`].
+///
+/// Sequence:
+/// 1. `SYM_UPLOADINFO2` (`0xF00F`) → 24-byte header with counts/lengths.
+/// 2. `SYM_UPLOAD` (`0xF00B`) → full symbol table bytes.
+/// 3. (Currently ignored) `SYM_DT_UPLOAD` (`0xF00E`) → datatype map. The
+///    symbol entries already carry a human-readable type name as one of
+///    their three null-terminated strings, so we don't need the datatype
+///    map for the browse UX.
+///
+/// `dispatcher` must already have a route to `target_net_id` (MQTT or TCP).
+/// `target_port` is the PLC runtime port (851 for typical TwinCAT PLCs).
+pub async fn upload_via_dispatcher(
+    dispatcher: &tc_otel_ads::dispatcher::AmsDispatcher,
+    target_net_id: tc_otel_ads::ams::AmsNetId,
+    target_port: u16,
+    timeout: std::time::Duration,
+) -> Result<SymbolTree> {
+    let info_bytes = ads_read(
+        dispatcher,
+        target_net_id,
+        target_port,
+        ADSIGRP_SYM_UPLOADINFO2,
+        0,
+        UploadInfo::BYTE_LEN as u32,
+        timeout,
+    )
+    .await?;
+    let info = parse_upload_info(&info_bytes)?;
+
+    let upload_bytes = ads_read(
+        dispatcher,
+        target_net_id,
+        target_port,
+        ADSIGRP_SYM_UPLOAD,
+        0,
+        info.symbol_length,
+        timeout,
+    )
+    .await?;
+    parse_upload(&upload_bytes, &info)
+}
+
+/// Perform one ADS Read round-trip and unwrap the response payload, stripping
+/// the 4-byte result code + 4-byte length prefix.
+async fn ads_read(
+    dispatcher: &tc_otel_ads::dispatcher::AmsDispatcher,
+    target_net_id: tc_otel_ads::ams::AmsNetId,
+    target_port: u16,
+    index_group: u32,
+    index_offset: u32,
+    length: u32,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>> {
+    use tc_otel_ads::ams::ADS_CMD_READ;
+    let mut req = Vec::with_capacity(12);
+    req.extend_from_slice(&index_group.to_le_bytes());
+    req.extend_from_slice(&index_offset.to_le_bytes());
+    req.extend_from_slice(&length.to_le_bytes());
+    let raw = dispatcher
+        .send_request(target_net_id, target_port, ADS_CMD_READ, &req, timeout)
+        .await
+        .map_err(|e| ClientError::Ads(e.to_string()))?;
+    if raw.len() < 8 {
+        return Err(ClientError::Decode(format!(
+            "ADS read response too short: {} bytes",
+            raw.len()
+        )));
+    }
+    let result_code = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+    if result_code != 0 {
+        return Err(ClientError::Ads(format!(
+            "ADS read ig=0x{index_group:x} returned error 0x{result_code:x}"
+        )));
+    }
+    let declared = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+    let data = &raw[8..];
+    if data.len() < declared {
+        return Err(ClientError::Decode(format!(
+            "ADS read payload truncated: declared {} bytes, got {}",
+            declared,
+            data.len()
+        )));
+    }
+    Ok(data[..declared].to_vec())
 }

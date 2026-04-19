@@ -1,16 +1,25 @@
 //! # tc-otel-client
 //!
-//! Active ADS client for tc-otel. Complements the passive observer in `tc-otel-ads`
-//! by establishing **outbound** AMS/TCP sessions to PLC targets.
+//! Active ADS client for tc-otel. Drives poll + notification subscriptions
+//! against PLC targets, and exposes a cached symbol browse for the UI.
 //!
-//! Scope:
-//! - **browse**: parse and cache PLC symbol tables for UI-driven metric selection.
-//! - **poll**:   periodic `ADS Read` per configured `custom_metrics` entry.
-//! - **notify**: `ADS AddDeviceNotification` subscriptions per configured entry.
+//! All I/O goes through the transport-agnostic `tc_otel_ads::dispatcher::AmsDispatcher`,
+//! so the same client code works whether the target is reachable over MQTT
+//! (via the `AdsOverMqtt` topic scheme) or direct TCP (via port 48898).
+//! Callers don't see the transport choice — they configure the dispatcher
+//! once, register the PLC NetIDs, and issue reads.
 //!
-//! Uses the open-source [`ads`] crate for protocol + transport (pure Rust, no
-//! Beckhoff router needed). No code shared with `tc-otel-ads` — the observer
-//! stack remains unchanged.
+//! Modules:
+//! - [`browse`]: decode + populate [`browse::SymbolTree`] from ADS symbol
+//!   uploads. No I/O in the parser functions; `upload_via_dispatcher` is the
+//!   convenience that issues the three SYM_* reads.
+//! - [`cache`]: per-target [`cache::SymbolTreeCache`] with explicit
+//!   invalidation.
+//! - [`client`]: thin convenience layer over [`tc_otel_ads::dispatcher::AmsDispatcher`]
+//!   implementing [`client::SymbolReader`] for the poll path.
+//! - [`poll`]: [`poll::Poller`] — periodic ADS Read, emits [`tc_otel_core::models::MetricEntry`].
+//! - [`notify`]: [`notify::Notifier`] — AddDeviceNotification subscriptions
+//!   and stamp fan-out.
 
 pub mod browse;
 pub mod cache;
@@ -20,7 +29,7 @@ pub mod notify;
 pub mod poll;
 
 pub use error::{ClientError, Result};
-
-/// Re-export upstream types that consumers need without taking their own
-/// dependency on the `ads` crate. Keeps the dependency boundary clean.
-pub use ::ads::{AmsAddr, AmsNetId};
+pub use tc_otel_ads::ams::{
+    AmsNetId, ADS_CMD_ADD_NOTIFICATION, ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION,
+    ADS_CMD_READ,
+};

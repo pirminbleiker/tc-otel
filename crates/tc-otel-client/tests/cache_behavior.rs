@@ -164,7 +164,7 @@ fn concurrent_reads_while_writer_invalidates() {
 
 #[test]
 fn ams_netid_conversion_roundtrips() {
-    let src = ads::AmsNetId::new(10, 20, 30, 40, 1, 1);
+    let src = tc_otel_ads::ams::AmsNetId::from_bytes([10, 20, 30, 40, 1, 1]);
     let key: TargetKey = src.into();
     assert_eq!(key, TargetKey([10, 20, 30, 40, 1, 1]));
     assert_eq!(format!("{key}"), "10.20.30.40.1.1");

@@ -10,6 +10,11 @@ FB_TcOtelTracer (the public instance-tracer API). Each method emits exactly
 one wire event into the existing ADS write buffer (same path the logger uses).
 Wire events are demuxed by tc-otel into a SpanEventDispatcher.
 
+Emit path builds the fixed-size frame header on the stack, then writes it
+to the send buffer in a single MEMCPY — followed by at most two MEMCPYs
+for variable-length payload (key, value, name). BufferFree is checked once
+up front; DataAdded commits the whole frame atomically.
+
 Wire format documented in docs/traces-design.md Section "Wire Format".
 
 Users should use FB_TcOtelTracer and FB_Span instead.
@@ -22,7 +27,7 @@ VAR
        as they begin/end. NULL when no spans are open. *)
     _pInnermost      : POINTER TO FB_Span;
 
-    (* Wire format constants *)
+    (* Wire format event-type constants *)
     nEventTypeBegin  : BYTE := 5;
     nEventTypeAttr   : BYTE := 6;
     nEventTypeEvent  : BYTE := 7;
@@ -66,51 +71,52 @@ END_IF;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_SeedRng" Id="{1a8f2c4d-3b5e-4a6f-8d7c-9e0a1b2c3d4f}">
-      <Declaration><![CDATA[METHOD PRIVATE _SeedRng
-VAR
-    nDcTime : LINT;
+    <Method Name="_HexCharToNibble" Id="{6a5b4c3d-2e1f-4a5b-8c7d-9e0f1a2b3c4d}">
+      <Declaration><![CDATA[(* Convert one hex ASCII byte ('0'-'9', 'a'-'f', 'A'-'F') into a 4-bit nibble.
+   Returns FALSE for any other byte. Used by _ParseTraceParent. *)
+METHOD PRIVATE _HexCharToNibble : BOOL
+VAR_INPUT
+    ch : BYTE;
+END_VAR
+VAR_IN_OUT
+    nNibble : BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF _bRngSeeded THEN
-    RETURN;
+IF ch >= 16#30 AND ch <= 16#39 THEN
+    nNibble := ch - 16#30;                  (* '0'..'9' -> 0..9 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#61 AND ch <= 16#66 THEN
+    nNibble := ch - 16#57;                  (* 'a'..'f' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#41 AND ch <= 16#46 THEN
+    nNibble := ch - 16#37;                  (* 'A'..'F' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSE
+    _HexCharToNibble := FALSE;
 END_IF;
-
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-
-(* XOR with task index so separate tasks can't produce the same stream
-   if two of them seed within the same DC-time tick. Add the fallback
-   constant so a zero DC clock still gives a non-zero seed (xorshift64
-   requires non-zero state). *)
-_nXorState := TO_ULINT(nDcTime) XOR (TO_ULINT(Tc2_Utilities.GETCURTASKINDEXEX()) * 16#9E3779B97F4A7C15);
-IF _nXorState = 0 THEN
-    _nXorState := 16#DEADBEEFCAFEF00D;
-END_IF;
-
-_bRngSeeded := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_NextRandom" Id="{2b9e3d5f-4c6a-4b7d-8e9f-0a1b2c3d4e5f}">
-      <Declaration><![CDATA[(* xorshift64 (Marsaglia 2003): 6 ops, period 2^64 - 1, zero lookup tables. *)
-METHOD PRIVATE _NextRandom : ULINT
+    <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
+      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
+METHOD PRIVATE _MintSpanId
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
 VAR
-    x : ULINT;
+    v : ULINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-x := _nXorState;
-x := x XOR SHL(x, 13);
-x := x XOR SHR(x, 7);
-x := x XOR SHL(x, 17);
-_nXorState := x;
-_NextRandom := x;
+IF pSpan = 0 THEN
+    RETURN;
+END_IF;
+
+v := _NextRandom();
+Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -138,51 +144,33 @@ Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[8]), ADR(lo), 8);
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
-      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
-METHOD PRIVATE _MintSpanId
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-END_VAR
+    <Method Name="_NextRandom" Id="{2b9e3d5f-4c6a-4b7d-8e9f-0a1b2c3d4e5f}">
+      <Declaration><![CDATA[(* xorshift64 (Marsaglia 2003): 6 ops, period 2^64 - 1, zero lookup tables. *)
+METHOD PRIVATE _NextRandom : ULINT
 VAR
-    v : ULINT;
+    x : ULINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
-    RETURN;
-END_IF;
-
-v := _NextRandom();
-Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
+x := _nXorState;
+x := x XOR SHL(x, 13);
+x := x XOR SHR(x, 7);
+x := x XOR SHL(x, 17);
+_nXorState := x;
+_NextRandom := x;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_HexCharToNibble" Id="{6a5b4c3d-2e1f-4a5b-8c7d-9e0f1a2b3c4d}">
-      <Declaration><![CDATA[(* Convert one hex ASCII byte ('0'-'9', 'a'-'f', 'A'-'F') into a 4-bit nibble.
-   Returns FALSE for any other byte. Used by _ParseTraceParent. *)
-METHOD PRIVATE _HexCharToNibble : BOOL
-VAR_INPUT
-    ch : BYTE;
-END_VAR
-VAR_IN_OUT
-    nNibble : BYTE;
-END_VAR
+    <Method Name="_NowDcTime" Id="{a1b2c3d4-e5f6-1111-2222-333344445555}">
+      <Declaration><![CDATA[(* Return live DC time, falling back to cycle-start task DC time. *)
+METHOD PRIVATE _NowDcTime : LINT
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF ch >= 16#30 AND ch <= 16#39 THEN
-    nNibble := ch - 16#30;                  (* '0'..'9' -> 0..9 *)
-    _HexCharToNibble := TRUE;
-ELSIF ch >= 16#61 AND ch <= 16#66 THEN
-    nNibble := ch - 16#57;                  (* 'a'..'f' -> 10..15 *)
-    _HexCharToNibble := TRUE;
-ELSIF ch >= 16#41 AND ch <= 16#46 THEN
-    nNibble := ch - 16#37;                  (* 'A'..'F' -> 10..15 *)
-    _HexCharToNibble := TRUE;
-ELSE
-    _HexCharToNibble := FALSE;
+_NowDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
+IF _NowDcTime = 0 THEN
+    _NowDcTime := _GetTaskDcTime();
 END_IF;
 ]]></ST>
       </Implementation>
@@ -264,151 +252,234 @@ _ParseTraceParent := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_WriteFrameHeader" Id="{5c95a435-e5f4-4be0-a30e-3e2cecf13cfe}">
-      <Declaration><![CDATA[METHOD PRIVATE _WriteFrameHeader
-VAR_INPUT
-    pWriteBuffer : POINTER TO FB_LogBuffer;
-    nEventType   : BYTE;
-    hSpan        : USINT;
-    nTaskIdx     : USINT;
-    nFlags       : BYTE;
-    nDcTime      : LINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pWriteBuffer^.BufferFree >= 12 THEN
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nEventType), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(hSpan), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nTaskIdx), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nFlags), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nDcTime), 8);
-    pWriteBuffer^.DataAdded(8);
-END_IF
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_WriteFrameHeaderWithSpanId" Id="{6d7c5e46-f7a1-4c8f-b1e0-4f3d9c5a6b2d}">
-      <Declaration><![CDATA[(* Phase 6 Stage 3: Write header with 8-byte span_id instead of 1-byte local_id.
-   Used for ATTR, EVENT, END frames. Header layout:
-   [event_type:u8] [span_id_byte0:u8] [task_idx:u8] [flags:u8] [dc_time:i64] [span_id_bytes1-7:7bytes] *)
-METHOD PRIVATE _WriteFrameHeaderWithSpanId
-VAR_INPUT
-    pWriteBuffer : POINTER TO FB_LogBuffer;
-    nEventType   : BYTE;
-    abSpanId     : ARRAY[0..7] OF BYTE;
-    nTaskIdx     : USINT;
-    nFlags       : BYTE;
-    nDcTime      : LINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pWriteBuffer^.BufferFree >= 20 THEN
-    (* Event type *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nEventType), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    (* First byte of span_id (in place of former local_id) *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(abSpanId[0]), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    (* Task index *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nTaskIdx), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    (* Flags *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nFlags), 1);
-    pWriteBuffer^.DataAdded(1);
-
-    (* DC time *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nDcTime), 8);
-    pWriteBuffer^.DataAdded(8);
-
-    (* Remaining 7 bytes of span_id *)
-    Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(abSpanId[1]), 7);
-    pWriteBuffer^.DataAdded(7);
-END_IF
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddBool" Id="{f026cfda-ccb5-4225-9dac-a2799fe5b6bd}">
-      <Declaration><![CDATA[METHOD INTERNAL AddBool : BOOL
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-    sKey  : STRING(30);
-    bVal  : BOOL;
-END_VAR
+    <Method Name="_SeedRng" Id="{1a8f2c4d-3b5e-4a6f-8d7c-9e0a1b2c3d4f}">
+      <Declaration><![CDATA[METHOD PRIVATE _SeedRng
 VAR
-    nKeyLen    : UDINT;
-    nKeyLenUsint : USINT;
-    nDcTime    : LINT;
-    nTaskIdx   : USINT;
-    nValueType : BYTE := 3;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    nTotalLen  : UDINT;
-    byVal      : BYTE;
-    nFlags     : BYTE := 0;
+    nDcTime : LINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF _bRngSeeded THEN
     RETURN;
 END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-nKeyLenUsint := TO_USINT(nKeyLen);
 
 nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
 IF nDcTime = 0 THEN
     nDcTime := _GetTaskDcTime();
 END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(1) *)
-nTotalLen := 20 + 4 + nKeyLen + 1;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len for bool *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nKeyLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
-        pBuffer^.DataAdded(nKeyLen);
-    END_IF;
-
-    byVal := BOOL_TO_BYTE(bVal);
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(byVal), 1);
-    pBuffer^.DataAdded(1);
-
-    AddBool := TRUE;
+(* XOR with task index so separate tasks can't produce the same stream
+   if two of them seed within the same DC-time tick. Add the fallback
+   constant so a zero DC clock still gives a non-zero seed (xorshift64
+   requires non-zero state). *)
+_nXorState := TO_ULINT(nDcTime) XOR (TO_ULINT(Tc2_Utilities.GETCURTASKINDEXEX()) * 16#9E3779B97F4A7C15);
+IF _nXorState = 0 THEN
+    _nXorState := 16#DEADBEEFCAFEF00D;
 END_IF;
+
+_bRngSeeded := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddAny" Id="{b1a2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c01}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Emit SPAN_ATTR frame for the given FB_Span.
+
+Generic attribute emit path — dispatches on ``stArg.TypeClass`` to derive
+wire-type byte, widen narrow integers to i64, and widen REAL to LREAL.
+One stack-built frame struct, then MEMCPY header + MEMCPY key + MEMCPY value
+= 3 MEMCPYs (plus the span_id-rest fill into the struct).
+
+Supported IEC types:
+ * BOOL                                  → wire type 3 (1 byte)
+ * SINT/INT/DINT/LINT                    → wire type 1 (widened to 8 bytes)
+ * USINT/UINT/UDINT/ULINT/BYTE/WORD/DWORD/LWORD
+                                         → wire type 1 (widened to 8 bytes)
+ * REAL/LREAL                            → wire type 2 (widened to 8 bytes)
+ * STRING                                → wire type 4 (live length ≤127)
+
+Other types (WSTRING, TIME, ARRAY, STRUCT, ENUM) are silently dropped —
+add to the dispatch CASE when a consumer needs them.
+*)
+METHOD INTERNAL AddAny : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+    sKey  : STRING(30);
+    stArg : ANY;
+END_VAR
+VAR
+    stFrame        : ST_SpanAttrFrame;
+    pBuffer        : POINTER TO FB_LogBuffer;
+    pDst           : POINTER TO BYTE;
+    nKeyLen        : UDINT;
+    nValBytes      : UDINT;
+    nTotalLen      : UDINT;
+    pValueSrc      : POINTER TO BYTE;
+    nWireType      : BYTE;
+
+    (* Typed pointers onto stArg.pValue — one per supported IEC type.
+       TwinCAT's Tc2_Utilities only provides PXXX_TO_XXX helpers where the
+       pointer target matches the returned type, so reading a DINT through
+       an ANY's POINTER TO BYTE needs a per-type pointer cast. *)
+    pArgByte       : POINTER TO BYTE;
+    pArgSint       : POINTER TO SINT;
+    pArgInt        : POINTER TO INT;
+    pArgDint       : POINTER TO DINT;
+    pArgUsint      : POINTER TO USINT;
+    pArgUint       : POINTER TO UINT;
+    pArgUdint      : POINTER TO UDINT;
+    pArgReal       : POINTER TO REAL;
+
+    (* Widening scratch — one field per wire-width so the type dispatch
+       can hand AddAny a pointer to a stack LINT/ULINT/LREAL without
+       aliasing the caller's storage. *)
+    nValLint       : LINT;
+    nValULint      : ULINT;
+    fValLreal      : LREAL;
+    byValBool      : BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 OR_ELSE stArg.pValue = 0 THEN
+    RETURN;
+END_IF;
+
+(* Key length — capped at 31 (Rust parser enforces ≤31) *)
+nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
+IF nKeyLen > 31 THEN
+    nKeyLen := 31;
+END_IF;
+
+(* Type dispatch: derive wire-type byte + pointer to value + byte count.
+   Reads the native-width value via a typed pointer cast, then widens
+   integers to LINT/ULINT and REAL to LREAL so the wire format sees
+   uniform 8-byte numerics (Rust parser reads fixed 8 B for type 1/2). *)
+CASE stArg.TypeClass OF
+    __SYSTEM.TYPE_CLASS.TYPE_BOOL:
+        nWireType := 3;
+        pArgByte := stArg.pValue;
+        IF pArgByte^ <> 0 THEN
+            byValBool := 1;
+        ELSE
+            byValBool := 0;
+        END_IF;
+        pValueSrc := ADR(byValBool);
+        nValBytes := 1;
+
+    __SYSTEM.TYPE_CLASS.TYPE_SINT:
+        nWireType := 1;
+        pArgSint  := stArg.pValue;
+        nValLint  := SINT_TO_LINT(pArgSint^);
+        pValueSrc := ADR(nValLint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_INT:
+        nWireType := 1;
+        pArgInt   := stArg.pValue;
+        nValLint  := INT_TO_LINT(pArgInt^);
+        pValueSrc := ADR(nValLint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_DINT:
+        nWireType := 1;
+        pArgDint  := stArg.pValue;
+        nValLint  := DINT_TO_LINT(pArgDint^);
+        pValueSrc := ADR(nValLint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_LINT:
+        nWireType := 1;
+        pValueSrc := stArg.pValue;
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_USINT,
+    __SYSTEM.TYPE_CLASS.TYPE_BYTE:
+        nWireType := 1;
+        pArgUsint := stArg.pValue;
+        nValULint := USINT_TO_ULINT(pArgUsint^);
+        pValueSrc := ADR(nValULint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_UINT,
+    __SYSTEM.TYPE_CLASS.TYPE_WORD:
+        nWireType := 1;
+        pArgUint  := stArg.pValue;
+        nValULint := UINT_TO_ULINT(pArgUint^);
+        pValueSrc := ADR(nValULint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_UDINT,
+    __SYSTEM.TYPE_CLASS.TYPE_DWORD:
+        nWireType := 1;
+        pArgUdint := stArg.pValue;
+        nValULint := UDINT_TO_ULINT(pArgUdint^);
+        pValueSrc := ADR(nValULint);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_ULINT,
+    __SYSTEM.TYPE_CLASS.TYPE_LWORD:
+        nWireType := 1;
+        pValueSrc := stArg.pValue;
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_REAL:
+        nWireType := 2;
+        pArgReal  := stArg.pValue;
+        fValLreal := REAL_TO_LREAL(pArgReal^);
+        pValueSrc := ADR(fValLreal);
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_LREAL:
+        nWireType := 2;
+        pValueSrc := stArg.pValue;
+        nValBytes := 8;
+
+    __SYSTEM.TYPE_CLASS.TYPE_STRING:
+        nWireType := 4;
+        pValueSrc := stArg.pValue;
+        nValBytes := Tc2_Utilities.LEN2(stArg.pValue);
+        IF nValBytes > 127 THEN
+            nValBytes := 127;
+        END_IF;
+
+ELSE
+    (* Unsupported type — drop silently. Add to CASE above if needed. *)
+    RETURN;
+END_CASE;
+
+(* Buffer capacity check — fixed header + key + value *)
+nTotalLen := SIZEOF(stFrame) + nKeyLen + nValBytes;
+pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
+IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
+    RETURN;
+END_IF;
+
+(* Build frame header on stack (aligned) *)
+stFrame.nEventType   := nEventTypeAttr;
+stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stFrame.nFlags       := 0;
+stFrame.nDcTime      := _NowDcTime();
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+stFrame.nValueType   := nWireType;
+stFrame.nKeyLen      := TO_BYTE(nKeyLen);
+stFrame.nValueLen    := TO_BYTE(nValBytes);
+stFrame.nReserved    := 0;
+
+(* Emit: 3 MEMCPYs — header, key, value *)
+pDst := pBuffer^.BufferPtr;
+Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
+IF nKeyLen > 0 THEN
+    Tc2_System.MEMCPY(pDst + SIZEOF(stFrame), ADR(sKey), nKeyLen);
+END_IF;
+IF nValBytes > 0 THEN
+    Tc2_System.MEMCPY(pDst + SIZEOF(stFrame) + nKeyLen, pValueSrc, nValBytes);
+END_IF;
+
+pBuffer^.DataAdded(nTotalLen);
+AddAny := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -419,14 +490,11 @@ VAR_INPUT
     sName : STRING(30);
 END_VAR
 VAR
-    nNameLen    : UDINT;
-    nNameLenUsint : USINT;
-    nDcTime     : LINT;
-    nTaskIdx    : USINT;
-    nAttrCount  : BYTE := 0;
-    pBuffer     : POINTER TO FB_LogBuffer;
-    nTotalLen   : UDINT;
-    nFlags      : BYTE := 0;
+    stFrame    : ST_SpanEventFrame;
+    pBuffer    : POINTER TO FB_LogBuffer;
+    pDst       : POINTER TO BYTE;
+    nNameLen   : UDINT;
+    nTotalLen  : UDINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -439,337 +507,32 @@ nNameLen := Tc2_Utilities.LEN2(ADR(sName));
 IF nNameLen > 31 THEN
     nNameLen := 31;
 END_IF;
-nNameLenUsint := TO_USINT(nNameLen);
 
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Frame: header(20=12+8) + name_len(1) + attr_count(1) + reserved(2) + name *)
-nTotalLen := 20 + 4 + nNameLen;
-
+nTotalLen := SIZEOF(stFrame) + nNameLen;
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEvent, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nAttrCount), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nNameLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sName), nNameLen);
-        pBuffer^.DataAdded(nNameLen);
-    END_IF;
-
-    AddEvent := TRUE;
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddInt" Id="{cebf7902-798a-47a4-b3e5-37d8ad80e0e0}">
-      <Declaration><![CDATA[METHOD INTERNAL AddInt : BOOL
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-    sKey  : STRING(30);
-    nVal  : DINT;
-END_VAR
-VAR
-    nKeyLen     : UDINT;
-    nKeyLenUsint : USINT;
-    nDcTime     : LINT;
-    nTaskIdx    : USINT;
-    nValueType  : BYTE := 1;
-    pBuffer     : POINTER TO FB_LogBuffer;
-    nTotalLen   : UDINT;
-    nFlags      : BYTE := 0;
-    nValLint    : LINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pSpan = 0 THEN
+IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
     RETURN;
 END_IF;
 
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-nKeyLenUsint := TO_USINT(nKeyLen);
+stFrame.nEventType   := nEventTypeEvent;
+stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stFrame.nFlags       := 0;
+stFrame.nDcTime      := _NowDcTime();
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+stFrame.nNameLen     := TO_BYTE(nNameLen);
+stFrame.nAttrCount   := 0;
+stFrame.nReserved[0] := 0;
+stFrame.nReserved[1] := 0;
 
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Widen DINT → LINT so the 8-byte wire field carries the full value
-   instead of 4 bytes of stack garbage past the DINT. *)
-nValLint := DINT_TO_LINT(nVal);
-
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 20 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nKeyLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
-        pBuffer^.DataAdded(nKeyLen);
-    END_IF;
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValLint), 8);
-    pBuffer^.DataAdded(8);
-
-    AddInt := TRUE;
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddLInt" Id="{40a748f6-c411-43f0-994d-38e870c92549}">
-      <Declaration><![CDATA[METHOD INTERNAL AddLInt : BOOL
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-    sKey  : STRING(30);
-    nVal  : LINT;
-END_VAR
-VAR
-    nKeyLen     : UDINT;
-    nKeyLenUsint : USINT;
-    nDcTime     : LINT;
-    nTaskIdx    : USINT;
-    nValueType  : BYTE := 1;
-    pBuffer     : POINTER TO FB_LogBuffer;
-    nTotalLen   : UDINT;
-    nFlags      : BYTE := 0;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pSpan = 0 THEN
-    RETURN;
+pDst := pBuffer^.BufferPtr;
+Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
+IF nNameLen > 0 THEN
+    Tc2_System.MEMCPY(pDst + SIZEOF(stFrame), ADR(sName), nNameLen);
 END_IF;
 
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-nKeyLenUsint := TO_USINT(nKeyLen);
-
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 20 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nKeyLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
-        pBuffer^.DataAdded(nKeyLen);
-    END_IF;
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nVal), 8);
-    pBuffer^.DataAdded(8);
-
-    AddLInt := TRUE;
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddReal" Id="{6a9dc70f-5325-45d1-8be5-172af842881e}">
-      <Declaration><![CDATA[METHOD INTERNAL AddReal : BOOL
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-    sKey  : STRING(30);
-    fVal  : LREAL;
-END_VAR
-VAR
-    nKeyLen     : UDINT;
-    nKeyLenUsint : USINT;
-    nDcTime     : LINT;
-    nTaskIdx    : USINT;
-    nValueType  : BYTE := 2;
-    pBuffer     : POINTER TO FB_LogBuffer;
-    nTotalLen   : UDINT;
-    nFlags      : BYTE := 0;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pSpan = 0 THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-nKeyLenUsint := TO_USINT(nKeyLen);
-
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value(8) *)
-nTotalLen := 20 + 4 + nKeyLen + 8;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* value_len *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nKeyLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
-        pBuffer^.DataAdded(nKeyLen);
-    END_IF;
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(fVal), 8);
-    pBuffer^.DataAdded(8);
-
-    AddReal := TRUE;
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="AddString" Id="{59a3fb41-a2f5-4bd0-ad49-dd002f212acc}">
-      <Declaration><![CDATA[METHOD INTERNAL AddString : BOOL
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-    sKey  : STRING(30);
-    sVal  : STRING(120);
-END_VAR
-VAR
-    nKeyLen      : UDINT;
-    nKeyLenUsint : USINT;
-    nValLen      : UDINT;
-    nValLenUsint : USINT;
-    nDcTime      : LINT;
-    nTaskIdx     : USINT;
-    nValueType   : BYTE := 4;
-    pBuffer      : POINTER TO FB_LogBuffer;
-    nTotalLen    : UDINT;
-    nFlags       : BYTE := 0;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-IF pSpan = 0 THEN
-    RETURN;
-END_IF;
-
-nKeyLen := Tc2_Utilities.LEN2(ADR(sKey));
-IF nKeyLen > 31 THEN
-    nKeyLen := 31;
-END_IF;
-nKeyLenUsint := TO_USINT(nKeyLen);
-
-nValLen := Tc2_Utilities.LEN2(ADR(sVal));
-IF nValLen > 127 THEN
-    nValLen := 127;
-END_IF;
-nValLenUsint := TO_USINT(nValLen);
-
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Frame: header(20=12+8) + value_type(1) + key_len(1) + value_len(1) + reserved(1) + key + value *)
-nTotalLen := 20 + 4 + nKeyLen + nValLen;
-
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeAttr, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nKeyLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nValueType), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    IF nKeyLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sKey), nKeyLen);
-        pBuffer^.DataAdded(nKeyLen);
-    END_IF;
-
-    IF nValLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sVal), nValLen);
-        pBuffer^.DataAdded(nValLen);
-    END_IF;
-
-    AddString := TRUE;
-END_IF;
+pBuffer^.DataAdded(nTotalLen);
+AddEvent := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -795,16 +558,14 @@ VAR_INPUT
     bInheritTraceId : BOOL;
 END_VAR
 VAR
-    nTaskIndex       : USINT;
-    nNameLen         : UDINT;
-    nNameLenUsint    : USINT;
-    nTpLen           : UDINT;
-    nTpLenUsint      : USINT;
-    nFlagsBegin      : BYTE;
-    nTotalLen        : UDINT;
-    nDcTime          : LINT;
+    stHdr            : ST_SpanBeginPrefix;
     pBuffer          : POINTER TO FB_LogBuffer;
-    eKindByte        : BYTE;
+    pDst             : POINTER TO BYTE;
+    nNameLen         : UDINT;
+    nTpLen           : UDINT;
+    nTotalLen        : UDINT;
+    nTailOffset      : UDINT;
+    byTpLen          : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
 END_VAR
@@ -823,7 +584,6 @@ _SeedRng();
    2. Caller-populated _abTraceId  — bound-tracer inherit from parent
    3. True root                    — mint fresh trace_id
    span_id is always freshly minted. *)
-
 bExternalValid := FALSE;
 IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     bExternalValid := _ParseTraceParent(sTraceParent,
@@ -831,103 +591,80 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
                                          abExternalSpanId);
 END_IF;
 
-(* If external traceparent didn't populate trace_id, either the caller
-   already copied the parent's trace_id into _abTraceId (bInheritTraceId)
-   or we need to mint a fresh root trace_id. *)
 IF NOT bExternalValid AND NOT bInheritTraceId THEN
     _MintTraceId(pSpan);
 END_IF;
 
-(* Always mint a fresh span_id for this span *)
 _MintSpanId(pSpan);
 
-(* Prepare flags *)
-nFlagsBegin := 0;
-IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
-    nFlagsBegin := nFlagsBegin OR 2;  (* flag_has_external_parent *)
-END_IF;
-
-(* Get current time and task index *)
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIndex := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Prepare frame sizes *)
+(* Compute variable-length tails *)
 nNameLen := Tc2_Utilities.LEN2(ADR(sName));
 IF nNameLen > 127 THEN
     nNameLen := 127;
 END_IF;
-nNameLenUsint := TO_USINT(nNameLen);
 
 nTpLen := 0;
-nTpLenUsint := 0;
-IF (nFlagsBegin AND 2) <> 0 THEN
+IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     nTpLen := Tc2_Utilities.LEN2(ADR(sTraceParent));
     IF nTpLen > 127 THEN
         nTpLen := 127;
     END_IF;
-    nTpLenUsint := TO_USINT(nTpLen);
 END_IF;
 
-(* Total frame size: header(12) + parent_span_id(8) + kind(1) + name_len(1) + reserved(2)
-   + trace_id(16) + span_id(8) + name + [if has_external_parent: tp_len(1) + tp] *)
-nTotalLen := 12 + 8 + 4 + nNameLen;
-IF (nFlagsBegin AND 2) <> 0 THEN
+(* Total size: 24B hdr + 16B trace_id + 8B span_id + name + [tp_len(1)+tp if external] *)
+nTotalLen := SIZEOF(stHdr) + 16 + 8 + nNameLen;
+IF nTpLen > 0 THEN
     nTotalLen := nTotalLen + 1 + nTpLen;
 END_IF;
 
-(* Write frame *)
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header (12B) — local_id is a monotonic counter so SpanKey on the
-       Rust dispatcher stays unique across concurrent open spans. *)
-    _WriteFrameHeader(pBuffer, nEventTypeBegin, _nNextLocalId, nTaskIndex, nFlagsBegin, nDcTime);
-    _nNextLocalId := _nNextLocalId + 1;
-
-    (* parent_span_id (8B) *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(abParentSpanId[0]), 8);
-    pBuffer^.DataAdded(8);
-
-    (* kind (1B) *)
-    eKindByte := TO_BYTE(eKind);
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(eKindByte), 1);
-    pBuffer^.DataAdded(1);
-
-    (* name_len (1B) *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nNameLenUsint), 1);
-    pBuffer^.DataAdded(1);
-
-    (* reserved (2B) *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nFlagsBegin), 2);
-    pBuffer^.DataAdded(2);
-
-    (* trace_id (16B) — always present *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(pSpan^._abTraceId[0]), 16);
-    pBuffer^.DataAdded(16);
-
-    (* span_id (8B) — always present *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(pSpan^._abSpanId[0]), 8);
-    pBuffer^.DataAdded(8);
-
-    (* name *)
-    IF nNameLen > 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sName), nNameLen);
-        pBuffer^.DataAdded(nNameLen);
-    END_IF;
-
-    (* optional external traceparent *)
-    IF (nFlagsBegin AND 2) <> 0 THEN
-        Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nTpLenUsint), 1);
-        pBuffer^.DataAdded(1);
-
-        IF nTpLen > 0 THEN
-            Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(sTraceParent), nTpLen);
-            pBuffer^.DataAdded(nTpLen);
-        END_IF;
-    END_IF;
+IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
+    RETURN;
 END_IF;
+
+(* Build 24-byte fixed prefix on the stack *)
+stHdr.nEventType  := nEventTypeBegin;
+stHdr.nLocalId    := _nNextLocalId;
+stHdr.nTaskIdx    := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+IF nTpLen > 0 THEN
+    stHdr.nFlags  := 2;   (* flag_has_external_parent *)
+ELSE
+    stHdr.nFlags  := 0;
+END_IF;
+stHdr.nDcTime     := _NowDcTime();
+Tc2_System.MEMCPY(ADR(stHdr.abParentSpanId[0]), ADR(abParentSpanId[0]), 8);
+stHdr.nKind       := TO_BYTE(eKind);
+stHdr.nNameLen    := TO_BYTE(nNameLen);
+stHdr.nReserved[0] := 0;
+stHdr.nReserved[1] := 0;
+
+_nNextLocalId := _nNextLocalId + 1;
+
+(* Emit:
+     [0..23]   stHdr
+     [24..39]  trace_id (16 B)
+     [40..47]  span_id  (8 B)
+     [48..]    name
+     optional: tp_len(1) + traceparent *)
+pDst := pBuffer^.BufferPtr;
+Tc2_System.MEMCPY(pDst, ADR(stHdr), SIZEOF(stHdr));
+Tc2_System.MEMCPY(pDst + SIZEOF(stHdr),        ADR(pSpan^._abTraceId[0]), 16);
+Tc2_System.MEMCPY(pDst + SIZEOF(stHdr) + 16,   ADR(pSpan^._abSpanId[0]),  8);
+
+nTailOffset := SIZEOF(stHdr) + 24;
+IF nNameLen > 0 THEN
+    Tc2_System.MEMCPY(pDst + nTailOffset, ADR(sName), nNameLen);
+END_IF;
+
+IF nTpLen > 0 THEN
+    (* tp_len as one byte, then tp bytes — MEMCPY avoids the
+       "(ptr + offset)^ := val" syntax TwinCAT's parser rejects. *)
+    byTpLen := TO_BYTE(nTpLen);
+    Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen,     ADR(byTpLen),       1);
+    Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen + 1, ADR(sTraceParent),  nTpLen);
+END_IF;
+
+pBuffer^.DataAdded(nTotalLen);
 ]]></ST>
       </Implementation>
     </Method>
@@ -984,13 +721,9 @@ VAR_INPUT
     pSpan : POINTER TO FB_Span;
 END_VAR
 VAR
-    nTaskIdx   : USINT;
-    nDcTime    : LINT;
-    nStatus    : BYTE := 1;
-    nMsgLen    : USINT := 0;
-    pBuffer    : POINTER TO FB_LogBuffer;
-    nTotalLen  : UDINT;
-    nFlags     : BYTE := 0;
+    stFrame  : ST_SpanEndFrame;
+    pBuffer  : POINTER TO FB_LogBuffer;
+    pDst     : POINTER TO BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -999,33 +732,26 @@ IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-nTaskIdx := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
-
-(* Frame: header(20=12+8) + status(1) + msg_len(1) + reserved(2) *)
-nTotalLen := 20 + 4;
-
 pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer <> 0 AND_THEN pBuffer^.BufferFree >= nTotalLen THEN
-    (* Header with 8-byte span_id *)
-    _WriteFrameHeaderWithSpanId(pBuffer, nEventTypeEnd, pSpan^._abSpanId, nTaskIdx, nFlags, nDcTime);
-
-    (* Payload *)
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nStatus), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
-
-    Tc2_System.MEMCPY(pBuffer^.BufferPtr, ADR(nMsgLen), 1);  (* reserved *)
-    pBuffer^.DataAdded(1);
+IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < SIZEOF(stFrame) THEN
+    RETURN;
 END_IF;
+
+stFrame.nEventType   := nEventTypeEnd;
+stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stFrame.nFlags       := 0;
+stFrame.nDcTime      := _NowDcTime();
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+stFrame.nStatus      := 1;   (* 1 = ok; FB_Span overrides via SetError path *)
+stFrame.nMsgLen      := 0;
+stFrame.nReserved[0] := 0;
+stFrame.nReserved[1] := 0;
+
+pDst := pBuffer^.BufferPtr;
+Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
+
+pBuffer^.DataAdded(SIZEOF(stFrame));
 ]]></ST>
       </Implementation>
     </Method>
