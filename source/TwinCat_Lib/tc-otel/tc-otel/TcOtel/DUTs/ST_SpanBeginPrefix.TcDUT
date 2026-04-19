@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_SpanBeginPrefix" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c01}">
+    <Declaration><![CDATA[(*
+Fixed 24-byte prefix of a SPAN_BEGIN frame. Trace_id (16B) and span_id (8B)
+follow immediately after, then the variable-length name and optional
+external traceparent. Layout matches Rust parser_v2 BEGIN case.
+*)
+{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_SpanBeginPrefix :
+STRUCT
+    (* 12-byte common header *)
+    nEventType      : BYTE;     (* 5 = SPAN_BEGIN *)
+    nLocalId        : BYTE;     (* monotonic counter for SpanKey uniqueness *)
+    nTaskIdx        : BYTE;
+    nFlags          : BYTE;     (* bit1 = has_external_parent *)
+    nDcTime         : LINT;     (* ns since DC epoch *)
+    (* 12-byte begin meta *)
+    abParentSpanId  : ARRAY[0..7] OF BYTE;
+    nKind           : BYTE;
+    nNameLen        : BYTE;
+    nReserved       : ARRAY[0..1] OF BYTE;
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

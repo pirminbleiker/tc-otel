@@ -79,6 +79,33 @@ END_VAR
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="AddAny" Id="{35782da4-c35d-0eed-09ec-3a5712bae02f}">
+      <Declaration><![CDATA[(*
+:Description: Emit a span attribute for any supported IEC 61131-3 scalar type.
+
+Accepts BOOL, SINT/INT/DINT/LINT (signed), USINT/UINT/UDINT/ULINT/BYTE/WORD/
+DWORD/LWORD (unsigned), REAL/LREAL, STRING. Narrow ints widen to i64, REAL
+widens to f64 — consumers see uniform 8-byte numeric attrs.
+
+Prefer AddAny for new code; the typed AddBool/AddInt/... variants are thin
+shims kept for API back-compat.
+*)
+METHOD PUBLIC AddAny : BOOL
+VAR_INPUT
+    sKey  : STRING(30);
+    stArg : ANY;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF NOT _bOpen THEN
+    RETURN;
+END_IF;
+
+AddAny := _pTracer._AddAny(THIS, sKey, stArg);
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="AddBool" Id="{7047bbb4-5514-432f-96ef-1c5e7401f9b0}">
       <Declaration><![CDATA[METHOD PUBLIC AddBool : BOOL
 VAR_INPUT
@@ -88,11 +115,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddBool := _pTracer._AddBool(THIS, sKey, bVal);
+AddBool := AddAny(sKey, bVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -121,11 +144,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddInt := _pTracer._AddInt(THIS, sKey, nVal);
+AddInt := AddAny(sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -138,11 +157,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddLInt := _pTracer._AddLInt(THIS, sKey, nVal);
+AddLInt := AddAny(sKey, nVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -155,11 +170,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddReal := _pTracer._AddReal(THIS, sKey, fVal);
+AddReal := AddAny(sKey, fVal);
 ]]></ST>
       </Implementation>
     </Method>
@@ -172,11 +183,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF NOT _bOpen THEN
-    RETURN;
-END_IF;
-
-AddString := _pTracer._AddString(THIS, sKey, sVal);
+AddString := AddAny(sKey, sVal);
 ]]></ST>
       </Implementation>
     </Method>
