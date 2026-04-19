@@ -30,28 +30,40 @@
 //!   a response whose invoke-id matches. A `oneshot` channel resolves the
 //!   waiter.
 //!
+//! # TCP outbound
+//!
+//! For TCP targets the dispatcher **dials outbound lazily**: register a peer
+//! with [`AmsDispatcher::add_tcp_peer`] (NetID → `SocketAddr`), and on the
+//! first `send_request` for that NetID the dispatcher opens one persistent
+//! TCP connection and spawns a reader task. The reader parses AMS frames off
+//! the socket and routes responses back to waiters via invoke-id. Subsequent
+//! requests to the same peer reuse the connection. If the peer closes the
+//! connection, the next send attempts a re-dial automatically.
+//!
 //! # What's out of scope (for this PR)
 //!
-//! - TCP transport implementation inside the dispatcher. The `TransportKind::Tcp`
-//!   variant is defined so the route-table can express it, but sending over
-//!   TCP isn't implemented yet. Callers will get [`DispatcherError::NoRoute`]
-//!   if they try to send to a TCP-only peer for now.
-//! - Notifications (`AddDeviceNotification` / incoming stamps). That's the
-//!   next follow-up — it reuses this dispatcher for the subscribe/unsubscribe
-//!   commands and for parsing inbound notification frames, but needs an
-//!   additional broadcast channel to fan out stamps to listeners.
+//! - Notifications (`AddDeviceNotification` / incoming stamps). The dispatcher
+//!   correlates subscribe/unsubscribe itself, but stamp fan-out to many
+//!   listeners needs a separate broadcast channel.
+//! - TCP *inbound* route learning — i.e. "a peer dialed us, so it must be
+//!   reachable via TCP". That depends on wiring the existing
+//!   `TcpAmsTransport` listener into the same route table, which lives in the
+//!   next commit.
 //! - Wiring into [`crate::router::AdsRouter`] or [`tc_otel_service`]. The
-//!   dispatcher is a library-level primitive in this PR; the callers migrate
-//!   in a separate commit.
+//!   dispatcher stays a library primitive in this PR; the callers migrate in
+//!   a separate commit.
 
 use crate::ams::{AmsHeader, AmsNetId};
 use crate::error::AdsError;
 use parking_lot::RwLock;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
@@ -148,6 +160,24 @@ impl MqttPeer {
     }
 }
 
+/// One outbound TCP connection to a PLC. Reader task runs in background and
+/// routes inbound frames to pending waiters or the sink (shared with the
+/// MQTT code path).
+struct TcpPeer {
+    writer: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    #[allow(dead_code)]
+    reader_task: JoinHandle<()>,
+    #[allow(dead_code)]
+    addr: SocketAddr,
+}
+
+/// Mutable outbound-TCP state: current live connection + known addresses.
+#[derive(Default)]
+struct TcpState {
+    peers: HashMap<AmsNetId, Arc<TcpPeer>>,
+    addrs: HashMap<AmsNetId, SocketAddr>,
+}
+
 /// Trait for a sink that receives parsed AMS frames (header + payload).
 ///
 /// The dispatcher uses this to hand inbound frames it received on a
@@ -184,9 +214,9 @@ pub struct AmsDispatcher {
     pending: PendingMap,
     invoke_counter: Arc<AtomicU32>,
     mqtt: Option<Arc<MqttPeer>>,
+    tcp: Arc<Mutex<TcpState>>,
     /// Shared sink for frames received that are *not* replies to our
     /// own requests (i.e. PLC-initiated ADS writes, notifications, etc.).
-    #[allow(dead_code)]
     inbound_sink: Arc<dyn InboundSink>,
 }
 
@@ -209,6 +239,7 @@ impl AmsDispatcher {
             pending: Arc::new(Mutex::new(HashMap::new())),
             invoke_counter: Arc::new(AtomicU32::new(1)),
             mqtt: None,
+            tcp: Arc::new(Mutex::new(TcpState::default())),
             inbound_sink,
         }
     }
@@ -230,7 +261,7 @@ impl AmsDispatcher {
     /// broker (including the observer-side `MqttAmsTransport`) — otherwise
     /// the broker will disconnect one of them.
     pub async fn attach_mqtt(
-        self: &mut Self,
+        &mut self,
         broker_host: &str,
         broker_port: u16,
         client_id: &str,
@@ -316,6 +347,18 @@ impl AmsDispatcher {
         self.routes.learn(net_id, kind);
     }
 
+    /// Register an outbound TCP peer: associate an AMS Net ID with a dial
+    /// target (`<host>:48898` typically). The TCP connection is dialed
+    /// lazily on the first `send_request` that routes to this NetID.
+    ///
+    /// Calling this also learns the route as `TransportKind::Tcp`, so the
+    /// next `send_request(net_id, ...)` will use TCP even if no `/info`
+    /// announcement for that peer has been seen.
+    pub async fn add_tcp_peer(&self, net_id: AmsNetId, addr: SocketAddr) {
+        self.routes.learn(net_id, TransportKind::Tcp);
+        self.tcp.lock().await.addrs.insert(net_id, addr);
+    }
+
     /// Issue a request and wait for the matching response.
     ///
     /// Allocates a fresh invoke-id, builds the AMS header for `cmd`, publishes
@@ -353,11 +396,7 @@ impl AmsDispatcher {
         // Publish on the right transport.
         let publish_result = match transport {
             TransportKind::Mqtt => self.publish_mqtt(target_net_id, frame).await,
-            TransportKind::Tcp => {
-                // Remove the pending entry before returning.
-                self.pending.lock().await.remove(&invoke_id);
-                return Err(DispatcherError::TransportNotAttached(TransportKind::Tcp));
-            }
+            TransportKind::Tcp => self.publish_tcp(target_net_id, frame).await,
         };
 
         if let Err(e) = publish_result {
@@ -403,9 +442,130 @@ impl AmsDispatcher {
             .await
             .map_err(DispatcherError::from)
     }
+
+    async fn publish_tcp(
+        &self,
+        target: AmsNetId,
+        frame: Vec<u8>,
+    ) -> std::result::Result<(), DispatcherError> {
+        let peer = self.get_or_dial_tcp_peer(target).await?;
+        let mut writer = peer.writer.lock().await;
+        if let Err(e) = writer.write_all(&frame).await {
+            // Connection broken — drop it so the next send redials.
+            drop(writer);
+            self.tcp.lock().await.peers.remove(&target);
+            return Err(DispatcherError::Mqtt(format!("tcp write: {e}")));
+        }
+        Ok(())
+    }
+
+    async fn get_or_dial_tcp_peer(
+        &self,
+        target: AmsNetId,
+    ) -> std::result::Result<Arc<TcpPeer>, DispatcherError> {
+        // Fast path — connection already established.
+        {
+            let guard = self.tcp.lock().await;
+            if let Some(peer) = guard.peers.get(&target) {
+                return Ok(peer.clone());
+            }
+        }
+
+        // Resolve the dial address (must be pre-registered).
+        let addr = {
+            let guard = self.tcp.lock().await;
+            guard
+                .addrs
+                .get(&target)
+                .copied()
+                .ok_or(DispatcherError::NoRoute(target))?
+        };
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| DispatcherError::Mqtt(format!("tcp connect to {addr} failed: {e}")))?;
+        // Disable Nagle — ADS traffic is request/response, we want small
+        // frames out immediately.
+        let _ = stream.set_nodelay(true);
+        let (read_half, write_half) = stream.into_split();
+
+        let pending = self.pending.clone();
+        let sink = self.inbound_sink.clone();
+        let tcp_state = self.tcp.clone();
+        let reader_task = tokio::spawn(run_tcp_reader(read_half, target, pending, sink, tcp_state));
+
+        let peer = Arc::new(TcpPeer {
+            writer: Arc::new(Mutex::new(write_half)),
+            reader_task,
+            addr,
+        });
+        self.tcp.lock().await.peers.insert(target, peer.clone());
+        Ok(peer)
+    }
+}
+
+/// Background task: parse AMS frames off a TCP socket and dispatch.
+async fn run_tcp_reader(
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+    target: AmsNetId,
+    pending: PendingMap,
+    sink: Arc<dyn InboundSink>,
+    tcp_state: Arc<Mutex<TcpState>>,
+) {
+    // The AMS/TCP wire format is: 6-byte TCP header (2 reserved + 4-byte
+    // length) + AMS header (32 bytes) + payload. Read header first, then
+    // the rest by declared length.
+    let mut prefix = [0u8; 6];
+    loop {
+        match reader.read_exact(&mut prefix).await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(%target, "tcp reader: connection closed ({e})");
+                break;
+            }
+        }
+        let total_len = u32::from_le_bytes([prefix[2], prefix[3], prefix[4], prefix[5]]) as usize;
+        if total_len == 0 || total_len > 16 * 1024 * 1024 {
+            tracing::warn!(%target, total_len, "tcp reader: bogus frame length, closing");
+            break;
+        }
+        let mut body = vec![0u8; total_len];
+        if let Err(e) = reader.read_exact(&mut body).await {
+            tracing::debug!(%target, "tcp reader: body read failed ({e})");
+            break;
+        }
+        if body.len() < AMS_HEADER_LEN {
+            tracing::warn!(%target, bytes = body.len(), "tcp reader: short AMS body");
+            continue;
+        }
+        let header = match AmsHeader::parse(&body[..AMS_HEADER_LEN]) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::debug!(%target, "tcp reader: bad AMS header ({e})");
+                continue;
+            }
+        };
+        let payload = body[AMS_HEADER_LEN..].to_vec();
+
+        let is_response = header.state_flags & AMS_STATE_RESPONSE != 0;
+        if is_response {
+            if let Some(waiter) = pending.lock().await.remove(&header.invoke_id) {
+                let _ = waiter.send(ResponseFrame { header, payload });
+                continue;
+            }
+            tracing::debug!(%target, invoke_id = header.invoke_id, "tcp reader: unmatched response");
+            continue;
+        }
+        sink.deliver(header, payload);
+    }
+
+    // Reader exited — peer connection dead. Remove from live-peer map so the
+    // next send_request redials.
+    tcp_state.lock().await.peers.remove(&target);
 }
 
 /// Build a full AMS/TCP frame: 6-byte TCP prefix + 32-byte AMS header + payload.
+#[allow(clippy::too_many_arguments)]
 pub fn build_ams_frame(
     target_net_id: AmsNetId,
     target_port: u16,
@@ -644,7 +804,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_request_to_tcp_route_without_tcp_attached_errors() {
+    async fn send_request_to_tcp_route_without_addr_errors_cleanly() {
+        // `add_static_route(netid, Tcp)` without a registered dial address
+        // should fail fast with NoRoute rather than hang in dial.
         let disp = AmsDispatcher::new(AmsNetId([10, 10, 10, 10, 1, 1]), 16150);
         disp.add_static_route(AmsNetId([1, 2, 3, 4, 5, 6]), TransportKind::Tcp);
         let err = disp
@@ -657,10 +819,41 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            DispatcherError::TransportNotAttached(TransportKind::Tcp)
-        ));
+        assert!(matches!(err, DispatcherError::NoRoute(_)));
+    }
+
+    #[tokio::test]
+    async fn add_tcp_peer_learns_route_and_stores_addr() {
+        let disp = AmsDispatcher::new(AmsNetId([10, 10, 10, 10, 1, 1]), 16150);
+        let netid = AmsNetId([1, 2, 3, 4, 5, 6]);
+        disp.add_tcp_peer(netid, "127.0.0.1:59999".parse().unwrap())
+            .await;
+        assert_eq!(disp.routes().get(netid), Some(TransportKind::Tcp));
+        let addr = disp.tcp.lock().await.addrs.get(&netid).copied();
+        assert_eq!(addr, Some("127.0.0.1:59999".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn send_request_tcp_dial_failure_surfaces_error_not_hang() {
+        // Pick a high unprivileged port almost certainly unused.
+        let disp = AmsDispatcher::new(AmsNetId([10, 10, 10, 10, 1, 1]), 16150);
+        let netid = AmsNetId([1, 2, 3, 4, 5, 6]);
+        disp.add_tcp_peer(netid, "127.0.0.1:61237".parse().unwrap())
+            .await;
+        let err = disp
+            .send_request(
+                netid,
+                851,
+                crate::ams::ADS_CMD_READ,
+                &[],
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+        // Connection error surfaces as Mqtt(String) — the general I/O
+        // variant we reuse for both transports. What matters is that it's
+        // an error rather than the `send_request` blocking forever.
+        assert!(matches!(err, DispatcherError::Mqtt(_)));
     }
 
     #[tokio::test]
