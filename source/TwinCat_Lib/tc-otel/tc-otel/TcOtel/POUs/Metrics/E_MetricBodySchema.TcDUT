@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="E_MetricBodySchema" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c01}">
+    <Declaration><![CDATA[(*
+:Description: Wire-format body schema for FB_Metrics push frames.
+
+Encoded as a single byte at offset +0x03 of ST_PushMetricAggHeader. The
+body of the frame is always sample_count * sample_size bytes; this enum
+tells the receiver how to interpret each fixed-size slot.
+
+Mapped from the locked IEC type at the first Observe() call. Numerics
+(SINT..LREAL incl. unsigned) collapse to ``eNumeric`` and are widened
+to LREAL (sample_size = 8). BOOL / discrete / strings keep their raw
+sample size.
+*)
+TYPE E_MetricBodySchema :
+(
+    eUnknown    := 0,
+    eBool       := 1,    // body: sample_count * 1 byte
+    eNumeric    := 2,    // body: sample_count * 8 bytes (LREAL, widened)
+    eDiscrete   := 3,    // body: sample_count * sample_size raw bytes (BYTE/WORD/DWORD/LWORD/ENUM)
+    eString     := 4,    // body: sample_count * sample_size UTF-8 bytes (zero-padded fixed)
+    eWstring    := 5     // body: sample_count * sample_size UTF-16LE bytes (zero-padded fixed)
+) BYTE;
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

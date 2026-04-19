@@ -15,6 +15,10 @@ VAR
 	(* Per-task OpenTelemetry trace emitter. One instance per task, driven
 	   once per cycle by PRG_TaskLog.Call(). *)
 	aTaskTracer			: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_TcOtelTaskTracer;
+	(* Per-task transport for FB_Metrics push frames. One instance per task,
+	   driven once per cycle by PRG_TaskLog.Call(). Owned by user-instantiated
+	   FB_Metrics through the TaskMetrics property — never invoke directly. *)
+	aTaskMetrics		: ARRAY[1..SIZEOF(TwinCAT_SystemInfoVarList._TaskInfo)/SIZEOF(PlcTaskSystemInfo)] OF FB_TcOtelTaskMetrics;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -44,6 +48,7 @@ END_VAR
 aTaskLogger[nIdx].Call();
 aTaskDiag[nIdx].Call();
 aTaskTracer[nIdx].Call();
+aTaskMetrics[nIdx].Call();
 ]]></ST>
       </Implementation>
     </Method>
@@ -78,6 +83,7 @@ END_VAR]]></Declaration>
         <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 aTaskLogger[nIdx].Init(sAmsNetId);
 aTaskDiag[nIdx].Init(sAmsNetId, 16150, ADR(aTaskDiagConfig[nIdx]));
+aTaskMetrics[nIdx].Init(sAmsNetId, 16150);
 ]]></ST>
       </Implementation>
     </Method>
@@ -128,6 +134,58 @@ InitDiag := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="InitMetrics" Id="{c9d0e1f2-a3b4-5c6d-7e8f-90010203040a}">
+      <Declaration><![CDATA[(*
+:Description: Bind the per-task FB_Metrics sender to a custom tc-otel endpoint.
+
+Call instead of (or after) ``Init`` when tc-otel's ADS port differs from
+16150 or when metric pushes need a different AMS net id than logs. The
+push-interval is per-FB_Metrics-instance, not per-task — there's no global
+window/divider config, only the transport endpoint.
+
+**Example**
+
+.. code::
+
+	IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+		PRG_TaskLog.InitMetrics(
+			sAmsNetId := '127.0.0.1.1.1',
+			nPort     := 16150
+		);
+	END_IF
+*)
+METHOD PUBLIC InitMetrics : BOOL
+VAR_INPUT
+	sAmsNetId	: Tc2_Utilities.T_AmsNetID;
+	nPort		: UINT;     (* tc-otel ADS port, 0 keeps the default 16150 *)
+END_VAR
+VAR
+	nIdx	: DINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+aTaskMetrics[nIdx].Init(sAmsNetId, nPort);
+InitMetrics := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="TaskMetrics" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304050b}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Per-task FB_Metrics transport sender for the current task.
+
+Used by FB_Metrics to ship its assembled push frame. Do not call directly.
+*)
+PROPERTY INTERNAL TaskMetrics : REFERENCE TO FB_TcOtelTaskMetrics]]></Declaration>
+      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405060c}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TaskMetrics REF= aTaskMetrics[GETCURTASKINDEXEX()];
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Property Name="TaskTracer" Id="{f6b8a9c0-d1e2-50a3-b4c5-d6e7f8a9b0c1}">
       <Declaration><![CDATA[(*
 :Description: INTERNAL — Returns a reference to the current task's OpenTelemetry tracer.

@@ -104,6 +104,26 @@ END_VAR
         </Implementation>
       </Get>
     </Property>
+    <Property Name="InnermostSpan" Id="{e2f3a4b5-c6d7-8e9f-0011-223344556677}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — pointer to the innermost open span on this tracer's stack.
+
+Used by FB_Metrics during flush to snapshot trace_id/span_id for OTel
+exemplar correlation without parsing the W3C traceparent string. Returns
+0 when no span is open. Not part of the public API — do not use from
+controller code.
+*)
+PROPERTY INTERNAL InnermostSpan : POINTER TO FB_Span]]></Declaration>
+      <Get Name="Get" Id="{f3a4b5c6-d7e8-9f00-1122-334455667788}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[InnermostSpan := _pInnermost;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Method Name="_RegisterOpen" Id="{b9c0d1e2-f3a4-4b5c-8d6e-7f8a9b0c1d2e}">
       <Declaration><![CDATA[(*
 :Description: Internal — called by FB_Span.Begin right after the

@@ -169,26 +169,6 @@ END_IF
 THIS^.sLogger := sLogger;]]></ST>
       </Implementation>
     </Method>
-    <Method Name="WithTArg" Id="{d3f48c9f-ff2e-465b-bbd7-5053ade8f282}">
-      <Declaration><![CDATA[METHOD WithTArg : I_Logger
-VAR_INPUT
-	stArg	: T_Arg;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[WithTArg := THIS^;
-IF NOT _IsLogLevelActive() THEN
-	RETURN;
-END_IF
-
-// Lazy start: write header+message+logger on first arg
-_EnsureStarted();
-
-// Write arg directly into LogEntry buffer
-fbLogEntry.AddTArg(0, stArg);
-]]></ST>
-      </Implementation>
-    </Method>
     <Method Name="WithSpan" Id="{e4a59d0f-0a1f-4759-8c0a-1f2d3e4f5a6b}">
       <Declaration><![CDATA[(*
 :Description: Bind this log entry to a specific FB_Span for explicit
@@ -224,6 +204,26 @@ IF NOT _IsLogLevelActive() THEN
 END_IF
 
 _pSpan := ADR(span);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="WithTArg" Id="{d3f48c9f-ff2e-465b-bbd7-5053ade8f282}">
+      <Declaration><![CDATA[METHOD WithTArg : I_Logger
+VAR_INPUT
+	stArg	: T_Arg;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[WithTArg := THIS^;
+IF NOT _IsLogLevelActive() THEN
+	RETURN;
+END_IF
+
+// Lazy start: write header+message+logger on first arg
+_EnsureStarted();
+
+// Write arg directly into LogEntry buffer
+fbLogEntry.AddTArg(0, stArg);
 ]]></ST>
       </Implementation>
     </Method>

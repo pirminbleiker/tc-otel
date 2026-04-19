@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_TcOtelTaskMetrics" Id="{c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e03}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Per-task transport for FB_Metrics push frames.
+
+INTERNAL — never instantiated by user code. One instance per task lives in
+``PRG_TaskLog.aTaskMetrics`` and is driven once per cycle by
+``PRG_TaskLog.Call()``. Owns the ``ADSWRITE`` FB that ships pre-assembled
+metric frames to ``IG = 0x4D424301`` / ``IO = 2`` (IO_PUSH_METRIC_AGG).
+
+Backpressure: while a flush is in flight the next ``Emit`` call is dropped
+(``nFlushDropCount`` increments). FB_Metrics retries on the next push
+window — losing one window is preferable to per-instance queueing memory
+cost.
+
+Watchdog mirrors ``FB_TcOtelTaskDiag`` — if ADSWRITE.BUSY stays true past
+``nFlightWatchdogCycles`` the FB force-resets ``WRITE := FALSE`` so a
+transient tc-otel outage doesn't wedge the sender forever.
+*)
+{attribute 'no_explicit_call' := 'no direct call necessary'}
+{attribute 'conditionalshow'}
+FUNCTION_BLOCK FB_TcOtelTaskMetrics
+VAR
+    bInitialized            : BOOL;
+    sTcOtelNetId            : T_AmsNetId;
+    nTcOtelPort             : UINT := 16150;
+
+    (* Wire constants — matches diagnostics.rs IG_PUSH_DIAG / IO_PUSH_METRIC_AGG. *)
+    nIdxGroupPushDiag       : UDINT := 16#4D424301;
+    nIdxOffsetMetricAgg     : UDINT := 2;
+
+    (* ADS write state. Single-flight: backpressure via Emit-time drop. *)
+    fbAdsWrite              : Tc2_System.ADSWRITE;
+    bFlushInFlight          : BOOL;
+    nFlushStartCycle        : UDINT;
+    nFlightWatchdogCycles   : UDINT := 2000;
+    nLastFlushSuccessCycle  : UDINT;
+    nFlushDropCount         : UDINT;     // dropped because already in flight or oversized
+    nFlushErrorCount        : UDINT;     // ADSWRITE returned ERR
+    nFlushOkCount           : UDINT;
+
+    (* Send buffer — must persist across cycles while ADSWRITE references
+       SRCADDR. Sized for the worst-case frame:
+         header(52) + trace_ctx(24) + name(63) + unit(15) + body(8192) ≈ 8346 B.
+       Rounded up. *)
+    abySendBuffer           : ARRAY [0..8447] OF BYTE;
+    nSendBufferSize         : UDINT := 8448;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="Call" Id="{d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f04}">
+      <Declaration><![CDATA[(*
+:Description: Pump in-flight ADSWRITE — drives flush completion + watchdog.
+
+Called once per task cycle from ``PRG_TaskLog.Call()``. Cheap when no flush
+is pending. The first ``IF`` block mirrors the equivalent block in
+``FB_TcOtelTaskDiag.Call`` so the two senders agree on the ADSWRITE life
+cycle and the watchdog semantics.
+*)
+METHOD PUBLIC Call
+VAR
+    nTaskIdx : DINT;
+    nNowCycle : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT bFlushInFlight THEN
+    RETURN;
+END_IF
+
+fbAdsWrite();
+
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nNowCycle := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].CycleCount;
+
+IF NOT fbAdsWrite.BUSY THEN
+    IF fbAdsWrite.ERR THEN
+        nFlushErrorCount := nFlushErrorCount + 1;
+    ELSE
+        nFlushOkCount          := nFlushOkCount + 1;
+        nLastFlushSuccessCycle := nNowCycle;
+    END_IF
+    fbAdsWrite(WRITE := FALSE);
+    bFlushInFlight := FALSE;
+ELSIF nFlushStartCycle <> 0
+    AND (nNowCycle - nFlushStartCycle) > nFlightWatchdogCycles THEN
+    (* Watchdog tripped — cut the wedged call loose so later pushes can
+       still reach tc-otel when connectivity is restored. *)
+    nFlushDropCount := nFlushDropCount + 1;
+    fbAdsWrite(WRITE := FALSE);
+    bFlushInFlight := FALSE;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Emit" Id="{e5f6a7b8-c9d0-1e2f-3a4b-5c6d7e8f9005}">
+      <Declaration><![CDATA[(*
+:Description: Ship one metric frame to tc-otel as ``[header | body]``.
+
+Two-part API so FB_Metrics doesn't need its own contiguous frame buffer:
+the header lives on the caller's stack (≤ ~160 B with trace+name+unit),
+the body is a pointer into FB_Metrics's own append-only sample buffer.
+We MEMCPY both into ``abySendBuffer`` here — by the time ADSWRITE consumes
+SRCADDR the caller's stack is gone.
+
+Returns FALSE when the send was dropped — caller should not assume the
+frame reached the wire. Drop reasons:
+
+* ``bFlushInFlight`` — a previous frame is still being shipped (single-
+  flight transport). Caller will retry on the next push window.
+* ``nHeaderLen + nBodyLen > nSendBufferSize`` — frame too large.
+* ``NOT bInitialized`` — Init() never called. Never seen in normal use
+  because PRG_TaskLog.Init wires it up on every task that calls it.
+*)
+METHOD PUBLIC Emit : BOOL
+VAR_INPUT
+    pHeader    : PVOID;
+    nHeaderLen : UDINT;
+    pBody      : PVOID;     // may be 0 when nBodyLen = 0
+    nBodyLen   : UDINT;
+END_VAR
+VAR
+    nTaskIdx  : DINT;
+    nNowCycle : UDINT;
+    nTotalLen : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT bInitialized OR pHeader = 0 OR nHeaderLen = 0 THEN
+    Emit := FALSE;
+    RETURN;
+END_IF
+
+IF bFlushInFlight THEN
+    nFlushDropCount := nFlushDropCount + 1;
+    Emit := FALSE;
+    RETURN;
+END_IF
+
+nTotalLen := nHeaderLen + nBodyLen;
+IF nTotalLen > nSendBufferSize THEN
+    F_InternalLog(
+        E_LogLevel.eError,
+        'FB_TcOtelTaskMetrics.Emit',
+        'Metric frame too large: nTotalLen=%d nSendBufferSize=%d',
+        Tc2_Utilities.F_UDINT(nTotalLen),
+        Tc2_Utilities.F_UDINT(nSendBufferSize),
+        Tc2_Utilities.EMPTY_ARG_VALUE,
+        Tc2_Utilities.EMPTY_ARG_VALUE
+    );
+    nFlushDropCount := nFlushDropCount + 1;
+    Emit := FALSE;
+    RETURN;
+END_IF
+
+Tc2_System.MEMCPY(ADR(abySendBuffer), pHeader, nHeaderLen);
+IF nBodyLen > 0 AND pBody <> 0 THEN
+    Tc2_System.MEMCPY(ADR(abySendBuffer) + nHeaderLen, pBody, nBodyLen);
+END_IF
+
+nTaskIdx  := Tc2_Utilities.GETCURTASKINDEXEX();
+nNowCycle := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].CycleCount;
+
+(* Rising-edge ADSWRITE kick — same idiom as FB_TcOtelTask / FB_TcOtelTaskDiag. *)
+fbAdsWrite(WRITE := FALSE);
+fbAdsWrite(
+    NETID   := sTcOtelNetId,
+    PORT    := nTcOtelPort,
+    IDXGRP  := nIdxGroupPushDiag,
+    IDXOFFS := nIdxOffsetMetricAgg,
+    LEN     := nTotalLen,
+    SRCADDR := ADR(abySendBuffer),
+    WRITE   := TRUE,
+    TMOUT   := T#1S
+);
+bFlushInFlight   := TRUE;
+nFlushStartCycle := nNowCycle;
+
+Emit := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Init" Id="{f6a7b8c9-d0e1-2f3a-4b5c-6d7e8f900106}">
+      <Declaration><![CDATA[(*
+:Description: Bind this sender to a tc-otel endpoint.
+
+Safe to call repeatedly — overwrites the previous endpoint. Call from
+``PRG_TaskLog.Init`` so every task that runs ``PRG_TaskLog.Call()`` has
+its metric sender initialized.
+*)
+METHOD PUBLIC Init : BOOL
+VAR_INPUT
+    sAmsNetId : T_AmsNetId;
+    nPort     : UINT;     // tc-otel ADS port; 0 keeps the default 16150
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[sTcOtelNetId := sAmsNetId;
+IF nPort <> 0 THEN
+    nTcOtelPort := nPort;
+END_IF
+bInitialized := TRUE;
+Init := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="IsBusy" Id="{a7b8c9d0-e1f2-3a4b-5c6d-7e8f90010207}">
+      <Declaration><![CDATA[(*
+:Description: TRUE while a previous Emit is still being shipped.
+
+Surfaced for FB_Metrics so it can decide between retry-now and skip-this-window
+without going through Emit's drop counter.
+*)
+PROPERTY PUBLIC IsBusy : BOOL]]></Declaration>
+      <Get Name="Get" Id="{b8c9d0e1-f2a3-4b5c-6d7e-8f9001020308}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IsBusy := bFlushInFlight;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

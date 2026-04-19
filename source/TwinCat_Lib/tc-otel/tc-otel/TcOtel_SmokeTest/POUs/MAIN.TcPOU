@@ -1,8 +1,19 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.6">
   <POU Name="MAIN" Id="{8e76aa5e-29ea-465d-a10c-8a373442d35f}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
 VAR
+	(* FB_Metrics smoke instances — exercise each body schema. *)
+	fbSineLreal     : FB_Metrics;
+	fbToggleBool    : FB_Metrics;
+	fbStateString   : FB_Metrics;
+
+	(* Driver state. *)
+	rPhase          : LREAL;
+	rSineValue      : LREAL;
+	bToggle         : BOOL;
+	sState          : STRING(31) := 'idle';
+	nStateSwitch    : UDINT;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -10,8 +21,45 @@ END_VAR
 	// For Remote TC-OTel Server change the AMS net ID and configure a route
 	PRG_TaskLog.Init('127.0.0.1.1.1');
 	F_Log(E_LogLevel.eInfo, 'F_Log');
+
+	// FB_Metrics demo: LREAL sine → eNumeric body schema, push every 5 s.
+	fbSineLreal.Init('demo.sine', 'unit');
+	fbSineLreal.SetSampleIntervalMs(50);
+	fbSineLreal.SetPushIntervalMs(5000);
+
+	// BOOL toggle → eBool, push every 2 s.
+	fbToggleBool.Init('demo.toggle', '');
+	fbToggleBool.SetPushIntervalMs(2000);
+
+	// STRING state → eString (fixed 32 B per sample), push every 10 s.
+	fbStateString.Init('demo.state', '', 32);
+	fbStateString.SetPushIntervalMs(10000);
 END_IF
 
+// Drive a slow sine: phase advances ~0.05 rad/cycle at 1 ms task = 8 Hz.
+rPhase     := rPhase + 0.05;
+rSineValue := SIN(rPhase);
+fbSineLreal.Observe(rSineValue);
+
+// BOOL toggles every 250 cycles for an obvious square wave on the wire.
+IF (TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleCount MOD 250) = 0 THEN
+	bToggle := NOT bToggle;
+END_IF
+fbToggleBool.Observe(bToggle);
+
+// State machine flips through 3 strings every ~3 s (3000 cycles at 1 ms).
+nStateSwitch := nStateSwitch + 1;
+IF nStateSwitch >= 3000 THEN
+	nStateSwitch := 0;
+	IF sState = 'idle' THEN
+		sState := 'running';
+	ELSIF sState = 'running' THEN
+		sState := 'paused';
+	ELSE
+		sState := 'idle';
+	END_IF
+END_IF
+fbStateString.Observe(sState);
 
 PRG_TaskLog.Call();
 ]]></ST>

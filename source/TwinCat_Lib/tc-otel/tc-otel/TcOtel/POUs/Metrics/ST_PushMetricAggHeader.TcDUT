@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_PushMetricAggHeader" Id="{b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d02}">
+    <Declaration><![CDATA[(*
+:Description: 52-byte fixed header of an FB_Metrics push frame.
+
+Pushed via ADSWRITE to ``IG = 0x4D424301`` / ``IO = 2`` (IO_PUSH_METRIC_AGG).
+``event_type = 21`` (PUSH_METRIC_AGG) discriminates this frame from the
+existing per-task diagnostic batch (event_type=10) and UI-driven custom
+metric batch (event_type=20).
+
+Wire layout (LE, ``pack_mode := 1``):
+
+* +0x00 ``version``       — wire version = 2
+* +0x01 ``event_type``    — = 21 (PUSH_METRIC_AGG)
+* +0x02 ``flags``         — bit0=has_trace_ctx, bit1=ring_overflowed
+* +0x03 ``body_schema``   — see ``E_MetricBodySchema``
+* +0x04 ``sample_size``   — bytes per sample in body
+* +0x08 ``sample_count``  — number of samples in body
+* +0x0C ``metric_id``     — FNV-1a hash of metric name (stable per name)
+* +0x10 ``task_index``    — owning PLC task index (1..n)
+* +0x11 reserved (3 B)    — pad to 4-byte alignment
+* +0x14 ``cycle_count_start`` — task cycle counter at first sample in window
+* +0x18 ``cycle_count_end``   — task cycle counter at last sample in window
+* +0x1C reserved (4 B)        — pad to 8-byte alignment for ``dc_time_start``
+* +0x20 ``dc_time_start``     — DC time at first sample (ns since DC epoch)
+* +0x28 ``dc_time_end``       — DC time at last sample (ns since DC epoch)
+* +0x30 ``name_len``          — bytes of metric name following the optional
+                                 trace context (UTF-8, max 63)
+* +0x31 ``unit_len``          — bytes of metric unit following ``name`` (UTF-8,
+                                 max 15, 0 = unitless)
+* +0x32 reserved (2 B)        — pad to 52 bytes
+* = 0x34 (52 B) total fixed header
+
+After this fixed header the frame contains, in order:
+
+1. *Optional* — when ``flags.bit0 = 1`` — 24 B: trace_id (16 B) + span_id (8 B).
+2. ``name_len`` bytes of metric name (UTF-8, no NUL).
+3. ``unit_len`` bytes of metric unit (UTF-8, no NUL).
+4. Body: ``sample_count * sample_size`` bytes interpreted per ``body_schema``.
+
+Total frame size = 52 + (24 if has_trace_ctx else 0) + name_len + unit_len
+                 + sample_count * sample_size.
+*)
+TYPE ST_PushMetricAggHeader :
+STRUCT
+    {attribute 'pack_mode' := '1'}
+    nVersion           : BYTE;                      // +0x00, = 2
+    nEventType         : BYTE;                      // +0x01, = 21
+    nFlags             : BYTE;                      // +0x02, bit0=has_trace_ctx, bit1=ring_overflowed
+    eBodySchema        : E_MetricBodySchema;        // +0x03, body interpretation tag
+    nSampleSize        : UDINT;                     // +0x04, bytes per sample in body
+    nSampleCount       : UDINT;                     // +0x08, samples in body
+    nMetricId          : UDINT;                     // +0x0C, FNV-1a(name)
+    nTaskIndex         : USINT;                     // +0x10, owning task index
+    aReserved0         : ARRAY [0..2] OF BYTE;      // +0x11, pad to 0x14
+    nCycleCountStart   : UDINT;                     // +0x14
+    nCycleCountEnd     : UDINT;                     // +0x18
+    nReserved1         : UDINT;                     // +0x1C, pad to 0x20
+    nDcTimeStart       : LINT;                      // +0x20
+    nDcTimeEnd         : LINT;                      // +0x28
+    nNameLen           : BYTE;                      // +0x30, max 63
+    nUnitLen           : BYTE;                      // +0x31, max 15
+    aReserved2         : ARRAY [0..1] OF BYTE;      // +0x32, pad to 52 bytes
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -1,0 +1,908 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_Metrics" Id="{f4a5b6c7-d8e9-0a1b-2c3d-4e5f6a7b8c09}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: User-facing FB for capturing oversampled metric values and pushing
+to tc-otel as compact batched frames.
+
+Lifecycle pattern: declare one FB_Metrics per logical metric, ``Init`` it once
+in first cycle, then call ``Observe`` with the value of any IEC scalar (or
+STRING / WSTRING) you want to track. The FB:
+
+* Locks the IEC type class on the very first ``Observe`` and rejects later
+  calls of a different class — no aggregator-strategy switching mid-flight.
+* Optionally rate-limits sampling (``SetSampleIntervalMs``) so a value that
+  changes faster than the configured interval is sampled at most once per
+  interval. Default 0 = no rate limit (every change is sampled).
+* Optionally suppresses redundant samples (``SetChangeDetect``, default TRUE)
+  via byte-wise comparison against the last sampled value.
+* Buffers samples in an append-only body buffer (8 KB default). On overflow
+  the per-frame ``flags.bit1 = ring_overflowed`` is set and additional
+  samples are dropped until the next flush.
+* Flushes the buffer at the configured push interval (``SetPushIntervalMs``,
+  default 1000 ms). Flush also fires from ``Call()`` so users who call
+  ``Observe`` only on demand still get punctual pushes.
+
+Each frame carries header + (optional trace context) + name + unit + body.
+The body is just ``sample_count * sample_size`` raw bytes — no per-sample
+type/length, the receiver knows the layout from the header's ``body_schema``.
+
+Numerics (all signed/unsigned int + REAL + LREAL) widen to LREAL (8 B). BOOL
+is one byte. STRING/WSTRING are zero-padded to a per-instance fixed size
+configured in ``Init``. Discrete byte-types (BYTE/WORD/DWORD/LWORD/ENUM)
+are shipped raw at their native size.
+
+**Example**
+
+.. code-block:: pascal
+
+    VAR
+        fbMotorTemp : FB_Metrics;
+    END_VAR
+
+    IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+        fbMotorTemp.Init('motor.temperature', 'celsius');
+        fbMotorTemp.SetSampleIntervalMs(100);   // at most every 100 ms
+        fbMotorTemp.SetPushIntervalMs(5000);    // flush every 5 s
+    END_IF
+
+    fbMotorTemp.Observe(rTemperature);          // every cycle is fine
+    PRG_TaskLog.Call();                         // pumps the per-task sender
+*)
+FUNCTION_BLOCK FB_Metrics
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+    (* Identification *)
+    _bInitialized       : BOOL;
+    _sName              : STRING(63);
+    _sUnit              : STRING(15);
+    _nMetricId          : UDINT;                      // FNV-1a(name)
+
+    (* Type lock — set on first Observe *)
+    _eBodySchema        : E_MetricBodySchema;         // eUnknown until first Observe
+    _nSampleSize        : UDINT;                      // bytes per sample in body
+    _nLockedTypeClass   : __SYSTEM.TYPE_CLASS;
+    _nStringSize        : UDINT := 64;                // for eString / eWstring; bytes for eString, chars for eWstring
+
+    (* Sample buffer — append-only; reset on flush. 8 KB body. *)
+    _abyBody            : ARRAY[0..8191] OF BYTE;
+    _nBodyOffset        : UDINT;
+    _nSampleCount       : UDINT;
+    _bOverflow          : BOOL;
+
+    (* Change-detect cache — first 64 B of the last sampled value. Long
+       strings (>64 B) lose change-detect precision past byte 64; this
+       is acceptable for typical state strings. *)
+    _abyLastValue       : ARRAY[0..63] OF BYTE;
+    _bLastValueValid    : BOOL;
+    _bChangeDetect      : BOOL := TRUE;
+
+    (* Timing — uses task cycle counter converted to cycle targets so it
+       agrees with FB_TcOtelTaskDiag and survives RtcTime jitter / sync. *)
+    _nSampleIntervalMs  : UDINT;                      // 0 = no rate limit
+    _nPushIntervalMs    : UDINT := 1000;
+    _nLastSampleCycle   : UDINT;
+    _bLastSampleSet     : BOOL;
+    _nWindowStartCycle  : UDINT;
+    _bWindowStartSet    : BOOL;
+
+    (* Window content *)
+    _nCycleStart        : UDINT;
+    _nCycleEnd          : UDINT;
+    _nDcTimeStart       : LINT;
+    _nDcTimeEnd         : LINT;
+    _bWindowHasSample   : BOOL;
+
+    (* Counters surfaced for online inspection *)
+    _nFlushOk           : UDINT;
+    _nDropAppend        : UDINT;                      // appends dropped (overflow)
+    _nDropEmit          : UDINT;                      // Emit returned FALSE (sender busy / oversize)
+    _nWrongTypeDrops    : UDINT;                      // Observe called with type ≠ locked
+
+    (* Trace-context binding (Phase 5).
+       _pTracer is set persistently by BindTracer — at flush time the
+       tracer's innermost open span is snapshotted into the frame.
+       _pSpanOverride is set by WithSpan and consumed by the very next
+       flush — lets users force a specific span when "innermost" isn't
+       what they want. *)
+    _pTracer            : POINTER TO FB_TcOtelTracer;
+    _pSpanOverride      : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Folder Name="Private" Id="{a5b6c7d8-e9f0-1a2b-3c4d-5e6f7a8b9c0a}" />
+    <Method Name="_AnyToLreal" Id="{b6c7d8e9-f0a1-2b3c-4d5e-6f7a8b9c0d0b}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Widen any IEC numeric (or BOOL) to LREAL.
+
+Returns 0.0 for unsupported types — caller must verify TypeClass first.
+Mirrors the dispatch in FB_TcOtelTaskTracer.AddAny so trace and metric
+emission see numerics consistently.
+*)
+METHOD PRIVATE _AnyToLreal : LREAL
+VAR_INPUT
+    stArg : ANY;
+END_VAR
+VAR
+    pBool  : POINTER TO BYTE;
+    pSint  : POINTER TO SINT;
+    pInt   : POINTER TO INT;
+    pDint  : POINTER TO DINT;
+    pLint  : POINTER TO LINT;
+    pUsint : POINTER TO USINT;
+    pUint  : POINTER TO UINT;
+    pUdint : POINTER TO UDINT;
+    pUlint : POINTER TO ULINT;
+    pReal  : POINTER TO REAL;
+    pLreal : POINTER TO LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[CASE stArg.TypeClass OF
+    __SYSTEM.TYPE_CLASS.TYPE_BOOL:
+        pBool := stArg.pValue;
+        IF pBool^ <> 0 THEN
+            _AnyToLreal := 1.0;
+        ELSE
+            _AnyToLreal := 0.0;
+        END_IF
+
+    __SYSTEM.TYPE_CLASS.TYPE_SINT:
+        pSint := stArg.pValue;
+        _AnyToLreal := SINT_TO_LREAL(pSint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_INT:
+        pInt := stArg.pValue;
+        _AnyToLreal := INT_TO_LREAL(pInt^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_DINT:
+        pDint := stArg.pValue;
+        _AnyToLreal := DINT_TO_LREAL(pDint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_LINT:
+        pLint := stArg.pValue;
+        _AnyToLreal := LINT_TO_LREAL(pLint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_USINT,
+    __SYSTEM.TYPE_CLASS.TYPE_BYTE:
+        pUsint := stArg.pValue;
+        _AnyToLreal := USINT_TO_LREAL(pUsint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_UINT,
+    __SYSTEM.TYPE_CLASS.TYPE_WORD:
+        pUint := stArg.pValue;
+        _AnyToLreal := UINT_TO_LREAL(pUint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_UDINT,
+    __SYSTEM.TYPE_CLASS.TYPE_DWORD:
+        pUdint := stArg.pValue;
+        _AnyToLreal := UDINT_TO_LREAL(pUdint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_ULINT,
+    __SYSTEM.TYPE_CLASS.TYPE_LWORD:
+        pUlint := stArg.pValue;
+        _AnyToLreal := ULINT_TO_LREAL(pUlint^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_REAL:
+        pReal := stArg.pValue;
+        _AnyToLreal := REAL_TO_LREAL(pReal^);
+
+    __SYSTEM.TYPE_CLASS.TYPE_LREAL:
+        pLreal := stArg.pValue;
+        _AnyToLreal := pLreal^;
+
+    ELSE
+        _AnyToLreal := 0.0;
+END_CASE
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AppendSample" Id="{c7d8e9f0-a1b2-3c4d-5e6f-7a8b9c0d1e0c}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Write one sample of the locked schema into the body buffer.
+
+Returns FALSE when the body is full — caller sets ``_bOverflow``.
+*)
+METHOD PRIVATE _AppendSample : BOOL
+VAR_INPUT
+    stArg : ANY;
+END_VAR
+VAR
+    fLreal     : LREAL;
+    nStrLen    : UDINT;
+    nCopyLen   : UDINT;
+    pDst       : POINTER TO BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > SIZEOF(_abyBody) THEN
+    _AppendSample := FALSE;
+    RETURN;
+END_IF
+
+pDst := ADR(_abyBody) + _nBodyOffset;
+
+CASE _eBodySchema OF
+    E_MetricBodySchema.eBool:
+        IF Tc2_Utilities.PBYTE_TO_BYTE(stArg.pValue) <> 0 THEN
+            pDst^ := 1;
+        ELSE
+            pDst^ := 0;
+        END_IF
+
+    E_MetricBodySchema.eNumeric:
+        fLreal := _AnyToLreal(stArg);
+        Tc2_System.MEMCPY(pDst, ADR(fLreal), 8);
+
+    E_MetricBodySchema.eDiscrete:
+        nCopyLen := DINT_TO_UDINT(stArg.diSize);
+        IF nCopyLen > _nSampleSize THEN
+            nCopyLen := _nSampleSize;
+        END_IF
+        Tc2_System.MEMCPY(pDst, stArg.pValue, nCopyLen);
+        IF nCopyLen < _nSampleSize THEN
+            Tc2_System.MEMSET(pDst + nCopyLen, 0, _nSampleSize - nCopyLen);
+        END_IF
+
+    E_MetricBodySchema.eString:
+        Tc2_System.MEMSET(pDst, 0, _nSampleSize);
+        nStrLen := Tc2_Utilities.LEN2(stArg.pValue);
+        IF nStrLen > _nSampleSize THEN
+            nStrLen := _nSampleSize;
+        END_IF
+        IF nStrLen > 0 THEN
+            Tc2_System.MEMCPY(pDst, stArg.pValue, nStrLen);
+        END_IF
+
+    E_MetricBodySchema.eWstring:
+        Tc2_System.MEMSET(pDst, 0, _nSampleSize);
+        (* WLEN returns characters; we ship 2 B each, capped at _nSampleSize bytes. *)
+        nStrLen := UINT_TO_UDINT(Tc2_Standard.WLEN(stArg.pValue^)) * 2;
+        IF nStrLen > _nSampleSize THEN
+            nStrLen := _nSampleSize;
+        END_IF
+        IF nStrLen > 0 THEN
+            Tc2_System.MEMCPY(pDst, stArg.pValue, nStrLen);
+        END_IF
+
+    ELSE
+        _AppendSample := FALSE;
+        RETURN;
+END_CASE
+
+_nBodyOffset  := _nBodyOffset + _nSampleSize;
+_nSampleCount := _nSampleCount + 1;
+
+_AppendSample := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_CheckFlush" Id="{d8e9f0a1-b2c3-4d5e-6f7a-8b9c0d1e2f0d}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Flush if push window has elapsed.
+
+Window timing is cycle-based (mirrors ``FB_TcOtelTaskDiag.CheckFlush``):
+``target_cycles = push_interval_ms * 1000 / cycle_time_us``. Doesn't fire
+when the buffer is empty — empty windows just slide the start cycle
+forward.
+*)
+METHOD PRIVATE _CheckFlush
+VAR
+    nTaskIdx       : DINT;
+    pTi            : POINTER TO PlcTaskSystemInfo;
+    nNowCycle      : UDINT;
+    nCycleTimeUs   : UDINT;
+    nTargetCycles  : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTaskIdx <= 0 THEN
+    RETURN;
+END_IF
+pTi := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
+
+nCycleTimeUs := pTi^.CycleTime / 10;
+IF nCycleTimeUs = 0 THEN
+    nCycleTimeUs := 1000; (* fallback: assume 1 ms *)
+END_IF
+nTargetCycles := (_nPushIntervalMs * 1000) / nCycleTimeUs;
+IF nTargetCycles = 0 THEN
+    nTargetCycles := 1;
+END_IF
+
+nNowCycle := pTi^.CycleCount;
+IF NOT _bWindowStartSet OR nNowCycle < _nWindowStartCycle THEN
+    _nWindowStartCycle := nNowCycle;
+    _bWindowStartSet   := TRUE;
+    RETURN;
+END_IF
+
+IF (nNowCycle - _nWindowStartCycle) < nTargetCycles THEN
+    RETURN;
+END_IF
+
+IF _nSampleCount > 0 THEN
+    _DoFlush();
+END_IF
+_nWindowStartCycle := nNowCycle;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_DoFlush" Id="{e9f0a1b2-c3d4-5e6f-7a8b-9c0d1e2f3a0e}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Build header + (name + unit) on the stack and ship via the per-task sender.
+
+Resets all window state on success or sender drop — a dropped frame
+counts in ``_nDropEmit`` but the buffer is cleared either way to keep
+the next window honest about its time bounds.
+*)
+METHOD PRIVATE _DoFlush
+VAR
+    stHeader  : ST_PushMetricAggHeader;
+    abyHdr    : ARRAY[0..255] OF BYTE;     // header(52) + name(63) + unit(15) ≤ 130; +trace(24) ≤ 154
+    nHdrLen   : UDINT;
+    nNameLen  : UDINT;
+    nUnitLen  : UDINT;
+    refSender : REFERENCE TO FB_TcOtelTaskMetrics;
+    bOk       : BOOL;
+    pSpan     : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[(* Resolve trace context: per-flush WithSpan override beats persistent
+   BindTracer; an explicit override that points to a closed span still
+   wins — we honour the user's intent and let the receiver decide what
+   that span_id means. *)
+pSpan := _pSpanOverride;
+IF pSpan = 0 AND _pTracer <> 0 THEN
+    pSpan := _pTracer^.InnermostSpan;
+END_IF
+
+(* Build fixed header. *)
+stHeader.nVersion         := 2;
+stHeader.nEventType       := 21;
+stHeader.nFlags           := 0;
+IF _bOverflow THEN
+    stHeader.nFlags := stHeader.nFlags OR 16#02;    (* bit1 = ring_overflowed *)
+END_IF
+IF pSpan <> 0 THEN
+    stHeader.nFlags := stHeader.nFlags OR 16#01;    (* bit0 = has_trace_ctx *)
+END_IF
+stHeader.eBodySchema      := _eBodySchema;
+stHeader.nSampleSize      := _nSampleSize;
+stHeader.nSampleCount     := _nSampleCount;
+stHeader.nMetricId        := _nMetricId;
+stHeader.nTaskIndex       := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stHeader.nCycleCountStart := _nCycleStart;
+stHeader.nCycleCountEnd   := _nCycleEnd;
+stHeader.nDcTimeStart     := _nDcTimeStart;
+stHeader.nDcTimeEnd       := _nDcTimeEnd;
+
+nNameLen := Tc2_Utilities.LEN2(ADR(_sName));
+IF nNameLen > 63 THEN
+    nNameLen := 63;
+END_IF
+nUnitLen := Tc2_Utilities.LEN2(ADR(_sUnit));
+IF nUnitLen > 15 THEN
+    nUnitLen := 15;
+END_IF
+stHeader.nNameLen := TO_BYTE(nNameLen);
+stHeader.nUnitLen := TO_BYTE(nUnitLen);
+
+(* Stage [header | (trace_ctx) | name | unit] on the stack. *)
+Tc2_System.MEMCPY(ADR(abyHdr), ADR(stHeader), SIZEOF(stHeader));
+nHdrLen := SIZEOF(stHeader);
+
+IF pSpan <> 0 THEN
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen,      ADR(pSpan^._abTraceId[0]), 16);
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen + 16, ADR(pSpan^._abSpanId[0]),  8);
+    nHdrLen := nHdrLen + 24;
+END_IF
+
+(* Consume per-flush span override after one frame — BindTracer keeps the
+   tracer pointer for next time, but WithSpan is one-shot. *)
+_pSpanOverride := 0;
+
+IF nNameLen > 0 THEN
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen, ADR(_sName), nNameLen);
+    nHdrLen := nHdrLen + nNameLen;
+END_IF
+IF nUnitLen > 0 THEN
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen, ADR(_sUnit), nUnitLen);
+    nHdrLen := nHdrLen + nUnitLen;
+END_IF
+
+refSender REF= PRG_TaskLog.TaskMetrics;
+IF __ISVALIDREF(refSender) THEN
+    bOk := refSender.Emit(ADR(abyHdr), nHdrLen, ADR(_abyBody), _nBodyOffset);
+ELSE
+    bOk := FALSE;
+END_IF
+
+IF bOk THEN
+    _nFlushOk := _nFlushOk + 1;
+ELSE
+    _nDropEmit := _nDropEmit + 1;
+END_IF
+
+(* Reset window content regardless — next window starts clean. *)
+_nBodyOffset      := 0;
+_nSampleCount     := 0;
+_bOverflow        := FALSE;
+_bWindowHasSample := FALSE;
+_nCycleStart      := 0;
+_nCycleEnd        := 0;
+_nDcTimeStart     := 0;
+_nDcTimeEnd       := 0;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_LockSchema" Id="{f0a1b2c3-d4e5-6f7a-8b9c-0d1e2f3a4b0f}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Map the IEC type class of the first Observe call to a body schema.
+
+Returns FALSE for unsupported types (TIME, DATE, structures, arrays, etc.)
+so Observe can drop those gracefully and surface via _nWrongTypeDrops.
+*)
+METHOD PRIVATE _LockSchema : BOOL
+VAR_INPUT
+    stArg : ANY;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[CASE stArg.TypeClass OF
+    __SYSTEM.TYPE_CLASS.TYPE_BOOL:
+        _eBodySchema := E_MetricBodySchema.eBool;
+        _nSampleSize := 1;
+
+    __SYSTEM.TYPE_CLASS.TYPE_SINT,
+    __SYSTEM.TYPE_CLASS.TYPE_INT,
+    __SYSTEM.TYPE_CLASS.TYPE_DINT,
+    __SYSTEM.TYPE_CLASS.TYPE_LINT,
+    __SYSTEM.TYPE_CLASS.TYPE_USINT,
+    __SYSTEM.TYPE_CLASS.TYPE_UINT,
+    __SYSTEM.TYPE_CLASS.TYPE_UDINT,
+    __SYSTEM.TYPE_CLASS.TYPE_ULINT,
+    __SYSTEM.TYPE_CLASS.TYPE_REAL,
+    __SYSTEM.TYPE_CLASS.TYPE_LREAL:
+        _eBodySchema := E_MetricBodySchema.eNumeric;
+        _nSampleSize := 8;     (* widened to LREAL *)
+
+    __SYSTEM.TYPE_CLASS.TYPE_BYTE,
+    __SYSTEM.TYPE_CLASS.TYPE_WORD,
+    __SYSTEM.TYPE_CLASS.TYPE_DWORD,
+    __SYSTEM.TYPE_CLASS.TYPE_LWORD,
+    __SYSTEM.TYPE_CLASS.TYPE_ENUM:
+        _eBodySchema := E_MetricBodySchema.eDiscrete;
+        _nSampleSize := DINT_TO_UDINT(stArg.diSize);
+
+    __SYSTEM.TYPE_CLASS.TYPE_STRING:
+        _eBodySchema := E_MetricBodySchema.eString;
+        _nSampleSize := _nStringSize;
+
+    __SYSTEM.TYPE_CLASS.TYPE_WSTRING:
+        _eBodySchema := E_MetricBodySchema.eWstring;
+        _nSampleSize := _nStringSize * 2;
+
+    ELSE
+        F_InternalLog(
+            E_LogLevel.eWarn,
+            'FB_Metrics._LockSchema',
+            'Unsupported TypeClass=%d for metric %s',
+            Tc2_Utilities.F_UDINT(stArg.TypeClass),
+            Tc2_Utilities.F_StringEx(_sName),
+            Tc2_Utilities.EMPTY_ARG_VALUE,
+            Tc2_Utilities.EMPTY_ARG_VALUE
+        );
+        _LockSchema := FALSE;
+        RETURN;
+END_CASE
+
+_nLockedTypeClass := stArg.TypeClass;
+_LockSchema       := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_NowDcTime" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c10}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Live DC time, falling back to cycle-start task DC time.
+
+Same fallback as FB_TcOtelTaskTracer._NowDcTime — keeps metric and trace
+timestamps comparable.
+*)
+METHOD PRIVATE _NowDcTime : LINT
+VAR
+    nTaskIdx : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_NowDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
+IF _NowDcTime = 0 THEN
+    nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+    IF nTaskIdx > 0 THEN
+        _NowDcTime := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].DcTaskTime;
+    END_IF
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="BindTracer" Id="{a4b5c6d7-e8f9-0011-2233-445566778899}">
+      <Declaration><![CDATA[(*
+:Description: Bind this metric to an FB_TcOtelTracer for trace exemplar correlation.
+
+After binding, every flushed frame snapshots the tracer's innermost open
+span (trace_id + span_id) into the wire header so tc-otel can attach it
+as an OTel exemplar attribute on the resulting metric data points. When
+no span is open at flush time the trace bytes are simply omitted (no flag
+set, frame is 24 bytes shorter).
+
+Pass ``0`` to unbind. Idempotent — safe to call repeatedly.
+
+**Example**
+
+.. code-block:: pascal
+
+    VAR
+        _tracer : FB_TcOtelTracer;
+        _temp   : FB_Metrics;
+    END_VAR
+
+    IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+        _temp.Init('motor.temperature', 'celsius');
+        _temp.BindTracer(_tracer);
+    END_IF
+*)
+METHOD PUBLIC BindTracer : BOOL
+VAR_INPUT
+    pTracer : POINTER TO FB_TcOtelTracer;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_pTracer := pTracer;
+BindTracer := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Call" Id="{b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d11}">
+      <Declaration><![CDATA[(*
+:Description: Drives push-window check.
+
+Only needed when the user calls ``Observe`` sporadically (so a long quiet
+period would otherwise delay flush past its window). When ``Observe`` is
+called every cycle this is redundant but harmless.
+*)
+METHOD PUBLIC Call
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _bInitialized THEN
+    _CheckFlush();
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FB_exit" Id="{c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e12}">
+      <Declaration><![CDATA[(*
+:Description: Flush any buffered samples before this FB instance is destroyed.
+
+Online change / program stop / FB deletion all route through here — without
+this, the last partial window would be silently lost.
+*)
+METHOD FB_exit : BOOL
+VAR_INPUT
+    bInCopyCode : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _bInitialized AND _nSampleCount > 0 AND NOT bInCopyCode THEN
+    _DoFlush();
+END_IF
+FB_exit := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Flush" Id="{d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f13}">
+      <Declaration><![CDATA[(*
+:Description: Force-flush the buffered samples now, regardless of push window.
+
+No-op when the buffer is empty.
+*)
+METHOD PUBLIC Flush : BOOL
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _bInitialized AND _nSampleCount > 0 THEN
+    _DoFlush();
+END_IF
+Flush := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Init" Id="{e5f6a7b8-c9d0-1e2f-3a4b-5c6d7e8f9014}">
+      <Declaration><![CDATA[(*
+:Description: One-time configuration of the metric identity.
+
+Idempotent — recomputes the FNV-1a metric id from the current name. Safe
+to call from FirstCycle. ``nStringSize`` is only meaningful when the
+locked schema turns out to be eString / eWstring; ignored for numerics.
+*)
+METHOD PUBLIC Init : BOOL
+VAR_INPUT
+    sName       : STRING(63);
+    sUnit       : STRING(15) := '';
+    nStringSize : UDINT      := 64;       // bytes per string sample (chars for WSTRING)
+END_VAR
+VAR
+    i      : INT;
+    nLen   : INT;
+    nHash  : UDINT;
+    pBytes : POINTER TO BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_sName       := sName;
+_sUnit       := sUnit;
+_nStringSize := nStringSize;
+IF _nStringSize = 0 THEN
+    _nStringSize := 64;
+END_IF
+IF _nStringSize > 255 THEN
+    _nStringSize := 255;
+END_IF
+
+(* FNV-1a 32-bit over the name bytes. Stable across runs as long as the
+   name string doesn't change. *)
+nHash := UDINT#16#811C9DC5;
+nLen  := Tc2_Standard.LEN(_sName);
+IF nLen > 0 THEN
+    pBytes := ADR(_sName);
+    FOR i := 0 TO nLen - 1 DO
+        nHash := (nHash XOR BYTE_TO_UDINT(pBytes[i])) * UDINT#16#01000193;
+    END_FOR
+END_IF
+_nMetricId    := nHash;
+
+_bInitialized := TRUE;
+Init          := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Observe" Id="{f6a7b8c9-d0e1-2f3a-4b5c-6d7e8f901015}">
+      <Declaration><![CDATA[(*
+:Description: Capture one observation of the metric value.
+
+Returns FALSE only on hard errors (Init not called, unsupported type on
+first call, type changed after lock). Successful sample-suppression by
+rate-limit or change-detect still returns TRUE — the FB did its job by
+deciding the value didn't need to be stored.
+
+Safe to call every cycle — internal rate-limit makes that cheap.
+*)
+METHOD PUBLIC Observe : BOOL
+VAR_INPUT
+    stArg : ANY;
+END_VAR
+VAR
+    nTaskIdx       : DINT;
+    pTi            : POINTER TO PlcTaskSystemInfo;
+    nNowCycle      : UDINT;
+    nCycleTimeUs   : UDINT;
+    nSampleTargetCycles : UDINT;
+    nCmpLen        : UDINT;
+    nDcNow         : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT _bInitialized OR stArg.pValue = 0 THEN
+    Observe := FALSE;
+    RETURN;
+END_IF
+
+(* Lock schema on first call. *)
+IF _eBodySchema = E_MetricBodySchema.eUnknown THEN
+    IF NOT _LockSchema(stArg) THEN
+        _nWrongTypeDrops := _nWrongTypeDrops + 1;
+        Observe := FALSE;
+        RETURN;
+    END_IF
+ELSIF _nLockedTypeClass <> stArg.TypeClass THEN
+    F_InternalLog(
+        E_LogLevel.eWarn,
+        'FB_Metrics.Observe',
+        'TypeClass mismatch for %s (locked=%d got=%d)',
+        Tc2_Utilities.F_StringEx(_sName),
+        Tc2_Utilities.F_UDINT(_nLockedTypeClass),
+        Tc2_Utilities.F_UDINT(stArg.TypeClass),
+        Tc2_Utilities.EMPTY_ARG_VALUE
+    );
+    _nWrongTypeDrops := _nWrongTypeDrops + 1;
+    Observe := FALSE;
+    RETURN;
+END_IF
+
+nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTaskIdx <= 0 THEN
+    Observe := FALSE;
+    RETURN;
+END_IF
+pTi := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
+nNowCycle := pTi^.CycleCount;
+
+(* Sample-interval rate limit (cycle-based, derived from CycleTime). *)
+IF _nSampleIntervalMs > 0 AND _bLastSampleSet THEN
+    nCycleTimeUs := pTi^.CycleTime / 10;
+    IF nCycleTimeUs = 0 THEN
+        nCycleTimeUs := 1000;
+    END_IF
+    nSampleTargetCycles := (_nSampleIntervalMs * 1000) / nCycleTimeUs;
+    IF nSampleTargetCycles = 0 THEN
+        nSampleTargetCycles := 1;
+    END_IF
+    IF (nNowCycle - _nLastSampleCycle) < nSampleTargetCycles THEN
+        Observe := TRUE;
+        RETURN;
+    END_IF
+END_IF
+
+(* Change-detect using the byte-wise cache (capped at 64 B). *)
+IF _bChangeDetect AND _bLastValueValid THEN
+    nCmpLen := _nSampleSize;
+    IF nCmpLen > SIZEOF(_abyLastValue) THEN
+        nCmpLen := SIZEOF(_abyLastValue);
+    END_IF
+    IF Tc2_System.MEMCMP(stArg.pValue, ADR(_abyLastValue), nCmpLen) = 0 THEN
+        (* Even on no-change we still update last-sample timestamp so the
+           rate-limit window resets — so a value that resumes changing right
+           after the interval doesn't have to wait an extra slot. *)
+        _nLastSampleCycle := nNowCycle;
+        _bLastSampleSet   := TRUE;
+        Observe := TRUE;
+        RETURN;
+    END_IF
+END_IF
+
+(* Append. On overflow the buffer stops growing until next flush; the flag
+   is shipped in the next frame's flags byte. *)
+IF NOT _AppendSample(stArg) THEN
+    _bOverflow   := TRUE;
+    _nDropAppend := _nDropAppend + 1;
+END_IF
+
+(* Update last-value cache regardless of append success — change-detect
+   should still suppress the next no-change observation. *)
+nCmpLen := _nSampleSize;
+IF nCmpLen > SIZEOF(_abyLastValue) THEN
+    nCmpLen := SIZEOF(_abyLastValue);
+END_IF
+Tc2_System.MEMCPY(ADR(_abyLastValue), stArg.pValue, nCmpLen);
+_bLastValueValid := TRUE;
+
+_nLastSampleCycle := nNowCycle;
+_bLastSampleSet   := TRUE;
+
+(* Window timing snapshot. *)
+nDcNow := _NowDcTime();
+IF NOT _bWindowHasSample THEN
+    _nCycleStart      := nNowCycle;
+    _nDcTimeStart     := nDcNow;
+    _bWindowHasSample := TRUE;
+END_IF
+_nCycleEnd   := nNowCycle;
+_nDcTimeEnd  := nDcNow;
+
+_CheckFlush();
+
+Observe := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetChangeDetect" Id="{a7b8c9d0-e1f2-3a4b-5c6d-7e8f90010216}">
+      <Declaration><![CDATA[(*
+:Description: Enable / disable byte-wise change-detect (default TRUE).
+
+Disable when you want to capture every cycle's value as-is even if it
+hasn't changed (e.g. for "still alive" continuity at slow sample rates).
+*)
+METHOD PUBLIC SetChangeDetect : BOOL
+VAR_INPUT
+    bEnabled : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_bChangeDetect := bEnabled;
+SetChangeDetect := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetPushIntervalMs" Id="{b8c9d0e1-f2a3-4b5c-6d7e-8f9001020317}">
+      <Declaration><![CDATA[(*
+:Description: How often to flush the buffer to tc-otel (default 1000 ms).
+
+Lower bound is one task cycle. Smaller values mean more frames on the wire;
+larger values risk buffer overflow on high-rate metrics (8 KB ÷ sample_size).
+*)
+METHOD PUBLIC SetPushIntervalMs : BOOL
+VAR_INPUT
+    nMs : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_nPushIntervalMs := nMs;
+IF _nPushIntervalMs = 0 THEN
+    _nPushIntervalMs := 1000;
+END_IF
+SetPushIntervalMs := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetSampleIntervalMs" Id="{c9d0e1f2-a3b4-5c6d-7e8f-90010203040c}">
+      <Declaration><![CDATA[(*
+:Description: Minimum interval between captured samples (default 0 = every change).
+
+Set > 0 to rate-limit a fast-changing value: at most one sample per ``nMs``
+ms reaches the buffer, regardless of how often Observe is called.
+*)
+METHOD PUBLIC SetSampleIntervalMs : BOOL
+VAR_INPUT
+    nMs : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_nSampleIntervalMs := nMs;
+SetSampleIntervalMs := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="SampleCount" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304051d}">
+      <Declaration><![CDATA[PROPERTY PUBLIC SampleCount : UDINT]]></Declaration>
+      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405061e}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[SampleCount := _nSampleCount;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="WithSpan" Id="{b5c6d7e8-f9a0-1122-3344-5566778899aa}">
+      <Declaration><![CDATA[(*
+:Description: Override the trace-context snapshot for the very next flush.
+
+One-shot — consumed by ``_DoFlush`` after the next push window expires
+(or ``Flush()`` is called manually). Subsequent flushes fall back to the
+``BindTracer``-bound innermost span, or no trace at all if neither is set.
+
+Use when "innermost open span on this tracer" isn't the right thing —
+e.g. a metric you want bound to a specific long-running span rather than
+whichever short-lived span happens to be active at flush time.
+*)
+METHOD PUBLIC WithSpan : BOOL
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_pSpanOverride := pSpan;
+WithSpan := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="MetricId" Id="{f2a3b4c5-d6e7-8f90-0102-03040506071f}">
+      <Declaration><![CDATA[PROPERTY PUBLIC MetricId : UDINT]]></Declaration>
+      <Get Name="Get" Id="{a3b4c5d6-e7f8-9001-0203-040506070820}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[MetricId := _nMetricId;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

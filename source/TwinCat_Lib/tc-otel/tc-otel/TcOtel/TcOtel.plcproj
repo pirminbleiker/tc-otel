@@ -243,6 +243,8 @@
     <Folder Include="ITFs" />
     <Folder Include="DUTs" />
     <Folder Include="POUs\Diagnostic" />
+    <Folder Include="POUs\Metrics" />
+    <Folder Include="POUs\Logs" />
     <Folder Include="POUs\Trace" />
     <Folder Include="Test" />
     <Folder Include="POUs" />
@@ -263,6 +265,9 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="API\FB_Log.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="API\FB_Metrics.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="API\FB_TcOtelTracer.TcPOU">
@@ -352,6 +357,30 @@
     <Compile Include="POUs\Diagnostic\ST_PushDiagSample.TcDUT">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="POUs\Logs\FB_ContextBuilder.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Logs\FB_LogBuilder.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Logs\FB_LogEntry.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\E_MetricBodySchema.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\FB_DiagnosticCalculations.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\FB_TcOtelTaskMetrics.TcPOU">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\ST_DiagnosticCalculations.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\ST_PushMetricAggHeader.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="POUs\Trace\E_SpanKind.TcDUT">
       <SubType>Code</SubType>
     </Compile>
@@ -367,16 +396,7 @@
     <Compile Include="POUs\Trace\FB_TcOtelTaskTracer.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="POUs\FB_ContextBuilder.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
     <Compile Include="POUs\FB_TcOtelTask.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="POUs\FB_LogBuilder.TcPOU">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="POUs\FB_LogEntry.TcPOU">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="POUs\F_InternalLog.TcPOU">
@@ -446,23 +466,15 @@
     </LibraryReference>
   </ItemGroup>
   <ItemGroup>
-    <SubObject Include="FB_ContextBuilder._BufferCount">
-      <CompilerDefines>DEBUG</CompilerDefines>
-    </SubObject>
-    <SubObject Include="FB_ContextBuilder._ContextCount">
-      <CompilerDefines>DEBUG</CompilerDefines>
-    </SubObject>
-    <SubObject Include="FB_ContextBuilder\Test">
-      <CompilerDefines>DEBUG</CompilerDefines>
-    </SubObject>
-  </ItemGroup>
-  <ItemGroup>
     <PlaceholderResolution Include="SysDir">
       <Resolution>SysDir, 3.5.12.0 (System)</Resolution>
     </PlaceholderResolution>
   </ItemGroup>
   <ItemGroup>
     <Content Include="POUs\Diagnostic\README.md">
+      <SubType>Content</SubType>
+    </Content>
+    <Content Include="POUs\Metrics\README.md">
       <SubType>Content</SubType>
     </Content>
     <None Include="TcOtel.tmc">
