@@ -18,9 +18,10 @@
 //! `None`.
 
 use crate::diagnostics::{
-    DiagEvent, DiagSample, MetricDescriptor, MetricSample, PUSH_BATCH_EVENT_TYPE,
-    PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES, PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE,
-    PUSH_WIRE_VERSION,
+    DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor, MetricSample,
+    METRIC_FLAG_HAS_TRACE_CTX, PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE,
+    PUSH_BATCH_MAX_SAMPLES, PUSH_METRIC_AGG_EVENT_TYPE, PUSH_METRIC_AGG_HEADER_SIZE,
+    PUSH_METRIC_AGG_TRACE_SIZE, PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
 };
 
 /// Decode a task-diagnostic batch frame (80 + 24 × sample_count bytes).
@@ -316,11 +317,152 @@ fn read_f32(bytes: &[u8], off: usize) -> f32 {
     f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap_or([0; 4]))
 }
 
+fn read_f64(bytes: &[u8], off: usize) -> f64 {
+    f64::from_le_bytes(bytes[off..off + 8].try_into().unwrap_or([0; 8]))
+}
+
+/// Decode an FB_Metrics aggregate batch frame.
+///
+/// Layout: 52-byte header + (24-byte trace ctx if `flags.bit0`) + name +
+/// unit + body, where body = `sample_count * sample_size` bytes interpreted
+/// per `body_schema`. Returns `None` on any validation failure (wrong
+/// version / event_type, truncated payload, unknown body_schema, invalid
+/// UTF-8 in name/unit, sample_size = 0 with non-empty body).
+pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
+    if bytes.len() < PUSH_METRIC_AGG_HEADER_SIZE {
+        return None;
+    }
+
+    let version = bytes[0];
+    let event_type = bytes[1];
+    if version != PUSH_WIRE_VERSION || event_type != PUSH_METRIC_AGG_EVENT_TYPE {
+        return None;
+    }
+
+    let flags = bytes[2];
+    let body_schema = MetricBodySchema::from_byte(bytes[3])?;
+    let sample_size = read_u32(bytes, 0x04);
+    let sample_count = read_u32(bytes, 0x08);
+    let metric_id = read_u32(bytes, 0x0C);
+    let task_index = bytes[0x10];
+    let cycle_count_start = read_u32(bytes, 0x14);
+    let cycle_count_end = read_u32(bytes, 0x18);
+    let dc_time_start = read_i64(bytes, 0x20);
+    let dc_time_end = read_i64(bytes, 0x28);
+    let name_len = bytes[0x30] as usize;
+    let unit_len = bytes[0x31] as usize;
+
+    // Schema-vs-sample-size sanity. Numeric is always 8 bytes; Bool is always 1.
+    // Discrete / String / Wstring honour the wire `sample_size`. Reject early
+    // when the combination is impossible — keeps the body slicer simple.
+    match body_schema {
+        MetricBodySchema::Bool if sample_size != 1 => return None,
+        MetricBodySchema::Numeric if sample_size != 8 => return None,
+        MetricBodySchema::Discrete | MetricBodySchema::String | MetricBodySchema::Wstring => {
+            if sample_size == 0 || sample_size > 65535 {
+                return None;
+            }
+        }
+        _ => {}
+    }
+
+    let mut offset = PUSH_METRIC_AGG_HEADER_SIZE;
+
+    // Optional trace context.
+    let (trace_id, span_id) = if flags & METRIC_FLAG_HAS_TRACE_CTX != 0 {
+        if bytes.len() < offset + PUSH_METRIC_AGG_TRACE_SIZE {
+            return None;
+        }
+        let mut tid = [0_u8; 16];
+        tid.copy_from_slice(&bytes[offset..offset + 16]);
+        let mut sid = [0_u8; 8];
+        sid.copy_from_slice(&bytes[offset + 16..offset + 24]);
+        offset += PUSH_METRIC_AGG_TRACE_SIZE;
+        (Some(tid), Some(sid))
+    } else {
+        (None, None)
+    };
+
+    // Name + unit (both UTF-8, capped on the PLC side).
+    if bytes.len() < offset + name_len {
+        return None;
+    }
+    let name = String::from_utf8(bytes[offset..offset + name_len].to_vec()).ok()?;
+    offset += name_len;
+
+    if bytes.len() < offset + unit_len {
+        return None;
+    }
+    let unit = String::from_utf8(bytes[offset..offset + unit_len].to_vec()).ok()?;
+    offset += unit_len;
+
+    // Body — sample_count * sample_size bytes.
+    let body_len = (sample_count as usize).checked_mul(sample_size as usize)?;
+    if bytes.len() < offset + body_len {
+        return None;
+    }
+    let body = &bytes[offset..offset + body_len];
+    offset += body_len;
+
+    // Strict trailing-bytes check matches decode_metric_batch.
+    if offset != bytes.len() {
+        return None;
+    }
+
+    let mut samples: Vec<MetricAggregateSample> = Vec::with_capacity(sample_count as usize);
+    for i in 0..sample_count as usize {
+        let off = i * sample_size as usize;
+        let slot = &body[off..off + sample_size as usize];
+        let sample = match body_schema {
+            MetricBodySchema::Bool => MetricAggregateSample::Bool(slot[0] != 0),
+            MetricBodySchema::Numeric => MetricAggregateSample::Numeric(read_f64(slot, 0)),
+            MetricBodySchema::Discrete => MetricAggregateSample::Discrete(slot.to_vec()),
+            MetricBodySchema::String => {
+                // Trim trailing zero padding so callers see the live bytes only.
+                let end = slot.iter().rposition(|&b| b != 0).map(|p| p + 1).unwrap_or(0);
+                MetricAggregateSample::String(
+                    String::from_utf8_lossy(&slot[..end]).into_owned(),
+                )
+            }
+            MetricBodySchema::Wstring => {
+                // 2 bytes per char, UTF-16LE, trim trailing zero u16s.
+                let mut units: Vec<u16> = slot
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                while units.last() == Some(&0) {
+                    units.pop();
+                }
+                MetricAggregateSample::Wstring(String::from_utf16_lossy(&units))
+            }
+        };
+        samples.push(sample);
+    }
+
+    Some(DiagEvent::MetricAggregateBatch {
+        metric_id,
+        task_index,
+        flags,
+        body_schema,
+        sample_size,
+        cycle_count_start,
+        cycle_count_end,
+        dc_time_start,
+        dc_time_end,
+        name,
+        unit,
+        trace_id,
+        span_id,
+        samples,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diagnostics::{
-        SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+        METRIC_FLAG_RING_OVERFLOWED, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
+        SAMPLE_FLAG_RT_VIOLATION,
     };
 
     #[allow(clippy::too_many_arguments)]
@@ -911,6 +1053,257 @@ mod tests {
                 assert_eq!(cycle_count, 2000);
             }
             _ => panic!("expected MetricBatch"),
+        }
+    }
+
+    // ----- decode_metric_aggregate ------------------------------------------------
+
+    /// Build a 52-byte FB_Metrics aggregate header. Helper to keep the
+    /// per-test setup short.
+    #[allow(clippy::too_many_arguments)]
+    fn agg_header(
+        flags: u8,
+        body_schema: u8,
+        sample_size: u32,
+        sample_count: u32,
+        metric_id: u32,
+        task_index: u8,
+        cycle_count_start: u32,
+        cycle_count_end: u32,
+        dc_time_start: i64,
+        dc_time_end: i64,
+        name_len: u8,
+        unit_len: u8,
+    ) -> Vec<u8> {
+        let mut v = Vec::with_capacity(PUSH_METRIC_AGG_HEADER_SIZE);
+        v.push(PUSH_WIRE_VERSION);
+        v.push(PUSH_METRIC_AGG_EVENT_TYPE);
+        v.push(flags);
+        v.push(body_schema);
+        v.extend_from_slice(&sample_size.to_le_bytes());
+        v.extend_from_slice(&sample_count.to_le_bytes());
+        v.extend_from_slice(&metric_id.to_le_bytes());
+        v.push(task_index);
+        v.extend_from_slice(&[0_u8; 3]); // pad to 0x14
+        v.extend_from_slice(&cycle_count_start.to_le_bytes());
+        v.extend_from_slice(&cycle_count_end.to_le_bytes());
+        v.extend_from_slice(&0_u32.to_le_bytes()); // pad to 0x20
+        v.extend_from_slice(&dc_time_start.to_le_bytes());
+        v.extend_from_slice(&dc_time_end.to_le_bytes());
+        v.push(name_len);
+        v.push(unit_len);
+        v.extend_from_slice(&[0_u8; 2]); // pad to 52
+        assert_eq!(v.len(), PUSH_METRIC_AGG_HEADER_SIZE);
+        v
+    }
+
+    #[test]
+    fn decode_metric_aggregate_numeric_round_trip() {
+        let mut frame = agg_header(
+            0,                  // no trace ctx, no overflow
+            2,                  // Numeric
+            8,                  // sample_size
+            3,                  // sample_count
+            0xCAFEBABE,         // metric_id
+            5,                  // task_index
+            1000,               // cycle_count_start
+            1010,               // cycle_count_end
+            100_000,            // dc_time_start
+            120_000,            // dc_time_end
+            17,                 // name_len ("motor.temperature")
+            3,                  // unit_len ("Cel")
+        );
+        frame.extend_from_slice(b"motor.temperature");
+        frame.extend_from_slice(b"Cel");
+        for v in [21.5_f64, 22.0, 22.7] {
+            frame.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let ev = decode_metric_aggregate(&frame).expect("numeric agg decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                metric_id,
+                task_index,
+                flags,
+                body_schema,
+                sample_size,
+                cycle_count_start,
+                cycle_count_end,
+                dc_time_start,
+                dc_time_end,
+                name,
+                unit,
+                trace_id,
+                span_id,
+                samples,
+            } => {
+                assert_eq!(metric_id, 0xCAFEBABE);
+                assert_eq!(task_index, 5);
+                assert_eq!(flags, 0);
+                assert_eq!(body_schema, MetricBodySchema::Numeric);
+                assert_eq!(sample_size, 8);
+                assert_eq!(cycle_count_start, 1000);
+                assert_eq!(cycle_count_end, 1010);
+                assert_eq!(dc_time_start, 100_000);
+                assert_eq!(dc_time_end, 120_000);
+                assert_eq!(name, "motor.temperature");
+                assert_eq!(unit, "Cel");
+                assert!(trace_id.is_none());
+                assert!(span_id.is_none());
+                assert_eq!(samples.len(), 3);
+                assert_eq!(samples[0], MetricAggregateSample::Numeric(21.5));
+                assert_eq!(samples[2], MetricAggregateSample::Numeric(22.7));
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_bool_round_trip() {
+        let mut frame = agg_header(0, 1, 1, 4, 1, 1, 0, 0, 0, 0, 4, 0);
+        frame.extend_from_slice(b"door");
+        frame.extend_from_slice(&[1, 0, 1, 1]);
+
+        let ev = decode_metric_aggregate(&frame).expect("bool decodes");
+        if let DiagEvent::MetricAggregateBatch { samples, .. } = ev {
+            assert_eq!(
+                samples,
+                vec![
+                    MetricAggregateSample::Bool(true),
+                    MetricAggregateSample::Bool(false),
+                    MetricAggregateSample::Bool(true),
+                    MetricAggregateSample::Bool(true),
+                ]
+            );
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_string_strips_zero_padding() {
+        // sample_size = 8 bytes; samples shorter than 8 are zero-padded.
+        let mut frame = agg_header(0, 4, 8, 2, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame.extend_from_slice(b"hello\0\0\0");
+        frame.extend_from_slice(b"hi\0\0\0\0\0\0");
+
+        let ev = decode_metric_aggregate(&frame).expect("string decodes");
+        if let DiagEvent::MetricAggregateBatch { samples, .. } = ev {
+            assert_eq!(samples[0], MetricAggregateSample::String("hello".into()));
+            assert_eq!(samples[1], MetricAggregateSample::String("hi".into()));
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_with_trace_context() {
+        // 1-sample bool with full trace_id/span_id.
+        let mut frame = agg_header(METRIC_FLAG_HAS_TRACE_CTX, 1, 1, 1, 0, 0, 0, 0, 0, 0, 4, 0);
+        let trace_id_bytes: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00,
+        ];
+        let span_id_bytes: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];
+        frame.extend_from_slice(&trace_id_bytes);
+        frame.extend_from_slice(&span_id_bytes);
+        frame.extend_from_slice(b"trip");
+        frame.push(1);
+
+        let ev = decode_metric_aggregate(&frame).expect("trace ctx decodes");
+        if let DiagEvent::MetricAggregateBatch {
+            trace_id, span_id, ..
+        } = ev
+        {
+            assert_eq!(trace_id, Some(trace_id_bytes));
+            assert_eq!(span_id, Some(span_id_bytes));
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_overflow_flag_preserved() {
+        let mut frame = agg_header(METRIC_FLAG_RING_OVERFLOWED, 2, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame.extend_from_slice(&3.14_f64.to_le_bytes());
+        let ev = decode_metric_aggregate(&frame).unwrap();
+        if let DiagEvent::MetricAggregateBatch { flags, .. } = ev {
+            assert_eq!(flags & METRIC_FLAG_RING_OVERFLOWED, METRIC_FLAG_RING_OVERFLOWED);
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_short_header() {
+        let frame = vec![0_u8; PUSH_METRIC_AGG_HEADER_SIZE - 1];
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_wrong_version() {
+        let mut frame = agg_header(0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame[0] = 99;
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_wrong_event_type() {
+        let mut frame = agg_header(0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame[1] = 22;
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_unknown_body_schema() {
+        let frame = agg_header(0, 99, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_numeric_with_wrong_sample_size() {
+        let frame = agg_header(0, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0); // numeric must be 8
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_bool_with_wrong_sample_size() {
+        let frame = agg_header(0, 1, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0); // bool must be 1
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_truncated_body() {
+        // Promises 3 samples × 8B but only delivers 16 bytes.
+        let mut frame = agg_header(0, 2, 8, 3, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame.extend_from_slice(&[0_u8; 16]);
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_extra_trailing_bytes() {
+        let mut frame = agg_header(0, 2, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame.extend_from_slice(&1.0_f64.to_le_bytes());
+        frame.push(0xff); // garbage tail
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_invalid_utf8_name() {
+        let mut frame = agg_header(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2, 0);
+        frame.extend_from_slice(&[0xff, 0xff]); // invalid UTF-8
+        frame.push(1);
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_empty_body_ok() {
+        let frame = agg_header(0, 2, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let ev = decode_metric_aggregate(&frame).expect("empty body decodes");
+        if let DiagEvent::MetricAggregateBatch { samples, .. } = ev {
+            assert!(samples.is_empty());
+        } else {
+            panic!("expected MetricAggregateBatch");
         }
     }
 }

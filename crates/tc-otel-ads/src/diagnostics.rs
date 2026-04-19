@@ -63,6 +63,15 @@ pub const IO_PUSH_BATCH: u32 = 0;
 /// reference metric IDs and carry values.
 pub const IO_PUSH_METRIC_BATCH: u32 = 1;
 
+/// Index offset for compact FB_Metrics aggregate batches within `IG_PUSH_DIAG`.
+///
+/// A batch = 52-byte header + (optional 24-byte trace context) + name + unit
+/// + body, where body = `sample_count * sample_size` raw bytes interpreted by
+/// the header's `body_schema` (see [`MetricBodySchema`]). Designed for the
+/// PLC-side `FB_Metrics` user API: one frame per metric instance per push
+/// window.
+pub const IO_PUSH_METRIC_AGG: u32 = 2;
+
 /// Wire-format version for push-diagnostic events. Bumped from v1 (legacy
 /// snapshot + edge frames) to v2 (batch frame with per-cycle samples).
 pub const PUSH_WIRE_VERSION: u8 = 2;
@@ -72,6 +81,24 @@ pub const PUSH_BATCH_EVENT_TYPE: u8 = 10;
 
 /// Event-type discriminator for metric batches in the batch header.
 pub const PUSH_METRIC_EVENT_TYPE: u8 = 20;
+
+/// Event-type discriminator for FB_Metrics aggregate batches in the header.
+pub const PUSH_METRIC_AGG_EVENT_TYPE: u8 = 21;
+
+/// Fixed header size for FB_Metrics aggregate batches.
+pub const PUSH_METRIC_AGG_HEADER_SIZE: usize = 52;
+
+/// Optional trace-context block size (trace_id + span_id) when
+/// `flags.bit0 = METRIC_FLAG_HAS_TRACE_CTX`.
+pub const PUSH_METRIC_AGG_TRACE_SIZE: usize = 24;
+
+/// FB_Metrics flag: header is followed by a 24-byte trace context (trace_id,
+/// span_id) before the name+unit+body sections.
+pub const METRIC_FLAG_HAS_TRACE_CTX: u8 = 1 << 0;
+
+/// FB_Metrics flag: at least one sample was dropped during the window because
+/// the per-instance body buffer filled up. Surfaced for ops dashboards.
+pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 
 /// Fixed batch-header size in bytes.
 pub const PUSH_BATCH_HEADER_SIZE: usize = 80;
@@ -232,6 +259,91 @@ pub enum DiagEvent {
         /// Metric value samples with metric ID references.
         samples: Vec<MetricSample>,
     },
+    /// Compact FB_Metrics aggregate batch: one PLC `FB_Metrics` instance's
+    /// buffered samples for one push window.
+    ///
+    /// Sent as ADS Write to `IG_PUSH_DIAG` / `IO_PUSH_METRIC_AGG`. The frame
+    /// is `[52-byte header | optional 24-byte trace ctx | name | unit | body]`.
+    /// Each sample in `samples` is decoded according to the wire `body_schema`
+    /// — numerics widen to f64, BOOL becomes bool, discrete/string keep their
+    /// raw representation. Per-sample timestamps are not on the wire; the
+    /// receiver may interpolate uniformly across `[dc_time_start, dc_time_end]`.
+    MetricAggregateBatch {
+        /// FNV-1a(name) — stable across batches as long as the name doesn't
+        /// change. Receiver may use this as a registration key.
+        metric_id: u32,
+        /// Owning PLC task index (1..n).
+        task_index: u8,
+        /// FB_Metrics flags. See `METRIC_FLAG_*` constants.
+        flags: u8,
+        /// Body schema decoded from the wire byte.
+        body_schema: MetricBodySchema,
+        /// Bytes per body sample as carried on the wire (8 for Numeric, 1
+        /// for Bool, native size for Discrete, configured length for
+        /// String/Wstring).
+        sample_size: u32,
+        /// Task cycle counter at the first sample in the window.
+        cycle_count_start: u32,
+        /// Task cycle counter at the last sample in the window.
+        cycle_count_end: u32,
+        /// DC time at the first sample (ns since DC epoch 2000-01-01).
+        dc_time_start: i64,
+        /// DC time at the last sample (ns since DC epoch 2000-01-01).
+        dc_time_end: i64,
+        /// Metric name (UTF-8, ≤ 63 bytes).
+        name: String,
+        /// Metric unit (UTF-8, ≤ 15 bytes; empty when unitless).
+        unit: String,
+        /// Optional trace context for OTel exemplar attachment. `None` when
+        /// `flags & METRIC_FLAG_HAS_TRACE_CTX == 0`.
+        trace_id: Option<[u8; 16]>,
+        /// Optional span_id paired with `trace_id`.
+        span_id: Option<[u8; 8]>,
+        /// Decoded samples in capture order.
+        samples: Vec<MetricAggregateSample>,
+    },
+}
+
+/// Body schema discriminator for FB_Metrics aggregate batches. Mirrors the
+/// PLC-side `E_MetricBodySchema` byte at header offset +0x03.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricBodySchema {
+    /// 1 byte per sample (0/1).
+    Bool,
+    /// 8 bytes per sample (LREAL widened from any IEC numeric).
+    Numeric,
+    /// `sample_size` bytes per sample, raw (BYTE / WORD / DWORD / LWORD / ENUM).
+    Discrete,
+    /// `sample_size` bytes per sample, UTF-8 zero-padded fixed-size strings.
+    String,
+    /// `sample_size` bytes per sample, UTF-16LE zero-padded fixed-size strings.
+    Wstring,
+}
+
+impl MetricBodySchema {
+    /// Decode the wire byte; returns `None` for unknown values so the parser
+    /// can drop the frame without panicking.
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(MetricBodySchema::Bool),
+            2 => Some(MetricBodySchema::Numeric),
+            3 => Some(MetricBodySchema::Discrete),
+            4 => Some(MetricBodySchema::String),
+            5 => Some(MetricBodySchema::Wstring),
+            _ => None,
+        }
+    }
+}
+
+/// One decoded sample from an FB_Metrics aggregate batch. The variant is
+/// determined by the batch's `body_schema`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetricAggregateSample {
+    Bool(bool),
+    Numeric(f64),
+    Discrete(Vec<u8>),
+    String(String),
+    Wstring(String),
 }
 
 /// Metric descriptor — static metadata for a metric announced in a batch.

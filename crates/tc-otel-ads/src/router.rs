@@ -4,7 +4,7 @@ use crate::ams::{
     ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
     ADS_CMD_READ_STATE, ADS_CMD_READ_WRITE, ADS_CMD_WRITE, ADS_CMD_WRITE_CONTROL,
 };
-use crate::diagnostics::{DiagEvent, IG_PUSH_DIAG, IO_PUSH_BATCH};
+use crate::diagnostics::{DiagEvent, IG_PUSH_DIAG, IO_PUSH_BATCH, IO_PUSH_METRIC_AGG};
 use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
@@ -99,9 +99,15 @@ impl AdsRouter {
                     if header.target_port == self.ads_port {
                         // Check if this is a push-diagnostic batch write
                         if wr.index_group == IG_PUSH_DIAG {
-                            // Only IO_PUSH_BATCH is defined in wire format v2.
+                            // Wire-format v2 dispatch:
+                            //   IO=0 -> per-task diagnostic batch (event_type=10)
+                            //   IO=2 -> FB_Metrics aggregate batch (event_type=21)
+                            // (IO=1 is reserved for the existing UI-driven push
+                            // metric batch, dispatched elsewhere.)
                             let ev = if wr.index_offset == IO_PUSH_BATCH {
                                 crate::diagnostics_push::decode_batch(&wr.data)
+                            } else if wr.index_offset == IO_PUSH_METRIC_AGG {
+                                crate::diagnostics_push::decode_metric_aggregate(&wr.data)
                             } else {
                                 None
                             };

@@ -17,8 +17,9 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_ads::ams::AmsNetId;
 use tc_otel_ads::diagnostics::{
-    DiagEvent, DiagSample, MetricDescriptor, MetricSample, SAMPLE_FLAG_CYCLE_EXCEED,
-    SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+    DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor,
+    MetricSample, METRIC_FLAG_RING_OVERFLOWED, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
+    SAMPLE_FLAG_RT_VIOLATION,
 };
 use tc_otel_core::MetricEntry;
 
@@ -166,7 +167,161 @@ pub fn diag_event_to_metrics(
             // Convert samples using the cache.
             metric_batch_to_entries(&net_id_str, &cache, &samples, dc_time_start, dc_time_end)
         }
+        DiagEvent::MetricAggregateBatch {
+            metric_id,
+            task_index,
+            flags,
+            body_schema,
+            sample_size,
+            cycle_count_start: _,
+            cycle_count_end: _,
+            dc_time_start,
+            dc_time_end,
+            name,
+            unit,
+            trace_id,
+            span_id,
+            samples,
+        } => metric_aggregate_to_entries(
+            &net_id_str,
+            metric_id,
+            task_index,
+            flags,
+            body_schema,
+            sample_size,
+            dc_time_start,
+            dc_time_end,
+            &name,
+            &unit,
+            trace_id,
+            span_id,
+            &samples,
+        ),
     }
+}
+
+/// Convert one FB_Metrics aggregate batch into per-sample MetricEntry values.
+///
+/// Non-numeric body schemas:
+///   * Bool → 0.0 / 1.0 gauge
+///   * Discrete (BYTE/WORD/DWORD/LWORD/ENUM) → little-endian unsigned int → f64
+///   * String / Wstring → silently dropped (OTel metrics are numeric)
+///
+/// Per-sample timestamps aren't on the wire — the receiver linearly
+/// interpolates between `dc_time_start` and `dc_time_end`. Single-sample
+/// batches use `dc_time_start` directly.
+///
+/// trace_id / span_id are attached as hex-string attributes (`trace_id`,
+/// `span_id`) on every sample. Phase 5 will promote these to proper OTel
+/// exemplars on `MetricEntry`.
+#[allow(clippy::too_many_arguments)]
+fn metric_aggregate_to_entries(
+    net_id: &str,
+    metric_id: u32,
+    task_index: u8,
+    flags: u8,
+    body_schema: MetricBodySchema,
+    sample_size: u32,
+    dc_time_start: i64,
+    dc_time_end: i64,
+    name: &str,
+    unit: &str,
+    trace_id: Option<[u8; 16]>,
+    span_id: Option<[u8; 8]>,
+    samples: &[MetricAggregateSample],
+) -> Vec<MetricEntry> {
+    let mut out: Vec<MetricEntry> = Vec::with_capacity(samples.len());
+    if samples.is_empty() {
+        return out;
+    }
+
+    let span_ns = (dc_time_end - dc_time_start).max(0);
+    let denom = (samples.len() as i64 - 1).max(1);
+    let trace_id_hex = trace_id.map(|tid| hex_lower(&tid));
+    let span_id_hex = span_id.map(|sid| hex_lower(&sid));
+    let overflow_flag = flags & METRIC_FLAG_RING_OVERFLOWED != 0;
+
+    for (i, sample) in samples.iter().enumerate() {
+        let value: f64 = match sample {
+            MetricAggregateSample::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            MetricAggregateSample::Numeric(v) => *v,
+            MetricAggregateSample::Discrete(bytes) => discrete_bytes_to_f64(bytes),
+            MetricAggregateSample::String(_) | MetricAggregateSample::Wstring(_) => {
+                // OTel metrics are numeric; string-typed metrics need the
+                // events pipeline (not yet implemented). Skip silently.
+                continue;
+            }
+        };
+
+        let ts_ns = if samples.len() == 1 {
+            dc_time_start
+        } else {
+            dc_time_start + (i as i64) * span_ns / denom
+        };
+
+        let mut entry = MetricEntry::gauge(name.to_string(), value);
+        entry.unit = unit.to_string();
+        entry.timestamp = dc_time_to_datetime(ts_ns);
+        entry.ams_net_id = net_id.to_string();
+        entry.task_index = task_index as i32;
+
+        entry.attributes.insert(
+            "metric_id".into(),
+            serde_json::Value::Number(metric_id.into()),
+        );
+        entry.attributes.insert(
+            "body_schema".into(),
+            serde_json::Value::String(format!("{:?}", body_schema).to_lowercase()),
+        );
+        entry.attributes.insert(
+            "sample_size".into(),
+            serde_json::Value::Number(sample_size.into()),
+        );
+        if overflow_flag {
+            entry
+                .attributes
+                .insert("ring_overflowed".into(), serde_json::Value::Bool(true));
+        }
+        if let Some(ref t) = trace_id_hex {
+            entry
+                .attributes
+                .insert("trace_id".into(), serde_json::Value::String(t.clone()));
+        }
+        if let Some(ref s) = span_id_hex {
+            entry
+                .attributes
+                .insert("span_id".into(), serde_json::Value::String(s.clone()));
+        }
+
+        out.push(entry);
+    }
+
+    out
+}
+
+/// Interpret a discrete-byte sample as a little-endian unsigned integer.
+/// Caps at 8 bytes (LWORD); longer slices use the first 8 bytes.
+fn discrete_bytes_to_f64(bytes: &[u8]) -> f64 {
+    let mut buf = [0_u8; 8];
+    let n = bytes.len().min(8);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    u64::from_le_bytes(buf) as f64
+}
+
+/// Lowercase hex of a byte slice — used for trace_id / span_id attributes
+/// so dashboards see the standard W3C representation.
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
 }
 
 /// Convert per-task diagnostic batch to metrics. Pre-aggregated stats (min/max/avg
