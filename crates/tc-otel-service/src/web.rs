@@ -1745,7 +1745,7 @@ mod tests {
         cache.insert(key, tree);
 
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache, "localhost".to_string(), 1883, "AdsOverMqtt".to_string());
         let mut state = test_state();
         state.client_bridge = Some(bridge);
         let app = router(state);
@@ -1776,7 +1776,7 @@ mod tests {
 
         let cache = Arc::new(SymbolTreeCache::new());
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache, "localhost".to_string(), 1883, "AdsOverMqtt".to_string());
         let mut state = test_state();
         state.client_bridge = Some(bridge);
         let app = router(state);
@@ -1805,7 +1805,7 @@ mod tests {
         assert!(cache.get(key).is_some());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let bridge = crate::client_bridge::ClientBridge::new(tx, cache.clone());
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache.clone(), "localhost".to_string(), 1883, "AdsOverMqtt".to_string());
         let mut state = test_state();
         state.client_bridge = Some(bridge);
         let app = router(state);
@@ -1830,7 +1830,7 @@ mod tests {
 
         let cache = Arc::new(SymbolTreeCache::new());
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let bridge = crate::client_bridge::ClientBridge::new(tx, cache);
+        let bridge = crate::client_bridge::ClientBridge::new(tx, cache, "localhost".to_string(), 1883, "AdsOverMqtt".to_string());
         let mut state = test_state();
         state.client_bridge = Some(bridge);
         let app = router(state);

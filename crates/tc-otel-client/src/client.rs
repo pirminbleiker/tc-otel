@@ -1,20 +1,20 @@
-//! Wrapper around `ads::Client` / `ads::Device` for active client sessions.
+//! Dispatcher-backed client helpers for custom-metrics polls/notifications.
 //!
-//! The upstream `ads` crate is **blocking** and the `Client` type is `Send`
-//! but not `Sync` (it uses interior mutability for the invoke-id counter and
-//! notification-handle bookkeeping). To share a single TCP connection across
-//! multiple pollers/notifiers driving the same target, we wrap it in a
-//! `parking_lot::Mutex`. Each ADS round-trip is short (low-millisecond), so
-//! contention is acceptable at typical metric rates.
-//!
-//! A [`SymbolReader`] trait abstracts the value-read path so tests can
-//! substitute a stub under the `mock-plc` feature.
+//! The dispatcher lives in `tc-otel-ads`; this module only exposes the thin
+//! glue that presents it as a [`SymbolReader`] trait (so the [`crate::poll`]
+//! loop doesn't care whether reads go out over MQTT or TCP) and re-exports
+//! the primitive scalar-decoder used by both the poll and notify paths.
 
 use crate::error::{ClientError, Result};
-use ads::client::Source as AdsSource;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use tc_otel_ads::ams::AmsNetId;
+use tc_otel_ads::dispatcher::{AmsDispatcher, DispatcherError};
+
+/// Default ADS "read by handle" index group — only used when the caller
+/// hasn't looked up the symbol's actual location yet. `SYM_UPLOAD` and
+/// related IGs live in [`crate::browse`].
+pub use tc_otel_ads::ams::ADS_CMD_READ;
 
 /// Decoded PLC primitive suitable for promotion into a metric `f64`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,8 +55,8 @@ pub struct SymbolMeta {
     pub index_offset: u32,
 }
 
-/// Read-only projection of the ADS client API. Real impl is [`AdsClient`];
-/// tests can plug in their own under the `mock-plc` feature.
+/// Read-only projection of the ADS client API. Real impl is [`DispatcherClient`];
+/// tests plug in their own via `impl SymbolReader for FakeReader`.
 pub trait SymbolReader: Send + Sync + 'static {
     /// Return the raw bytes for a symbol described by `meta`.
     fn read_raw(&self, meta: &SymbolMeta) -> Result<Vec<u8>>;
@@ -73,144 +73,112 @@ pub trait SymbolReader: Send + Sync + 'static {
     }
 }
 
-/// Real `ads::Client`-backed implementation.
+/// Dispatcher-backed symbol reader. Each `read_raw` call issues one
+/// `ADS_CMD_READ` request via the shared [`AmsDispatcher`] and blocks on the
+/// poll-worker thread until the invoke-id-matched response arrives.
 ///
-/// A single `AdsClient` holds **one** TCP connection to the PLC's AMS router
-/// and may be cloned (it is `Clone`, sharing the underlying `Arc<Mutex<_>>`)
-/// for multiple pollers/notifiers driving the same target.
+/// The dispatcher chooses the transport (MQTT or TCP) based on its live
+/// route table — clients don't care which one.
 #[derive(Clone)]
-pub struct AdsClient {
-    client: Arc<Mutex<ads::Client>>,
-    target: ads::AmsAddr,
+pub struct DispatcherClient {
+    dispatcher: Arc<AmsDispatcher>,
+    target_net_id: AmsNetId,
+    target_port: u16,
+    request_timeout: Duration,
 }
 
-impl AdsClient {
-    /// Dial the PLC's AMS router.
-    ///
-    /// `router_addr` is `"host:48898"` (usually the PLC's IP). `source` is our
-    /// own AMS identity; use `Source::Auto` when driving a remote PLC and
-    /// `Source::Request` when connecting to a local TwinCAT router.
-    ///
-    /// This call blocks. Wrap in `spawn_blocking` from async contexts.
-    pub fn connect(
-        router_addr: &str,
-        source: AdsSource,
-        target: ads::AmsAddr,
-        timeouts: ads::Timeouts,
-    ) -> Result<Self> {
-        let client = ads::Client::new(router_addr, timeouts, source)
-            .map_err(|e| ClientError::Ads(e.to_string()))?;
-        Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-            target,
-        })
+impl DispatcherClient {
+    pub fn new(dispatcher: Arc<AmsDispatcher>, target_net_id: AmsNetId, target_port: u16) -> Self {
+        Self {
+            dispatcher,
+            target_net_id,
+            target_port,
+            request_timeout: Duration::from_secs(5),
+        }
     }
 
-    /// Convenience constructor: short timeouts + `Source::Auto`.
-    pub fn connect_auto(router_addr: &str, target: ads::AmsAddr) -> Result<Self> {
-        Self::connect(
-            router_addr,
-            AdsSource::Auto,
-            target,
-            ads::Timeouts::new(Duration::from_secs(5)),
-        )
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
-    /// Connect using a caller-supplied source NetID (ephemeral port 58913).
-    ///
-    /// This is the typical constructor used by the service bridge — it ensures
-    /// the peer identity matches the NetID the PLC expects in its route table.
-    pub fn connect_with_source_netid(
-        router_addr: &str,
-        source_netid: ads::AmsNetId,
-        target: ads::AmsAddr,
-    ) -> Result<Self> {
-        Self::connect(
-            router_addr,
-            AdsSource::Addr(ads::AmsAddr::new(source_netid, 58913)),
-            target,
-            ads::Timeouts::new(Duration::from_secs(5)),
-        )
+    pub fn dispatcher(&self) -> Arc<AmsDispatcher> {
+        self.dispatcher.clone()
     }
 
-    /// Register an AMS route on the target PLC via its UDP discovery port
-    /// (48899). Necessary before `connect_*` on a PLC that doesn't already
-    /// have a static route to our NetID.
-    ///
-    /// `source_netid` is our own NetID. `our_host` is a short hostname or IP
-    /// the PLC should record as the route's peer — used by the PLC only for
-    /// display and rDNS.
-    ///
-    /// Blocking — call from `spawn_blocking` in async contexts.
-    pub fn add_route(target_host: &str, source_netid: ads::AmsNetId, our_host: &str) -> Result<()> {
-        ads::udp::add_route(
-            (target_host, 48899),
-            source_netid,
-            our_host,
-            None,
-            None,
-            None,
-            /* temporary */ true,
-        )
-        .map_err(|e| ClientError::Ads(format!("add_route: {e}")))
+    pub fn target_net_id(&self) -> AmsNetId {
+        self.target_net_id
     }
 
-    /// Access the underlying `ads::Client` under the mutex. Mainly used by
-    /// `poll` and `notify` modules to issue domain-specific calls.
-    pub fn with_client<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&ads::Client, ads::AmsAddr) -> R,
-    {
-        let guard = self.client.lock();
-        f(&guard, self.target)
+    pub fn target_port(&self) -> u16 {
+        self.target_port
     }
 
-    /// Resolve a symbol name via the PLC's `GET_SYMINFO_BYNAME` index group.
-    /// Returns (index_group, index_offset, size). Type name is not returned —
-    /// it must come from the cached [`crate::browse::SymbolTree`] (or be
-    /// provided out of band).
-    pub fn resolve_location(&self, symbol: &str) -> Result<(u32, u32, u32)> {
-        self.with_client(|client, target| {
-            let device = client.device(target);
-            let loc = ads::symbol::get_location(device, symbol)
-                .map_err(|e| ClientError::Ads(e.to_string()))?;
-            let size = ads::symbol::get_size(device, symbol)
-                .map_err(|e| ClientError::Ads(e.to_string()))?;
-            Ok((loc.0, loc.1, size as u32))
-        })
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 
-    pub fn target(&self) -> ads::AmsAddr {
-        self.target
-    }
-
-    /// Dump the entire symbol table of the target PLC.
-    ///
-    /// This is a heavy call (tens to hundreds of kilobytes over AMS, plus the
-    /// type-map upload). Blocking — call from `spawn_blocking`.
-    ///
-    /// The service bridge uses this once per target at connection time to
-    /// populate [`crate::cache::SymbolTreeCache`]. The returned tree is also
-    /// what the web UI (T7/T8) consumes for symbol browsing.
-    pub fn upload_symbols(&self) -> Result<crate::browse::SymbolTree> {
-        self.with_client(|client, target| {
-            let (symbols, _types) = ads::symbol::get_symbol_info(client.device(target))
-                .map_err(|e| ClientError::Ads(e.to_string()))?;
-            Ok(crate::browse::SymbolTree::from_ads_symbols(symbols))
+    /// Run an async `send_request` from a synchronous context (the
+    /// [`SymbolReader`] trait, which is sync on the poll worker thread).
+    /// If no Tokio runtime is available (tests without one), returns an
+    /// error rather than panicking.
+    fn block_on_send(
+        &self,
+        cmd: u16,
+        payload: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, DispatcherError> {
+        let dispatcher = self.dispatcher.clone();
+        let target_net_id = self.target_net_id;
+        let target_port = self.target_port;
+        let timeout = self.request_timeout;
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+            DispatcherError::Mqtt("no tokio runtime available for dispatcher call".into())
+        })?;
+        tokio::task::block_in_place(|| {
+            handle.block_on(async move {
+                dispatcher
+                    .send_request(target_net_id, target_port, cmd, &payload, timeout)
+                    .await
+            })
         })
     }
 }
 
-impl SymbolReader for AdsClient {
+impl SymbolReader for DispatcherClient {
     fn read_raw(&self, meta: &SymbolMeta) -> Result<Vec<u8>> {
-        self.with_client(|client, target| {
-            let mut buf = vec![0u8; meta.size as usize];
-            client
-                .device(target)
-                .read_exact(meta.index_group, meta.index_offset, &mut buf)
-                .map_err(|e| ClientError::Ads(e.to_string()))?;
-            Ok(buf)
-        })
+        // ADS Read request body: 4-byte index_group + 4-byte index_offset + 4-byte length.
+        let mut req = Vec::with_capacity(12);
+        req.extend_from_slice(&meta.index_group.to_le_bytes());
+        req.extend_from_slice(&meta.index_offset.to_le_bytes());
+        req.extend_from_slice(&meta.size.to_le_bytes());
+
+        let raw = self
+            .block_on_send(ADS_CMD_READ, req)
+            .map_err(|e| ClientError::Ads(e.to_string()))?;
+
+        // ADS Read response body: 4-byte result (ADS error) + 4-byte length + data.
+        if raw.len() < 8 {
+            return Err(ClientError::Decode(format!(
+                "ADS read response too short: {} bytes",
+                raw.len()
+            )));
+        }
+        let result_code = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        if result_code != 0 {
+            return Err(ClientError::Ads(format!(
+                "ADS read returned error 0x{result_code:x}"
+            )));
+        }
+        let declared_len = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+        let data = &raw[8..];
+        if data.len() < declared_len {
+            return Err(ClientError::Decode(format!(
+                "ADS read payload truncated: declared {} bytes, got {}",
+                declared_len,
+                data.len()
+            )));
+        }
+        Ok(data[..declared_len].to_vec())
     }
 }
 

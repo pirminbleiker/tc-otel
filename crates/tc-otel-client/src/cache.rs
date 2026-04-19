@@ -13,10 +13,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Opaque key for a target PLC — the 6-byte AMS Net ID.
-///
-/// Re-declared here (rather than importing from `ads::AmsNetId`) because the
-/// upstream type does not derive `Hash`. Interconversion is trivial:
-/// `TargetKey::from(ads_netid.0)`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TargetKey(pub [u8; 6]);
 
@@ -26,8 +22,8 @@ impl From<[u8; 6]> for TargetKey {
     }
 }
 
-impl From<ads::AmsNetId> for TargetKey {
-    fn from(id: ads::AmsNetId) -> Self {
+impl From<tc_otel_ads::ams::AmsNetId> for TargetKey {
+    fn from(id: tc_otel_ads::ams::AmsNetId) -> Self {
         Self(id.0)
     }
 }
