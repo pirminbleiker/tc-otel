@@ -1,0 +1,88 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="F_POINTER_TO_ANY" Id="{ad9dedb1-fb01-0d31-395d-698167e2e1bb}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_POINTER_TO_ANY : __SYSTEM.AnyType
+VAR_INPUT
+	TypeClass : __SYSTEM.TYPE_CLASS;
+	pValue	: PVOID;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF pValue = 0 THEN 
+	RETURN;
+END_IF;
+
+CASE TypeClass OF 
+	__SYSTEM.TYPE_CLASS.TYPE_BOOL:
+		F_Pointer_To_Any.diSize := SIZEOF(BOOL);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_BYTE:
+		F_Pointer_To_Any.diSize := SIZEOF(BYTE);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_WORD:
+		F_Pointer_To_Any.diSize := SIZEOF(WORD);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_DWORD:
+		F_Pointer_To_Any.diSize := SIZEOF(DWORD);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_LWORD:
+		F_Pointer_To_Any.diSize := SIZEOF(LWORD);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_SINT:
+		F_Pointer_To_Any.diSize := SIZEOF(SINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_INT:
+		F_Pointer_To_Any.diSize := SIZEOF(INT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_DINT:
+		F_Pointer_To_Any.diSize := SIZEOF(DINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_LINT:
+		F_Pointer_To_Any.diSize := SIZEOF(LINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_USINT:
+		F_Pointer_To_Any.diSize := SIZEOF(USINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_UINT:
+		F_Pointer_To_Any.diSize := SIZEOF(UINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_UDINT:
+		F_Pointer_To_Any.diSize := SIZEOF(UDINT);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_ULINT:
+		F_Pointer_To_Any.diSize := SIZEOF(ULINT);
+		
+   __SYSTEM.TYPE_CLASS.TYPE_REAL:
+		F_Pointer_To_Any.diSize := SIZEOF(REAL);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_LREAL:
+		F_Pointer_To_Any.diSize := SIZEOF(LREAL);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_STRING:
+		F_Pointer_To_Any.diSize := SIZEOF(STRING);
+		
+   __SYSTEM.TYPE_CLASS.TYPE_WSTRING:
+		F_Pointer_To_Any.diSize := SIZEOF(WSTRING);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_TIME:
+		F_Pointer_To_Any.diSize := SIZEOF(TIME);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_DATE:
+		F_Pointer_To_Any.diSize := SIZEOF(DATE);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_DATEANDTIME:
+		F_Pointer_To_Any.diSize := SIZEOF(DATE_AND_TIME);
+		
+    __SYSTEM.TYPE_CLASS.TYPE_TIMEOFDAY:
+		F_Pointer_To_Any.diSize := SIZEOF(TIME_OF_DAY);
+			
+	__SYSTEM.TYPE_CLASS.TYPE_LTIME:
+		F_Pointer_To_Any.diSize := SIZEOF(LTIME);
+ELSE
+	RETURN;
+END_CASE
+	
+F_Pointer_To_Any.pValue := pValue;
+F_Pointer_To_Any.TypeClass := TypeClass;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

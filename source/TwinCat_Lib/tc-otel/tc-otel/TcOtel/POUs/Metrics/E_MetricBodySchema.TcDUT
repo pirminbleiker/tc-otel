@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
-  <DUT Name="E_MetricBodySchema" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c01}">
+  <DUT Name="E_MetricBodySchema" Id="{96d11b28-f297-0796-3243-7238571e2874}">
     <Declaration><![CDATA[(*
 :Description: Wire-format body schema for FB_Metrics push frames.
 

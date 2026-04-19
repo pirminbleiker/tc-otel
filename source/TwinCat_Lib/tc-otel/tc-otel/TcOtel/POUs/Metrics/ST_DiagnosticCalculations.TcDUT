@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <DUT Name="ST_DiagnosticCalculations" Id="{7483041e-de20-024f-25aa-723763fa6e7f}">
+    <Declaration><![CDATA[TYPE ST_DiagnosticCalculations :
+STRUCT
+	Count		: UDINT;
+	Mean		: FLOAT;
+	Minimum		: FLOAT;
+	Maximum		: FLOAT;
+	First		: FLOAT;
+	Last		: FLOAT;
+	Sum			: FLOAT;
+	Variance	: FLOAT;
+	Step		: FLOAT;
+	Range		: FLOAT;
+	StdDev		: FLOAT;
+	Difference	: FLOAT;
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

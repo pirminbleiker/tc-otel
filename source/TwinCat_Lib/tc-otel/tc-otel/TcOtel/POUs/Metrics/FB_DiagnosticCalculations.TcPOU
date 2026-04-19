@@ -1,0 +1,260 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_DiagnosticCalculations" Id="{11bd6757-2e51-074e-1e06-ad006e27c288}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'enable_dynamic_creation'}
+FUNCTION_BLOCK FB_DiagnosticCalculations
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	_number		: UDINT;
+	_average	: LREAL;
+	_minimum	: LREAL;
+	_maximum	: LREAL;
+	_first		: LREAL;
+	_last		: LREAL;
+	_overall	: LREAL;
+	_variance	: LREAL;
+	_varianceSum: LREAL;
+	_step		: LREAL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="addValue" Id="{5e8ceecb-8835-0eb1-064f-ad23803709f0}">
+      <Declaration><![CDATA[METHOD addValue 
+VAR_INPUT
+	input	: float;
+END_VAR
+
+VAR
+	value 			: FLOAT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[value := input;
+
+IF _number = 0 THEN
+	_first := value;
+	_minimum := value;
+	_maximum := value;
+	_step := value;
+END_IF
+
+IF _step > _last - value THEN
+	_step := _last - value;
+END_IF
+
+_number := _number + 1;
+_overall := _overall + value;
+_average := _overall / _number;
+
+_varianceSum := _varianceSum + (value - _average)*(value - _average);
+_variance := _varianceSum / _number;
+
+IF value > _maximum THEN
+	_maximum := value;
+END_IF
+IF value < _minimum THEN
+	_minimum := value;
+END_IF
+_last := value;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Average" Id="{3b13491c-b844-0de3-1e2a-b91fbc3319f9}">
+      <Declaration><![CDATA[PROPERTY Average : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{d018460e-a6a8-0206-076c-4c8445702e52}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Average := _average;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="calculate" Id="{999e251f-5b0a-07ae-2fcb-1b264e37e976}">
+      <Declaration><![CDATA[METHOD calculate
+VAR_INPUT
+	pArray	 	: PVOID;
+	nArraySize 	: DINT;
+	TypeClass 	: __SYSTEM.TYPE_CLASS;
+END_VAR
+VAR
+	ii : DINT;
+	value : __SYSTEM.AnyType;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[reset();
+
+value := F_POINTER_TO_ANY(TypeClass,pArray);
+FOR ii := 0 TO (nArraySize / value.diSize)-1 DO
+	value := F_POINTER_TO_ANY(TypeClass,pArray);
+	addValue(F_ANY_TO_LREAL(value));
+	pArray := pArray + TO_ULINT(value.diSize);
+END_FOR]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Count" Id="{0d3a2f5d-6ec9-02e2-32d4-8e6cca0d4cf3}">
+      <Declaration><![CDATA[PROPERTY Count : UDINT]]></Declaration>
+      <Get Name="Get" Id="{85e43461-ca6a-0cc3-37ef-143066839018}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Count := _number;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Difference" Id="{d90f2a22-e523-0a01-28b1-9b769bec555d}">
+      <Declaration><![CDATA[PROPERTY Difference : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{cbbd2dcc-ad3f-04ca-01c8-9944fa756c6d}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Difference := _last - _first;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="First" Id="{70e58a4d-013a-0943-3fb3-60f05a12bcac}">
+      <Declaration><![CDATA[PROPERTY First : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{0bd80f57-8abd-021f-292e-4bd494bf820f}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[First := _first;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="getResults" Id="{f515b08b-e7bf-037c-0ee0-5569d5866b75}">
+      <Declaration><![CDATA[METHOD getResults : ST_DiagnosticCalculations
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[getResults.Count := Count;
+getResults.Difference := Difference;
+getResults.First := First;
+getResults.Last := Last;
+getResults.Minimum := Minimum;
+getResults.Maximum := Maximum;
+getResults.Mean := Average;
+getResults.Sum := Overall;
+getResults.Range := Range;
+getResults.StdDev := StdDev;
+getResults.Step := Step;
+getResults.Variance := Variance;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Last" Id="{58d084f3-1db5-0b23-2f76-b6b7dffb64db}">
+      <Declaration><![CDATA[PROPERTY Last : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{07272a46-2a03-0585-2e55-e82953dc1025}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Last := _last;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Maximum" Id="{77297eb9-2e1c-002b-0190-1ea865e70a92}">
+      <Declaration><![CDATA[PROPERTY Maximum : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{a0b6cf1b-0f20-04ed-2e6b-cb4afc5cade6}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Maximum := _maximum;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Minimum" Id="{eb71ef22-4df0-0f79-067d-30d55ffbde5b}">
+      <Declaration><![CDATA[PROPERTY Minimum : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{8f28f202-ad13-0df3-112e-e0bf2209fe17}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Minimum := _minimum;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Overall" Id="{a8f68037-1607-090f-12cc-c4cfa20dc0bb}">
+      <Declaration><![CDATA[PROPERTY PUBLIC Overall : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{5069dc6f-8535-0b9d-2cd6-5d4f8fc590c6}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Overall := _overall;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Range" Id="{27770d20-afeb-0ed4-0961-287abe9fb21f}">
+      <Declaration><![CDATA[PROPERTY Range : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{f187a6bc-7634-0f5d-2983-472c5594b0f6}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Range := _maximum - _minimum;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Method Name="reset" Id="{74d44bf0-9f63-0a96-09c5-c4771a1783c1}">
+      <Declaration><![CDATA[METHOD reset
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_first := 0;
+_last := 0;
+_number := 0;
+_average := 0;
+_minimum := 0;
+_maximum := 0;
+_overall := 0;
+_variance := 0;
+_varianceSum := 0;
+_step := 0;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="StdDev" Id="{821ceeff-6a3e-0171-1bf3-35e42308e2ca}">
+      <Declaration><![CDATA[PROPERTY StdDev : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{499978ff-d840-0780-1f1c-c9ebee22c8fc}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[StdDev := SQRT(_variance);]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Step" Id="{03ebbe1a-d90a-0e5f-3254-749d92b1605e}">
+      <Declaration><![CDATA[PROPERTY Step : FLOAT]]></Declaration>
+      <Get Name="Get" Id="{dda23900-96b5-07bb-397e-3e6afd784636}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Step := _step;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Variance" Id="{803492da-7679-09a8-053f-f35ca127cf7c}">
+      <Declaration><![CDATA[PROPERTY Variance : FLOAT // Variance of all values in a field]]></Declaration>
+      <Get Name="Get" Id="{82382cd8-3301-05e2-39e9-97120046e112}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Variance := _variance;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_Metrics" Id="{f4a5b6c7-d8e9-0a1b-2c3d-4e5f6a7b8c09}" SpecialFunc="None">
     <Declaration><![CDATA[(*
@@ -217,6 +217,7 @@ VAR
     nStrLen    : UDINT;
     nCopyLen   : UDINT;
     pDst       : POINTER TO BYTE;
+    pWstr      : POINTER TO WSTRING(255);
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -261,8 +262,11 @@ CASE _eBodySchema OF
 
     E_MetricBodySchema.eWstring:
         Tc2_System.MEMSET(pDst, 0, _nSampleSize);
-        (* WLEN returns characters; we ship 2 B each, capped at _nSampleSize bytes. *)
-        nStrLen := UINT_TO_UDINT(Tc2_Standard.WLEN(stArg.pValue^)) * 2;
+        (* WLEN returns characters; we ship 2 B each, capped at _nSampleSize bytes.
+           Typed-pointer cast first because WLEN can't take PVOID directly —
+           same pattern FB_LogEntry._WriteWString uses. *)
+        pWstr := stArg.pValue;
+        nStrLen := INT_TO_UDINT(Tc2_Standard.WLEN(pWstr^)) * 2;
         IF nStrLen > _nSampleSize THEN
             nStrLen := _nSampleSize;
         END_IF
@@ -671,6 +675,18 @@ Init          := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Property Name="MetricId" Id="{f2a3b4c5-d6e7-8f90-0102-03040506071f}">
+      <Declaration><![CDATA[PROPERTY PUBLIC MetricId : UDINT]]></Declaration>
+      <Get Name="Get" Id="{a3b4c5d6-e7f8-9001-0203-040506070820}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[MetricId := _nMetricId;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Method Name="Observe" Id="{f6a7b8c9-d0e1-2f3a-4b5c-6d7e8f901015}">
       <Declaration><![CDATA[(*
 :Description: Capture one observation of the metric value.
@@ -800,6 +816,18 @@ Observe := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Property Name="SampleCount" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304051d}">
+      <Declaration><![CDATA[PROPERTY PUBLIC SampleCount : UDINT]]></Declaration>
+      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405061e}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[SampleCount := _nSampleCount;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
     <Method Name="SetChangeDetect" Id="{a7b8c9d0-e1f2-3a4b-5c6d-7e8f90010216}">
       <Declaration><![CDATA[(*
 :Description: Enable / disable byte-wise change-detect (default TRUE).
@@ -857,18 +885,6 @@ SetSampleIntervalMs := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Property Name="SampleCount" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304051d}">
-      <Declaration><![CDATA[PROPERTY PUBLIC SampleCount : UDINT]]></Declaration>
-      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405061e}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[SampleCount := _nSampleCount;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
     <Method Name="WithSpan" Id="{b5c6d7e8-f9a0-1122-3344-5566778899aa}">
       <Declaration><![CDATA[(*
 :Description: Override the trace-context snapshot for the very next flush.
@@ -892,17 +908,5 @@ WithSpan := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Property Name="MetricId" Id="{f2a3b4c5-d6e7-8f90-0102-03040506071f}">
-      <Declaration><![CDATA[PROPERTY PUBLIC MetricId : UDINT]]></Declaration>
-      <Get Name="Get" Id="{a3b4c5d6-e7f8-9001-0203-040506070820}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[MetricId := _nMetricId;
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
   </POU>
 </TcPlcObject>

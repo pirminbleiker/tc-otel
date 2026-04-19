@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="F_STRING_IS_FLOAT" Id="{5e60275b-f4dd-0589-22d6-c82d6308f8ab}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_STRING_IS_FLOAT : BOOL
+VAR_INPUT
+    str : ANY;
+END_VAR
+VAR
+    i : INT;
+    character : STRING(1);
+	pstr : POINTER TO T_MaxString;
+	pwstr : POINTER TO WSTRING;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF str.TypeClass = __SYSTEM.TYPE_CLASS.TYPE_STRING THEN
+	pstr := str.pValue;
+	FOR i := 1 TO LEN(pstr^) DO
+		character := MID(pstr^, i, 1);
+		IF NOT ((character >= '0' AND character <= '9') OR character = '.') THEN
+			RETURN;
+    	END_IF
+	END_FOR
+END_IF
+
+IF str.TypeClass = __SYSTEM.TYPE_CLASS.TYPE_WSTRING THEN
+	pwstr := str.pValue;
+	FOR i := 1 TO LEN(pstr^) DO
+		character := MID(pstr^, i, 1);
+		IF NOT ((character >= '0' AND character <= '9') OR character = '.') THEN
+			RETURN;
+    	END_IF
+	END_FOR
+END_IF
+
+
+F_STRING_IS_FLOAT := TRUE;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
