@@ -90,7 +90,7 @@ CASE nScenario1Step OF
             eKind        := E_SpanKind.eServer,
             sTraceParent := GVL_TracePropagation.sCurrentTraceParent);
         spnConsumer.AddInt('seq', nSeq);
-		F_Log(E_LogLevel.eDebug, 'Try add trace reference to log entry').CreateLog();
+		F_Log(E_LogLevel.eDebug, 'Try add trace reference to log entry').WithSpan(spnConsumer).CreateLog();
         nScenario1Step := 3;
     END_IF
 3:  // consumer open for ~80 ms, then end + reset

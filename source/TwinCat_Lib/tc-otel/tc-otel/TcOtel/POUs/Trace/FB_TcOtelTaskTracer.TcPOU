@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_TcOtelTaskTracer" Id="{294f80cd-71bb-4a49-ab79-358e75196d66}" SpecialFunc="None">
     <Declaration><![CDATA[(*
@@ -71,64 +71,52 @@ END_IF;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_NowDcTime" Id="{a1b2c3d4-e5f6-1111-2222-333344445555}">
-      <Declaration><![CDATA[(* Return live DC time, falling back to cycle-start task DC time. *)
-METHOD PRIVATE _NowDcTime : LINT
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-_NowDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF _NowDcTime = 0 THEN
-    _NowDcTime := _GetTaskDcTime();
-END_IF;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_SeedRng" Id="{1a8f2c4d-3b5e-4a6f-8d7c-9e0a1b2c3d4f}">
-      <Declaration><![CDATA[METHOD PRIVATE _SeedRng
-VAR
-    nDcTime : LINT;
+    <Method Name="_HexCharToNibble" Id="{6a5b4c3d-2e1f-4a5b-8c7d-9e0f1a2b3c4d}">
+      <Declaration><![CDATA[(* Convert one hex ASCII byte ('0'-'9', 'a'-'f', 'A'-'F') into a 4-bit nibble.
+   Returns FALSE for any other byte. Used by _ParseTraceParent. *)
+METHOD PRIVATE _HexCharToNibble : BOOL
+VAR_INPUT
+    ch : BYTE;
+END_VAR
+VAR_IN_OUT
+    nNibble : BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF _bRngSeeded THEN
+IF ch >= 16#30 AND ch <= 16#39 THEN
+    nNibble := ch - 16#30;                  (* '0'..'9' -> 0..9 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#61 AND ch <= 16#66 THEN
+    nNibble := ch - 16#57;                  (* 'a'..'f' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSIF ch >= 16#41 AND ch <= 16#46 THEN
+    nNibble := ch - 16#37;                  (* 'A'..'F' -> 10..15 *)
+    _HexCharToNibble := TRUE;
+ELSE
+    _HexCharToNibble := FALSE;
+END_IF;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
+      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
+METHOD PRIVATE _MintSpanId
+VAR_INPUT
+    pSpan : POINTER TO FB_Span;
+END_VAR
+VAR
+    v : ULINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF pSpan = 0 THEN
     RETURN;
 END_IF;
 
-nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
-IF nDcTime = 0 THEN
-    nDcTime := _GetTaskDcTime();
-END_IF;
-
-(* XOR with task index so separate tasks can't produce the same stream
-   if two of them seed within the same DC-time tick. Add the fallback
-   constant so a zero DC clock still gives a non-zero seed (xorshift64
-   requires non-zero state). *)
-_nXorState := TO_ULINT(nDcTime) XOR (TO_ULINT(Tc2_Utilities.GETCURTASKINDEXEX()) * 16#9E3779B97F4A7C15);
-IF _nXorState = 0 THEN
-    _nXorState := 16#DEADBEEFCAFEF00D;
-END_IF;
-
-_bRngSeeded := TRUE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_NextRandom" Id="{2b9e3d5f-4c6a-4b7d-8e9f-0a1b2c3d4e5f}">
-      <Declaration><![CDATA[(* xorshift64 (Marsaglia 2003): 6 ops, period 2^64 - 1, zero lookup tables. *)
-METHOD PRIVATE _NextRandom : ULINT
-VAR
-    x : ULINT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[
-x := _nXorState;
-x := x XOR SHL(x, 13);
-x := x XOR SHR(x, 7);
-x := x XOR SHL(x, 17);
-_nXorState := x;
-_NextRandom := x;
+v := _NextRandom();
+Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -156,51 +144,33 @@ Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[8]), ADR(lo), 8);
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_MintSpanId" Id="{4d1b5f7c-6e8d-4f9a-0b1c-2d3e4f5a6b7c}">
-      <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
-METHOD PRIVATE _MintSpanId
-VAR_INPUT
-    pSpan : POINTER TO FB_Span;
-END_VAR
+    <Method Name="_NextRandom" Id="{2b9e3d5f-4c6a-4b7d-8e9f-0a1b2c3d4e5f}">
+      <Declaration><![CDATA[(* xorshift64 (Marsaglia 2003): 6 ops, period 2^64 - 1, zero lookup tables. *)
+METHOD PRIVATE _NextRandom : ULINT
 VAR
-    v : ULINT;
+    x : ULINT;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
-    RETURN;
-END_IF;
-
-v := _NextRandom();
-Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
+x := _nXorState;
+x := x XOR SHL(x, 13);
+x := x XOR SHR(x, 7);
+x := x XOR SHL(x, 17);
+_nXorState := x;
+_NextRandom := x;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_HexCharToNibble" Id="{6a5b4c3d-2e1f-4a5b-8c7d-9e0f1a2b3c4d}">
-      <Declaration><![CDATA[(* Convert one hex ASCII byte ('0'-'9', 'a'-'f', 'A'-'F') into a 4-bit nibble.
-   Returns FALSE for any other byte. Used by _ParseTraceParent. *)
-METHOD PRIVATE _HexCharToNibble : BOOL
-VAR_INPUT
-    ch : BYTE;
-END_VAR
-VAR_IN_OUT
-    nNibble : BYTE;
-END_VAR
+    <Method Name="_NowDcTime" Id="{a1b2c3d4-e5f6-1111-2222-333344445555}">
+      <Declaration><![CDATA[(* Return live DC time, falling back to cycle-start task DC time. *)
+METHOD PRIVATE _NowDcTime : LINT
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF ch >= 16#30 AND ch <= 16#39 THEN
-    nNibble := ch - 16#30;                  (* '0'..'9' -> 0..9 *)
-    _HexCharToNibble := TRUE;
-ELSIF ch >= 16#61 AND ch <= 16#66 THEN
-    nNibble := ch - 16#57;                  (* 'a'..'f' -> 10..15 *)
-    _HexCharToNibble := TRUE;
-ELSIF ch >= 16#41 AND ch <= 16#46 THEN
-    nNibble := ch - 16#37;                  (* 'A'..'F' -> 10..15 *)
-    _HexCharToNibble := TRUE;
-ELSE
-    _HexCharToNibble := FALSE;
+_NowDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
+IF _NowDcTime = 0 THEN
+    _NowDcTime := _GetTaskDcTime();
 END_IF;
 ]]></ST>
       </Implementation>
@@ -282,6 +252,36 @@ _ParseTraceParent := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="_SeedRng" Id="{1a8f2c4d-3b5e-4a6f-8d7c-9e0a1b2c3d4f}">
+      <Declaration><![CDATA[METHOD PRIVATE _SeedRng
+VAR
+    nDcTime : LINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[
+IF _bRngSeeded THEN
+    RETURN;
+END_IF;
+
+nDcTime := TO_LINT(Tc2_EtherCAT.F_GetActualDcTime64());
+IF nDcTime = 0 THEN
+    nDcTime := _GetTaskDcTime();
+END_IF;
+
+(* XOR with task index so separate tasks can't produce the same stream
+   if two of them seed within the same DC-time tick. Add the fallback
+   constant so a zero DC clock still gives a non-zero seed (xorshift64
+   requires non-zero state). *)
+_nXorState := TO_ULINT(nDcTime) XOR (TO_ULINT(Tc2_Utilities.GETCURTASKINDEXEX()) * 16#9E3779B97F4A7C15);
+IF _nXorState = 0 THEN
+    _nXorState := 16#DEADBEEFCAFEF00D;
+END_IF;
+
+_bRngSeeded := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="AddAny" Id="{b1a2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c01}">
       <Declaration><![CDATA[(*
 :Description: INTERNAL — Emit SPAN_ATTR frame for the given FB_Span.
@@ -317,6 +317,20 @@ VAR
     nTotalLen      : UDINT;
     pValueSrc      : POINTER TO BYTE;
     nWireType      : BYTE;
+
+    (* Typed pointers onto stArg.pValue — one per supported IEC type.
+       TwinCAT's Tc2_Utilities only provides PXXX_TO_XXX helpers where the
+       pointer target matches the returned type, so reading a DINT through
+       an ANY's POINTER TO BYTE needs a per-type pointer cast. *)
+    pArgByte       : POINTER TO BYTE;
+    pArgSint       : POINTER TO SINT;
+    pArgInt        : POINTER TO INT;
+    pArgDint       : POINTER TO DINT;
+    pArgUsint      : POINTER TO USINT;
+    pArgUint       : POINTER TO UINT;
+    pArgUdint      : POINTER TO UDINT;
+    pArgReal       : POINTER TO REAL;
+
     (* Widening scratch — one field per wire-width so the type dispatch
        can hand AddAny a pointer to a stack LINT/ULINT/LREAL without
        aliasing the caller's storage. *)
@@ -338,11 +352,15 @@ IF nKeyLen > 31 THEN
     nKeyLen := 31;
 END_IF;
 
-(* Type dispatch: derive wire-type byte + pointer to value + byte count *)
+(* Type dispatch: derive wire-type byte + pointer to value + byte count.
+   Reads the native-width value via a typed pointer cast, then widens
+   integers to LINT/ULINT and REAL to LREAL so the wire format sees
+   uniform 8-byte numerics (Rust parser reads fixed 8 B for type 1/2). *)
 CASE stArg.TypeClass OF
     __SYSTEM.TYPE_CLASS.TYPE_BOOL:
         nWireType := 3;
-        IF Tc2_Utilities.PBYTE_TO_BYTE(stArg.pValue) <> 0 THEN
+        pArgByte := stArg.pValue;
+        IF pArgByte^ <> 0 THEN
             byValBool := 1;
         ELSE
             byValBool := 0;
@@ -352,19 +370,22 @@ CASE stArg.TypeClass OF
 
     __SYSTEM.TYPE_CLASS.TYPE_SINT:
         nWireType := 1;
-        nValLint  := SINT_TO_LINT(Tc2_Utilities.PBYTE_TO_SINT(stArg.pValue));
+        pArgSint  := stArg.pValue;
+        nValLint  := SINT_TO_LINT(pArgSint^);
         pValueSrc := ADR(nValLint);
         nValBytes := 8;
 
     __SYSTEM.TYPE_CLASS.TYPE_INT:
         nWireType := 1;
-        nValLint  := INT_TO_LINT(Tc2_Utilities.PBYTE_TO_INT(stArg.pValue));
+        pArgInt   := stArg.pValue;
+        nValLint  := INT_TO_LINT(pArgInt^);
         pValueSrc := ADR(nValLint);
         nValBytes := 8;
 
     __SYSTEM.TYPE_CLASS.TYPE_DINT:
         nWireType := 1;
-        nValLint  := DINT_TO_LINT(Tc2_Utilities.PBYTE_TO_DINT(stArg.pValue));
+        pArgDint  := stArg.pValue;
+        nValLint  := DINT_TO_LINT(pArgDint^);
         pValueSrc := ADR(nValLint);
         nValBytes := 8;
 
@@ -376,21 +397,24 @@ CASE stArg.TypeClass OF
     __SYSTEM.TYPE_CLASS.TYPE_USINT,
     __SYSTEM.TYPE_CLASS.TYPE_BYTE:
         nWireType := 1;
-        nValULint := USINT_TO_ULINT(Tc2_Utilities.PBYTE_TO_USINT(stArg.pValue));
+        pArgUsint := stArg.pValue;
+        nValULint := USINT_TO_ULINT(pArgUsint^);
         pValueSrc := ADR(nValULint);
         nValBytes := 8;
 
     __SYSTEM.TYPE_CLASS.TYPE_UINT,
     __SYSTEM.TYPE_CLASS.TYPE_WORD:
         nWireType := 1;
-        nValULint := UINT_TO_ULINT(Tc2_Utilities.PBYTE_TO_UINT(stArg.pValue));
+        pArgUint  := stArg.pValue;
+        nValULint := UINT_TO_ULINT(pArgUint^);
         pValueSrc := ADR(nValULint);
         nValBytes := 8;
 
     __SYSTEM.TYPE_CLASS.TYPE_UDINT,
     __SYSTEM.TYPE_CLASS.TYPE_DWORD:
         nWireType := 1;
-        nValULint := UDINT_TO_ULINT(Tc2_Utilities.PBYTE_TO_UDINT(stArg.pValue));
+        pArgUdint := stArg.pValue;
+        nValULint := UDINT_TO_ULINT(pArgUdint^);
         pValueSrc := ADR(nValULint);
         nValBytes := 8;
 
@@ -402,7 +426,8 @@ CASE stArg.TypeClass OF
 
     __SYSTEM.TYPE_CLASS.TYPE_REAL:
         nWireType := 2;
-        fValLreal := REAL_TO_LREAL(Tc2_Utilities.PBYTE_TO_REAL(stArg.pValue));
+        pArgReal  := stArg.pValue;
+        fValLreal := REAL_TO_LREAL(pArgReal^);
         pValueSrc := ADR(fValLreal);
         nValBytes := 8;
 
@@ -540,6 +565,7 @@ VAR
     nTpLen           : UDINT;
     nTotalLen        : UDINT;
     nTailOffset      : UDINT;
+    byTpLen          : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
 END_VAR
@@ -631,9 +657,11 @@ IF nNameLen > 0 THEN
 END_IF;
 
 IF nTpLen > 0 THEN
-    (* tp_len as one byte, then tp bytes *)
-    (pDst + nTailOffset + nNameLen)^ := TO_BYTE(nTpLen);
-    Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen + 1, ADR(sTraceParent), nTpLen);
+    (* tp_len as one byte, then tp bytes — MEMCPY avoids the
+       "(ptr + offset)^ := val" syntax TwinCAT's parser rejects. *)
+    byTpLen := TO_BYTE(nTpLen);
+    Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen,     ADR(byTpLen),       1);
+    Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen + 1, ADR(sTraceParent),  nTpLen);
 END_IF;
 
 pBuffer^.DataAdded(nTotalLen);

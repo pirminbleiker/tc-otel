@@ -21,7 +21,7 @@ VAR_INPUT
 END_VAR
 ]]></Declaration>
     </Method>
-    <Method Name="WithSpan" Id="{928e3acf-533d-0617-1349-e62411e6ddbb}">
+    <Method Name="WithSpan" Id="{eefac63a-7e1f-0e5b-2261-2143375d8616}">
       <Declaration><![CDATA[(*
 :Description: Bind this log entry to a specific FB_Span for explicit
 trace context correlation.
