@@ -100,6 +100,22 @@ impl RouteTable {
         }
     }
 
+    /// Learn a route only if no entry exists yet. Returns `true` if the
+    /// entry was inserted (i.e. the net_id was unknown).
+    ///
+    /// Used for fallback registrations (e.g. static TCP peers configured
+    /// out-of-band) that should not override transports actively discovered
+    /// via MQTT `/info`.
+    pub fn learn_if_absent(&self, net_id: AmsNetId, kind: TransportKind) -> bool {
+        let mut guard = self.inner.write();
+        if guard.contains_key(&net_id) {
+            false
+        } else {
+            guard.insert(net_id, kind);
+            true
+        }
+    }
+
     /// Remove a route. Returns the kind that was present, if any.
     pub fn forget(&self, net_id: AmsNetId) -> Option<TransportKind> {
         self.inner.write().remove(&net_id)
@@ -283,7 +299,11 @@ impl AmsDispatcher {
 
         let topic_prefix = topic_prefix.to_string();
         let topic_prefix_for_task = topic_prefix.clone();
-        let res_topic = format!("{}/{}/ams/res", topic_prefix, self.source_net_id);
+        // Beckhoff's ADS-over-MQTT emits responses on the *responding peer's*
+        // `/ams/res` topic (not on the requester's). Subscribe with a wildcard
+        // so we receive responses regardless of which NetID the PLC chose for
+        // its own response topic.
+        let res_glob = format!("{}/+/ams/res", topic_prefix);
         let own_ams_topic = format!("{}/{}/ams", topic_prefix, self.source_net_id);
         let info_glob = format!("{}/+/info", topic_prefix);
 
@@ -291,12 +311,19 @@ impl AmsDispatcher {
         let pending = self.pending.clone();
         let sink = self.inbound_sink.clone();
         let client_for_task = client.clone();
+        let our_net_id = self.source_net_id;
+        let our_port = self.source_port;
 
         let event_task = tokio::spawn(async move {
             loop {
                 match event_loop.poll().await {
                     Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                        if let Err(e) = client_for_task.subscribe(&res_topic, QoS::AtMostOnce).await
+                        tracing::info!(
+                            res_glob = %res_glob,
+                            info_glob = %info_glob,
+                            "dispatcher mqtt: connected, subscribing"
+                        );
+                        if let Err(e) = client_for_task.subscribe(&res_glob, QoS::AtMostOnce).await
                         {
                             tracing::warn!("dispatcher mqtt: res subscribe failed: {e}");
                         }
@@ -312,6 +339,11 @@ impl AmsDispatcher {
                         }
                     }
                     Ok(Event::Incoming(Incoming::Publish(publish))) => {
+                        tracing::debug!(
+                            topic = %publish.topic,
+                            bytes = publish.payload.len(),
+                            "dispatcher mqtt: incoming"
+                        );
                         handle_incoming_mqtt(
                             &publish.topic,
                             publish.payload.to_vec(),
@@ -319,6 +351,8 @@ impl AmsDispatcher {
                             &routes,
                             &pending,
                             sink.clone(),
+                            our_net_id,
+                            our_port,
                         )
                         .await;
                     }
@@ -351,10 +385,21 @@ impl AmsDispatcher {
     /// target (`<host>:48898` typically). The TCP connection is dialed
     /// lazily on the first `send_request` that routes to this NetID.
     ///
-    /// Calling this also learns the route as `TransportKind::Tcp`, so the
-    /// next `send_request(net_id, ...)` will use TCP even if no `/info`
-    /// announcement for that peer has been seen.
+    /// **Semantics**: this is a *fallback* registration. If the dispatcher
+    /// already learned a route for `net_id` (e.g. from an `/info`
+    /// announcement over MQTT), that route wins. The TCP dial address is
+    /// remembered regardless, so if the /info is later retracted
+    /// (`online=false`), callers can re-register or the route can be
+    /// promoted via [`RouteTable::learn`].
     pub async fn add_tcp_peer(&self, net_id: AmsNetId, addr: SocketAddr) {
+        self.routes.learn_if_absent(net_id, TransportKind::Tcp);
+        self.tcp.lock().await.addrs.insert(net_id, addr);
+    }
+
+    /// Like [`add_tcp_peer`], but forces the route to `TransportKind::Tcp`
+    /// even if an MQTT route is known. Useful for operators overriding the
+    /// autodiscovery — e.g. when an /info announcement is known stale.
+    pub async fn force_tcp_peer(&self, net_id: AmsNetId, addr: SocketAddr) {
         self.routes.learn(net_id, TransportKind::Tcp);
         self.tcp.lock().await.addrs.insert(net_id, addr);
     }
@@ -437,6 +482,11 @@ impl AmsDispatcher {
             .as_ref()
             .ok_or(DispatcherError::TransportNotAttached(TransportKind::Mqtt))?;
         let topic = mqtt.outbound_topic(target);
+        tracing::debug!(
+            %topic,
+            bytes = frame.len(),
+            "dispatcher mqtt: publishing request"
+        );
         mqtt.client
             .publish(topic, QoS::AtMostOnce, false, frame)
             .await
@@ -449,8 +499,15 @@ impl AmsDispatcher {
         frame: Vec<u8>,
     ) -> std::result::Result<(), DispatcherError> {
         let peer = self.get_or_dial_tcp_peer(target).await?;
+        // Prepend the 6-byte AMS/TCP prefix (2 reserved + 4-byte length).
+        // MQTT doesn't use this prefix; TCP requires it.
+        let total_len = frame.len() as u32;
+        let mut wire = Vec::with_capacity(6 + frame.len());
+        wire.extend_from_slice(&[0, 0]);
+        wire.extend_from_slice(&total_len.to_le_bytes());
+        wire.extend_from_slice(&frame);
         let mut writer = peer.writer.lock().await;
-        if let Err(e) = writer.write_all(&frame).await {
+        if let Err(e) = writer.write_all(&wire).await {
             // Connection broken — drop it so the next send redials.
             drop(writer);
             self.tcp.lock().await.peers.remove(&target);
@@ -564,7 +621,10 @@ async fn run_tcp_reader(
     tcp_state.lock().await.peers.remove(&target);
 }
 
-/// Build a full AMS/TCP frame: 6-byte TCP prefix + 32-byte AMS header + payload.
+/// Build an AMS frame: 32-byte AMS header + payload (no TCP prefix).
+///
+/// This is the wire shape carried by MQTT. TCP transport prepends a 6-byte
+/// AMS/TCP prefix (2 reserved + 4-byte length) in [`AmsDispatcher::publish_tcp`].
 #[allow(clippy::too_many_arguments)]
 pub fn build_ams_frame(
     target_net_id: AmsNetId,
@@ -587,12 +647,7 @@ pub fn build_ams_frame(
         error_code: 0,
         invoke_id,
     };
-    let hdr_bytes = header.serialize();
-    let total_len = hdr_bytes.len() + payload.len();
-    let mut out = Vec::with_capacity(6 + total_len);
-    out.extend_from_slice(&[0, 0]);
-    out.extend_from_slice(&(total_len as u32).to_le_bytes());
-    out.extend_from_slice(&hdr_bytes);
+    let mut out = header.serialize();
     out.extend_from_slice(payload);
     out
 }
@@ -625,6 +680,7 @@ fn topic_net_id(topic: &str, prefix: &str) -> Option<AmsNetId> {
     AmsNetId::from_str_ref(net_id).ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_incoming_mqtt(
     topic: &str,
     payload: Vec<u8>,
@@ -632,6 +688,8 @@ async fn handle_incoming_mqtt(
     routes: &RouteTable,
     pending: &PendingMap,
     sink: Arc<dyn InboundSink>,
+    our_net_id: AmsNetId,
+    our_port: u16,
 ) {
     // 1. /info publications update the route table.
     if topic.ends_with("/info") {
@@ -647,13 +705,14 @@ async fn handle_incoming_mqtt(
         return;
     }
 
-    // 2. AMS frames on `/ams/res` or on our own `/ams` topic. Parse and
-    // dispatch by invoke-id if a waiter is registered, otherwise hand to the
-    // inbound sink.
+    // 2. AMS frames on `/ams/res` or on our own `/ams` topic. MQTT carries
+    // AMS frames unwrapped — no 6-byte TCP prefix. Parse directly and
+    // dispatch by invoke-id if a waiter is registered, otherwise hand to
+    // the inbound sink.
     if !topic.ends_with("/ams") && !topic.ends_with("/ams/res") {
         return;
     }
-    if payload.len() < 6 + AMS_HEADER_LEN {
+    if payload.len() < AMS_HEADER_LEN {
         tracing::debug!(
             "dispatcher mqtt: ignoring short frame on {} ({} bytes)",
             topic,
@@ -661,19 +720,33 @@ async fn handle_incoming_mqtt(
         );
         return;
     }
-    let ams_bytes = &payload[6..];
-    let header = match AmsHeader::parse(ams_bytes) {
+    let header = match AmsHeader::parse(&payload[..AMS_HEADER_LEN]) {
         Ok(h) => h,
         Err(e) => {
             tracing::debug!("dispatcher mqtt: bad AMS header on {}: {e}", topic);
             return;
         }
     };
-    let body_start = AMS_HEADER_LEN;
-    let body = ams_bytes[body_start..].to_vec();
+    let body = payload[AMS_HEADER_LEN..].to_vec();
+
+    // Observed-traffic route learning: any peer that publishes AMS frames on
+    // the broker is reachable via MQTT, regardless of whether they emit a
+    // retained `/info` announcement (many TwinCAT runtimes skip /info). Use
+    // `learn_if_absent` so an existing MQTT/TCP route stays authoritative.
+    if header.source_net_id != our_net_id {
+        routes.learn_if_absent(header.source_net_id, TransportKind::Mqtt);
+    }
 
     let is_response = header.state_flags & AMS_STATE_RESPONSE != 0;
     if is_response {
+        // Responses on `AdsOverMqtt/<peer>/ams/res` can belong to any peer
+        // talking to the PLC — DiagnosticsPoller and this dispatcher
+        // subscribe to the same wildcard. Filter strictly on the AMS header's
+        // `target_net_id` / `target_port` being ours, so we only pick up
+        // responses destined for this dispatcher.
+        if header.target_net_id != our_net_id || header.target_port != our_port {
+            return;
+        }
         if let Some(waiter) = pending.lock().await.remove(&header.invoke_id) {
             let _ = waiter.send(ResponseFrame {
                 header,
@@ -766,13 +839,10 @@ mod tests {
             42,
             &[0xAA, 0xBB, 0xCC],
         );
-        // 6-byte TCP prefix + 32-byte AMS header + 3-byte payload = 41 bytes
-        assert_eq!(frame.len(), 6 + 32 + 3);
-        assert_eq!(&frame[0..2], &[0, 0]);
-        let total_len = u32::from_le_bytes([frame[2], frame[3], frame[4], frame[5]]);
-        assert_eq!(total_len, 32 + 3);
+        // 32-byte AMS header + 3-byte payload = 35 bytes (no TCP prefix).
+        assert_eq!(frame.len(), 32 + 3);
 
-        let header = AmsHeader::parse(&frame[6..]).unwrap();
+        let header = AmsHeader::parse(&frame[..32]).unwrap();
         assert_eq!(header.target_net_id, AmsNetId([1, 2, 3, 4, 5, 6]));
         assert_eq!(header.target_port, 851);
         assert_eq!(header.source_net_id, AmsNetId([10, 10, 10, 10, 1, 1]));
@@ -781,6 +851,7 @@ mod tests {
         assert_eq!(header.state_flags, 0x0004);
         assert_eq!(header.invoke_id, 42);
         assert_eq!(header.data_length, 3);
+        assert_eq!(&frame[32..], &[0xAA, 0xBB, 0xCC]);
     }
 
     #[tokio::test]
@@ -878,6 +949,7 @@ mod tests {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let sink: Arc<dyn InboundSink> = Arc::new(NullSink);
 
+        let our_netid = AmsNetId([10, 10, 10, 10, 1, 1]);
         handle_incoming_mqtt(
             "AdsOverMqtt/10.1.2.3.1.1/info",
             br#"<info><online name="x">true</online></info>"#.to_vec(),
@@ -885,6 +957,8 @@ mod tests {
             &routes,
             &pending,
             sink.clone(),
+            our_netid,
+            16150,
         )
         .await;
         assert_eq!(
@@ -899,6 +973,8 @@ mod tests {
             &routes,
             &pending,
             sink,
+            our_netid,
+            16150,
         )
         .await;
         assert_eq!(routes.get(AmsNetId([10, 1, 2, 3, 1, 1])), None);
@@ -930,18 +1006,15 @@ mod tests {
         header_bytes.push(0x11);
         header_bytes.push(0x22);
 
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0, 0]);
-        frame.extend_from_slice(&((header_bytes.len()) as u32).to_le_bytes());
-        frame.extend_from_slice(&header_bytes);
-
         handle_incoming_mqtt(
             "AdsOverMqtt/10.10.10.10.1.1/ams/res",
-            frame,
+            header_bytes,
             "AdsOverMqtt",
             &routes,
             &pending,
             sink,
+            AmsNetId([10, 10, 10, 10, 1, 1]),
+            16150,
         )
         .await;
 
@@ -982,21 +1055,62 @@ mod tests {
             invoke_id: 1,
         }
         .serialize();
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0, 0]);
-        frame.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        frame.extend_from_slice(&header);
 
         handle_incoming_mqtt(
             "AdsOverMqtt/10.10.10.10.1.1/ams",
-            frame,
+            header,
             "AdsOverMqtt",
             &routes,
             &pending,
             sink,
+            AmsNetId([10, 10, 10, 10, 1, 1]),
+            16150,
         )
         .await;
 
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_incoming_response_for_wrong_port_is_ignored() {
+        // A response addressed to a different source port (e.g. from the
+        // DiagnosticsPoller's parallel subscription) must not resolve our
+        // pending entry.
+        let routes = RouteTable::new();
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let sink: Arc<dyn InboundSink> = Arc::new(NullSink);
+
+        let (tx, mut rx) = oneshot::channel();
+        pending.lock().await.insert(99, tx);
+
+        let header_bytes = AmsHeader {
+            target_net_id: AmsNetId([10, 10, 10, 10, 1, 1]),
+            target_port: 30001, // DiagnosticsPoller port — NOT our dispatcher's port
+            source_net_id: AmsNetId([1, 2, 3, 4, 5, 6]),
+            source_port: 851,
+            command_id: crate::ams::ADS_CMD_READ,
+            state_flags: AMS_STATE_RESPONSE,
+            data_length: 0,
+            error_code: 0,
+            invoke_id: 99,
+        }
+        .serialize();
+
+        handle_incoming_mqtt(
+            "AdsOverMqtt/10.10.10.10.1.1/ams/res",
+            header_bytes,
+            "AdsOverMqtt",
+            &routes,
+            &pending,
+            sink,
+            AmsNetId([10, 10, 10, 10, 1, 1]),
+            16150, // our dispatcher's port
+        )
+        .await;
+
+        // The waiter should NOT have been resolved.
+        assert!(rx.try_recv().is_err());
+        // The pending entry should still be present.
+        assert!(pending.lock().await.contains_key(&99));
     }
 }

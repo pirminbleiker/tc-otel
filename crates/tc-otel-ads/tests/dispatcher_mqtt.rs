@@ -88,11 +88,12 @@ async fn spawn_fake_peer(
                 }
                 Ok(Event::Incoming(Incoming::Publish(publish))) => {
                     if publish.topic == request_topic {
-                        // Parse the AMS header and reply.
-                        if publish.payload.len() < 6 + 32 {
+                        // Parse the AMS header and reply. MQTT frames are
+                        // AMS header + payload, no TCP prefix.
+                        if publish.payload.len() < 32 {
                             continue;
                         }
-                        let hdr = match AmsHeader::parse(&publish.payload[6..]) {
+                        let hdr = match AmsHeader::parse(&publish.payload[..32]) {
                             Ok(h) => h,
                             Err(_) => continue,
                         };
@@ -112,15 +113,7 @@ async fn spawn_fake_peer(
                             error_code: 0,
                             invoke_id: hdr.invoke_id,
                         };
-                        let hdr_bytes = resp_header.serialize();
-
-                        let mut frame =
-                            Vec::with_capacity(6 + hdr_bytes.len() + resp_payload.len());
-                        frame.extend_from_slice(&[0, 0]);
-                        frame.extend_from_slice(
-                            &((hdr_bytes.len() + resp_payload.len()) as u32).to_le_bytes(),
-                        );
-                        frame.extend_from_slice(&hdr_bytes);
+                        let mut frame = resp_header.serialize();
                         frame.extend_from_slice(&resp_payload);
 
                         let res_topic = format!("{}/{}/ams/res", TOPIC_PREFIX, hdr.source_net_id);
