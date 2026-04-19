@@ -310,6 +310,18 @@
     <Compile Include="DUTs\ST_LogEntryHeaderV2.TcDUT">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="DUTs\ST_SpanBeginPrefix.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_SpanAttrFrame.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_SpanEventFrame.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DUTs\ST_SpanEndFrame.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="GVLs\Config.TcGVL">
       <SubType>Code</SubType>
       <LinkAlways>true</LinkAlways>

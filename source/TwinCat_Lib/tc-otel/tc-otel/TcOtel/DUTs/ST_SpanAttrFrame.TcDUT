@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="ST_SpanAttrFrame" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c02}">
+    <Declaration><![CDATA[(*
+Fixed 23-byte header of a SPAN_ATTR frame. Followed by key (nKeyLen bytes)
+and value (nValueLen bytes). Layout matches Rust parser_v2 ATTR case.
+*)
+{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_SpanAttrFrame :
+STRUCT
+    (* 12-byte common header *)
+    nEventType      : BYTE;     (* 6 = SPAN_ATTR *)
+    nSpanIdByte0    : BYTE;     (* span_id[0] — shares slot with local_id *)
+    nTaskIdx        : BYTE;
+    nFlags          : BYTE;
+    nDcTime         : LINT;
+    (* 7-byte span_id rest *)
+    abSpanIdRest    : ARRAY[0..6] OF BYTE;
+    (* 4-byte attr meta *)
+    nValueType      : BYTE;     (* 1=i64, 2=f64, 3=bool, 4=string *)
+    nKeyLen         : BYTE;     (* ≤31 *)
+    nValueLen       : BYTE;     (* wire bytes for value (1/8/N) *)
+    nReserved       : BYTE;
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -13,6 +13,7 @@ VAR
 	var1			: __SYSTEM.VAR_INFO;
 	b1 : BYTE;
 	b2 : BYTE;
+	Profiler : PROFILER;
 END_VAR
 
 ]]></Declaration>
@@ -24,12 +25,14 @@ END_VAR
 END_IF
 
 
+Profiler(START := TRUE);
 PRG_TestSimpleApi();
+Profiler(START := FALSE);
 PRG_TestTraceApi();
 PRG_TestTracePropagation();
 PRG_TestTracerInstance();
-
 PRG_TaskLog.Call();
+
 
 ]]></ST>
     </Implementation>
