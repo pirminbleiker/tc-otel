@@ -212,35 +212,52 @@ impl ClientBridge {
             .await
             .context("attach_mqtt")?;
 
-        // If a router-host override is present, register the peer as a
-        // direct TCP target. This wins over MQTT in the route table —
-        // useful for test stacks where MQTT /info isn't published but a
-        // TCP listener is reachable. Production configs should leave
-        // `ams_router_host` unset and rely on /info discovery.
-        if let Some(host) = tgt.router_host.as_deref() {
-            let addr_str = format!("{host}:48898");
-            match addr_str.to_socket_addrs() {
-                Ok(mut iter) => {
-                    if let Some(addr) = iter.next() {
-                        dispatcher.add_tcp_peer(tgt.ams_net_id, addr).await;
-                        info!(target = %tgt.key, %addr, "client-bridge: registered TCP peer");
-                    } else {
-                        warn!(target = %tgt.key, %host, "client-bridge: host resolved to no addresses");
-                    }
+        let dispatcher = Arc::new(dispatcher);
+        let routes = dispatcher.routes();
+        let target_net_id = tgt.ams_net_id;
+
+        // MQTT discovery grace period: give the broker a moment to deliver
+        // the retained `/info` for this target before we touch fallbacks.
+        // If the target announces itself via MQTT, we prefer that — it's
+        // bidirectional and doesn't require the PLC to have a TCP route
+        // configured for us.
+        let mqtt_grace = Duration::from_secs(2);
+        let _ = tokio::time::timeout(mqtt_grace, async {
+            loop {
+                if routes.get(target_net_id).is_some() {
+                    return;
                 }
-                Err(e) => warn!(target = %tgt.key, %host, error = %e,
-                    "client-bridge: host resolution failed"),
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+
+        // Still no route? Fall back to the static TCP peer (if configured).
+        // `add_tcp_peer` uses `learn_if_absent`, so a concurrently-arriving
+        // MQTT /info is still honored.
+        if routes.get(target_net_id).is_none() {
+            if let Some(host) = tgt.router_host.as_deref() {
+                let addr_str = format!("{host}:48898");
+                match addr_str.to_socket_addrs() {
+                    Ok(mut iter) => {
+                        if let Some(addr) = iter.next() {
+                            dispatcher.add_tcp_peer(tgt.ams_net_id, addr).await;
+                            info!(target = %tgt.key, %addr,
+                                "client-bridge: MQTT discovery silent, fell back to TCP peer");
+                        } else {
+                            warn!(target = %tgt.key, %host,
+                                "client-bridge: host resolved to no addresses");
+                        }
+                    }
+                    Err(e) => warn!(target = %tgt.key, %host, error = %e,
+                        "client-bridge: host resolution failed"),
+                }
             }
         }
 
-        let dispatcher = Arc::new(dispatcher);
-
-        // Wait briefly for the route table to learn about this target. If
-        // a TCP peer was registered above, the route is already there and
-        // we return immediately; otherwise we wait up to `ROUTE_WAIT_TIMEOUT`
-        // for an MQTT `/info` announcement for this NetID.
-        let routes = dispatcher.routes();
-        let target_net_id = tgt.ams_net_id;
+        // Final wait: up to `ROUTE_WAIT_TIMEOUT` for the (now possibly
+        // TCP-fallback) route to stabilise before we issue the symbol
+        // upload.
         let route_ready = tokio::time::timeout(ROUTE_WAIT_TIMEOUT, async {
             loop {
                 if routes.get(target_net_id).is_some() {
@@ -255,6 +272,8 @@ impl ClientBridge {
                 "client-bridge: no route learned within {ROUTE_WAIT_TIMEOUT:?} — skipping");
             return Ok(());
         }
+        info!(target = %tgt.key, transport = ?routes.get(target_net_id),
+            "client-bridge: route resolved");
 
         // Upload symbol table.
         let tree = browse::upload_via_dispatcher(
