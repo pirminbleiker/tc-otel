@@ -83,7 +83,7 @@ impl NotifAttrs {
 }
 
 /// Abstraction over the ADS subscription side. Real impl is
-/// [`AdsNotificationBackend`]; tests substitute a fake.
+/// [`DispatcherNotificationBackend`]; tests substitute a fake.
 pub trait NotificationBackend: Send + Sync + 'static {
     fn subscribe(&self, attrs: &NotifAttrs, meta: &SymbolMeta) -> Result<NotifHandle>;
     fn unsubscribe(&self, handle: NotifHandle) -> Result<()>;

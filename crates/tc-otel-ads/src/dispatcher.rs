@@ -49,7 +49,7 @@
 //!   reachable via TCP". That depends on wiring the existing
 //!   `TcpAmsTransport` listener into the same route table, which lives in the
 //!   next commit.
-//! - Wiring into [`crate::router::AdsRouter`] or [`tc_otel_service`]. The
+//! - Wiring into [`crate::router::AdsRouter`] or `tc_otel_service`. The
 //!   dispatcher stays a library primitive in this PR; the callers migrate in
 //!   a separate commit.
 
@@ -107,12 +107,13 @@ impl RouteTable {
     /// out-of-band) that should not override transports actively discovered
     /// via MQTT `/info`.
     pub fn learn_if_absent(&self, net_id: AmsNetId, kind: TransportKind) -> bool {
-        let mut guard = self.inner.write();
-        if guard.contains_key(&net_id) {
-            false
-        } else {
-            guard.insert(net_id, kind);
-            true
+        use std::collections::hash_map::Entry;
+        match self.inner.write().entry(net_id) {
+            Entry::Vacant(e) => {
+                e.insert(kind);
+                true
+            }
+            Entry::Occupied(_) => false,
         }
     }
 
@@ -396,7 +397,7 @@ impl AmsDispatcher {
         self.tcp.lock().await.addrs.insert(net_id, addr);
     }
 
-    /// Like [`add_tcp_peer`], but forces the route to `TransportKind::Tcp`
+    /// Like [`Self::add_tcp_peer`], but forces the route to `TransportKind::Tcp`
     /// even if an MQTT route is known. Useful for operators overriding the
     /// autodiscovery — e.g. when an /info announcement is known stale.
     pub async fn force_tcp_peer(&self, net_id: AmsNetId, addr: SocketAddr) {
@@ -624,7 +625,7 @@ async fn run_tcp_reader(
 /// Build an AMS frame: 32-byte AMS header + payload (no TCP prefix).
 ///
 /// This is the wire shape carried by MQTT. TCP transport prepends a 6-byte
-/// AMS/TCP prefix (2 reserved + 4-byte length) in [`AmsDispatcher::publish_tcp`].
+/// AMS/TCP prefix (2 reserved + 4-byte length) before writing to the socket.
 #[allow(clippy::too_many_arguments)]
 pub fn build_ams_frame(
     target_net_id: AmsNetId,
