@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.10">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <DUT Name="ST_PushDiagSample" Id="{2a3b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d}">
     <Declaration><![CDATA[(*
 :Description: Single per-cycle diagnostic sample inside a push batch.
@@ -16,9 +16,9 @@ aggregation window. ``flags`` carries per-cycle markers:
 Each sample keeps ``cycle_count`` and ``dc_time`` so tc-otel can correlate
 flagged cycles back to the log entry produced on the same cycle.
 *)
-TYPE ST_PushDiagSample :
+{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_PushDiagSample :
 STRUCT
-  {attribute 'pack_mode' := '1'}
   cycle_count   : UDINT;                    // +0x00, task cycle counter
   exec_time_us  : UDINT;                    // +0x04, cycle execution time (us)
   dc_time       : LINT;                     // +0x08, distributed-clock time (ns)

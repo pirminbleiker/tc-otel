@@ -37,7 +37,7 @@ simultaneously on one task.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
-FUNCTION_BLOCK FB_TcOtelTaskMetrics
+FUNCTION_BLOCK INTERNAL FB_TcOtelTaskMetrics
 VAR CONSTANT
     (* Queue depth. 8 covers up to 8 FB_Metrics flushing on the same cycle
        before any drop. Memory cost = 8 * SIZEOF(POINTER) ≈ 32-64 B. *)

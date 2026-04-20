@@ -25,12 +25,12 @@ VAR
     nStep         : USINT;
 
     (* Controller A: tracer + its two spans *)
-    tracerA       : FB_TcOtelTracer;
+    tracerA       : FB_Trace;
     spnAOuter     : FB_Span(tracerA);
     spnAInner     : FB_Span(tracerA);
 
     (* Controller B: tracer + its two spans *)
-    tracerB       : FB_TcOtelTracer;
+    tracerB       : FB_Trace;
     spnBOuter     : FB_Span(tracerB);
     spnBInner     : FB_Span(tracerB);
 END_VAR

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <DUT Name="E_MetricStat" Id="{c8d9e0f1-a2b3-4c5d-8e9f-0123456789ab}">
     <Declaration><![CDATA[(*

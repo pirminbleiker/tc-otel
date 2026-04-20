@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.13">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <Itf Name="I_LogEntry" Id="{105af14a-e79c-48ab-87f1-d1afe913e71d}">
-    <Declaration><![CDATA[INTERFACE I_LogEntry EXTENDS __SYSTEM.IQueryInterface
+    <Declaration><![CDATA[INTERFACE INTERNAL I_LogEntry EXTENDS __SYSTEM.IQueryInterface
 ]]></Declaration>
     <Method Name="AddAnyArg" Id="{6a145c1e-66a4-41d4-a0e6-11912d1dd981}">
       <Declaration><![CDATA[METHOD PUBLIC AddAnyArg : BOOL

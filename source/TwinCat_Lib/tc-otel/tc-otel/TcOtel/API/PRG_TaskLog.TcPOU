@@ -169,42 +169,6 @@ InitMetrics := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Property Name="TaskMetrics" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304050b}">
-      <Declaration><![CDATA[(*
-:Description: INTERNAL — Per-task FB_Metrics transport sender for the current task.
-
-Used by FB_Metrics to ship its assembled push frame. Do not call directly.
-*)
-PROPERTY INTERNAL TaskMetrics : REFERENCE TO FB_TcOtelTaskMetrics]]></Declaration>
-      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405060c}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[TaskMetrics REF= aTaskMetrics[GETCURTASKINDEXEX()];
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
-    <Property Name="TaskTracer" Id="{f6b8a9c0-d1e2-50a3-b4c5-d6e7f8a9b0c1}">
-      <Declaration><![CDATA[(*
-:Description: INTERNAL — Returns a reference to the current task's OpenTelemetry tracer.
-
-Used only by FB_TcOtelTracer to route wire emission calls. Do not call directly.
-
-Replaced by FB_TcOtelTracer instance API — use BindTracer + FB_Span.Begin/End instead.
-*)
-PROPERTY INTERNAL TaskTracer : REFERENCE TO FB_TcOtelTaskTracer]]></Declaration>
-      <Get Name="Get" Id="{a7b8c9d0-e1f2-51b4-c5d6-e7f8a9b0c1d2}">
-        <Declaration><![CDATA[VAR
-END_VAR
-]]></Declaration>
-        <Implementation>
-          <ST><![CDATA[TaskTracer REF= aTaskTracer[GETCURTASKINDEXEX()];
-]]></ST>
-        </Implementation>
-      </Get>
-    </Property>
     <Property Name="TaskContextBuilder" Id="{37ede606-5a7a-4581-9bfb-710648eb6050}">
       <Declaration><![CDATA[(*
 :Description: Returns the ``I_ContextBuilder`` for task specific context
@@ -244,6 +208,42 @@ END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[TaskLogger REF= aTaskLogger[GETCURTASKINDEXEX()];
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="TaskMetrics" Id="{d0e1f2a3-b4c5-6d7e-8f90-01020304050b}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Per-task FB_Metrics transport sender for the current task.
+
+Used by FB_Metrics to ship its assembled push frame. Do not call directly.
+*)
+PROPERTY INTERNAL TaskMetrics : REFERENCE TO FB_TcOtelTaskMetrics]]></Declaration>
+      <Get Name="Get" Id="{e1f2a3b4-c5d6-7e8f-9001-02030405060c}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TaskMetrics REF= aTaskMetrics[GETCURTASKINDEXEX()];
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="TaskTracer" Id="{f6b8a9c0-d1e2-50a3-b4c5-d6e7f8a9b0c1}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — Returns a reference to the current task's OpenTelemetry tracer.
+
+Used only by FB_TcOtelTracer to route wire emission calls. Do not call directly.
+
+Replaced by FB_TcOtelTracer instance API — use BindTracer + FB_Span.Begin/End instead.
+*)
+PROPERTY INTERNAL TaskTracer : REFERENCE TO FB_TcOtelTaskTracer]]></Declaration>
+      <Get Name="Get" Id="{a7b8c9d0-e1f2-51b4-c5d6-e7f8a9b0c1d2}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[TaskTracer REF= aTaskTracer[GETCURTASKINDEXEX()];
 ]]></ST>
         </Implementation>
       </Get>

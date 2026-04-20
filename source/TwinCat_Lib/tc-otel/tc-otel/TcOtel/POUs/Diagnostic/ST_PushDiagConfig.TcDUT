@@ -13,9 +13,9 @@ recompiling the PLC project.
 every N-th cycle (useful on sub-100 us tasks where 1024 samples would fill
 the ring too quickly).
 *)
-TYPE ST_PushDiagConfig :
+{attribute 'pack_mode' := '1'}
+TYPE INTERNAL ST_PushDiagConfig :
 STRUCT
-  {attribute 'pack_mode' := '1'}
   window_ms : UDINT := 100;           // +0x00, aggregation window in ms (flush interval)
   enabled   : BOOL := TRUE;            // +0x04, TRUE = collect and push samples
   divider   : USINT := 1;           // +0x05, 0/1 = every cycle, N = every N-th

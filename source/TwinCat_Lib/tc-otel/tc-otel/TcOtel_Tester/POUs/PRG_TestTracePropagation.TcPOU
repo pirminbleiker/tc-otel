@@ -32,7 +32,7 @@ All scenarios use FB_Span methods only — no low-level tracer access.
 *)
 PROGRAM PRG_TestTracePropagation
 VAR
-    tracer         : FB_TcOtelTracer;
+    tracer         : FB_Trace;
 
     (* Scenario 1: explicit handoff *)
     spnProducer    : FB_Span(tracer);

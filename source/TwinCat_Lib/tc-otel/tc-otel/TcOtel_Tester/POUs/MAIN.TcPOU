@@ -24,7 +24,6 @@ END_VAR
 	F_Log(E_LogLevel.eInfo, 'Started').CreateLog();
 END_IF
 
-
 Profiler(START := TRUE);
 PRG_TestSimpleApi();
 Profiler(START := FALSE);

@@ -3,7 +3,7 @@
   <POU Name="PRG_TestTraceApi" Id="{9e8f4a2d-8e3f-4c5b-a1d2-b3c4d5e6f7a8}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM PRG_TestTraceApi
 VAR
-    tracer        : FB_TcOtelTracer;
+    tracer        : FB_Trace;
     spnTick       : FB_Span(tracer);
     spnRecipe     : FB_Span(tracer);
     spnRecipeStep : FB_Span(tracer);

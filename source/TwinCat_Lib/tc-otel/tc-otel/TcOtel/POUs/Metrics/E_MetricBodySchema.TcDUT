@@ -13,7 +13,7 @@ Mapped from the locked IEC type at the first Observe() call. Numerics
 to LREAL (sample_size = 8). BOOL / discrete / strings keep their raw
 sample size.
 *)
-TYPE E_MetricBodySchema :
+TYPE INTERNAL E_MetricBodySchema :
 (
     eUnknown            := 0,
     eBool               := 1,    // body: sample_count * 1 byte

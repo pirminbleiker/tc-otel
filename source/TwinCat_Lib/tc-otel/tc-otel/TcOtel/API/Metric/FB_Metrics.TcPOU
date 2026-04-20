@@ -155,7 +155,7 @@ VAR
        _pSpanOverride is set by WithSpan and consumed by the very next
        flush — lets users force a specific span when "innermost" isn't
        what they want. *)
-    _pTracer            : REFERENCE TO FB_TcOtelTracer;
+    _pTracer            : REFERENCE TO FB_Trace;
     _pSpanOverride      : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
@@ -947,7 +947,7 @@ Pass ``0`` to unbind. Idempotent — safe to call repeatedly.
 *)
 METHOD PUBLIC BindTracer : BOOL
 VAR_INPUT
-    pTracer : REFERENCE TO FB_TcOtelTracer;
+    pTracer : REFERENCE TO FB_Trace;
 END_VAR
 ]]></Declaration>
       <Implementation>

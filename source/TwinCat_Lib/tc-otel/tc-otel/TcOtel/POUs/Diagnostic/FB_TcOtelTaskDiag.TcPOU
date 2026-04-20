@@ -16,7 +16,7 @@ tc-otel writes via ADS symbol access.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
-FUNCTION_BLOCK FB_TcOtelTaskDiag
+FUNCTION_BLOCK INTERNAL FB_TcOtelTaskDiag
 VAR_INPUT
 END_VAR
 VAR

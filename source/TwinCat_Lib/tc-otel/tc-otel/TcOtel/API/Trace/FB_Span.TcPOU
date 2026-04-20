@@ -29,7 +29,7 @@ VAR
        own open-span stack for parent resolution and
        CurrentTraceParent, isolating it from parallel FB_Spans on
        the same task. Set once via BindTracer before first Begin. *)
-    _pTracer    : REFERENCE TO FB_TcOtelTracer;
+    _pTracer    : REFERENCE TO FB_Trace;
 
     (* Reference to the span that was the tracer's innermost-open span
        at the moment THIS span's Begin() ran. Forms the outer-chain
@@ -272,7 +272,7 @@ Typical usage — one tracer per controller:
 *)
 METHOD PUBLIC BindTracer : BOOL
 VAR_INPUT
-    pTracer : REFERENCE TO FB_TcOtelTracer;
+    pTracer : REFERENCE TO FB_Trace;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -350,7 +350,7 @@ METHOD FB_Init: BOOL
 VAR_INPUT
     bInitRetains: BOOL; // TRUE: the retain variables are initialized (reset warm / reset cold)
     bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)   
-    pTracer : REFERENCE TO FB_TcOtelTracer := 0;
+    pTracer : REFERENCE TO FB_Trace := 0;
 END_VAR]]></Declaration>
       <Implementation>
         <ST><![CDATA[
