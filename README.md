@@ -240,12 +240,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup.
 
 ## Contributing
 
-TcOtel is open source under dual license: MIT or Apache-2.0. Contributions welcome!
+TcOtel is open source under the Apache License 2.0. Contributions welcome!
 
 For development setup, testing, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Licensed under [MIT or Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).
 
 Copyright (c) 2026 [Pirmin Bleiker](https://github.com/pirminbleiker)
