@@ -441,13 +441,35 @@ impl OtelExporter {
         })
     }
 
-    /// Build a single OTLP metric data point (for Gauge and Sum)
+    /// Build a single OTLP metric data point (for Gauge and Sum).
+    ///
+    /// When the record carries a W3C trace_id / span_id we attach an OTel
+    /// Exemplar on the data point rather than the plain `trace_id` /
+    /// `span_id` attribute set. Exemplars are the spec-native way to
+    /// correlate a metric datum with the span that produced it, and
+    /// Grafana Tempo / Prometheus render "View trace" links directly off
+    /// this field. OTLP JSON field names are proto3-lowerCamelCase.
     fn build_metric_data_point(&self, record: &MetricRecord) -> serde_json::Value {
-        json!({
-            "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+        let time = format!(
+            "{}",
+            record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64
+        );
+        let mut dp = json!({
+            "timeUnixNano": time,
             "asDouble": record.value,
-            "attributes": Self::to_otlp_attributes(&record.attributes)
-        })
+            "attributes": Self::to_otlp_attributes(&record.attributes),
+        });
+
+        if !record.trace_id.is_empty() || !record.span_id.is_empty() {
+            dp["exemplars"] = json!([{
+                "timeUnixNano": format!("{}", record.timestamp.timestamp_nanos_opt().unwrap_or(0) as u64),
+                "asDouble": record.value,
+                "traceId": record.trace_id,
+                "spanId": record.span_id,
+            }]);
+        }
+
+        dp
     }
 
     /// Export a batch of trace records with retry logic
@@ -850,6 +872,8 @@ mod tests {
             histogram_counts: Vec::new(),
             histogram_count: 0,
             histogram_sum: 0.0,
+            trace_id: String::new(),
+            span_id: String::new(),
         };
 
         let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
@@ -866,6 +890,52 @@ mod tests {
         assert_eq!(metric["unit"], "Cel");
         assert!(metric.get("gauge").is_some());
         assert_eq!(metric["gauge"]["dataPoints"][0]["asDouble"], 72.5);
+        // No trace context → no exemplars on the data point
+        assert!(
+            metric["gauge"]["dataPoints"][0].get("exemplars").is_none(),
+            "exemplars must be absent when trace_id / span_id are empty"
+        );
+    }
+
+    #[test]
+    fn test_build_gauge_metrics_payload_with_exemplar() {
+        let exporter = OtelExporter::new("http://localhost:4317".to_string(), 100, 3);
+
+        let record = MetricRecord {
+            name: "demo.sine".to_string(),
+            description: String::new(),
+            unit: "unit".to_string(),
+            kind: MetricKind::Gauge,
+            timestamp: chrono::Utc::now(),
+            value: 0.42,
+            is_monotonic: false,
+            resource_attributes: std::collections::HashMap::new(),
+            attributes: std::collections::HashMap::new(),
+            histogram_bounds: Vec::new(),
+            histogram_counts: Vec::new(),
+            histogram_count: 0,
+            histogram_sum: 0.0,
+            trace_id: "abcdef0123456789abcdef0123456789".to_string(),
+            span_id: "fedcba9876543210".to_string(),
+        };
+
+        let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+
+        let dp = &payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+            ["gauge"]["dataPoints"][0];
+        let exemplars = dp["exemplars"]
+            .as_array()
+            .expect("exemplars array present when trace context is set");
+        assert_eq!(exemplars.len(), 1);
+        assert_eq!(exemplars[0]["asDouble"], 0.42);
+        assert_eq!(
+            exemplars[0]["traceId"],
+            "abcdef0123456789abcdef0123456789"
+        );
+        assert_eq!(exemplars[0]["spanId"], "fedcba9876543210");
+        // Exemplar timestamp should match the data point
+        assert_eq!(exemplars[0]["timeUnixNano"], dp["timeUnixNano"]);
     }
 
     #[test]
@@ -886,6 +956,8 @@ mod tests {
             histogram_counts: Vec::new(),
             histogram_count: 0,
             histogram_sum: 0.0,
+            trace_id: String::new(),
+            span_id: String::new(),
         };
 
         let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
@@ -916,6 +988,8 @@ mod tests {
             histogram_counts: vec![10, 25, 5, 1],
             histogram_count: 41,
             histogram_sum: 230.5,
+            trace_id: String::new(),
+            span_id: String::new(),
         };
 
         let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();

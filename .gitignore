@@ -39,6 +39,14 @@ NUL
 .runtime/
 captures/
 
+# Ad-hoc scratch exports at repo root (web-admin config dumps, symbol
+# probes, one-off dashboard exports). Authoritative configs live under
+# tc-otel-config/ and examples/config/; authoritative dashboards under
+# observability/grafana/dashboards/.
+/cfg*.json
+/syms*.json
+/dashboard*.json
+
 # Playwright MCP artefacts + ad-hoc dashboard screenshots (session-local)
 .playwright-mcp/
 grafana-*.png

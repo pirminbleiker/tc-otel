@@ -90,6 +90,15 @@ pub struct MetricEntry {
     // Sum-specific fields
     /// Whether the sum is monotonic (counter) or non-monotonic (up-down counter)
     pub is_monotonic: bool,
+
+    /// Raw W3C trace_id (all zeros = no trace context). Promoted to an OTel
+    /// Exemplar on the emitted NumberDataPoint so backends (Grafana/Tempo)
+    /// render "View trace" links directly from metric points.
+    #[serde(default)]
+    pub trace_id: [u8; 16],
+    /// Raw W3C span_id (all zeros = no span context).
+    #[serde(default)]
+    pub span_id: [u8; 8],
 }
 
 impl MetricEntry {
@@ -117,6 +126,33 @@ impl MetricEntry {
             histogram_count: 0,
             histogram_sum: 0.0,
             is_monotonic: false,
+            trace_id: [0u8; 16],
+            span_id: [0u8; 8],
+        }
+    }
+
+    /// True when at least one of trace_id / span_id carries a non-zero W3C
+    /// context — i.e. there was an open span at flush time and the bridge
+    /// should emit this entry as an OTel Exemplar.
+    pub fn has_trace_context(&self) -> bool {
+        self.trace_id != [0u8; 16] || self.span_id != [0u8; 8]
+    }
+
+    /// Lowercase-hex trace_id (32 chars). Empty string when no context.
+    pub fn trace_id_hex(&self) -> String {
+        if self.trace_id == [0u8; 16] {
+            String::new()
+        } else {
+            self.trace_id.iter().map(|b| format!("{:02x}", b)).collect()
+        }
+    }
+
+    /// Lowercase-hex span_id (16 chars). Empty string when no context.
+    pub fn span_id_hex(&self) -> String {
+        if self.span_id == [0u8; 8] {
+            String::new()
+        } else {
+            self.span_id.iter().map(|b| format!("{:02x}", b)).collect()
         }
     }
 
@@ -166,11 +202,25 @@ pub struct MetricRecord {
     pub histogram_counts: Vec<u64>,
     pub histogram_count: u64,
     pub histogram_sum: f64,
+
+    /// Hex-encoded W3C trace_id (32 chars) for an OTel Exemplar on this
+    /// data point. Empty string when no trace context was captured.
+    #[serde(default)]
+    pub trace_id: String,
+    /// Hex-encoded W3C span_id (16 chars). Empty string when no span context.
+    #[serde(default)]
+    pub span_id: String,
 }
 
 impl MetricRecord {
     /// Convert a MetricEntry to OTEL MetricRecord
     pub fn from_metric_entry(entry: MetricEntry) -> Self {
+        // Compute hex up front — the remainder of this function consumes
+        // String fields out of `entry` via partial move, after which borrow
+        // methods like `.trace_id_hex()` are no longer callable.
+        let trace_id = entry.trace_id_hex();
+        let span_id = entry.span_id_hex();
+
         let mut resource_attributes = HashMap::with_capacity(5);
         resource_attributes.insert(
             "service.name".to_string(),
@@ -237,6 +287,8 @@ impl MetricRecord {
             histogram_counts: entry.histogram_counts,
             histogram_count: entry.histogram_count,
             histogram_sum: entry.histogram_sum,
+            trace_id,
+            span_id,
         }
     }
 }

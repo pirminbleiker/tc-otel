@@ -44,12 +44,12 @@ attributes.
 | `Init(sName, sUnit, nStringSize)` | Set name + unit; compute stable `metric_id = FNV-1a(name)`. `nStringSize` only meaningful for `STRING`/`WSTRING` values (default 64 bytes). |
 | `Observe(stArg : ANY)` | Capture one observation. First call locks the type — subsequent calls of a different `TypeClass` are dropped. |
 | `Call()` | Cyclic push-window check. Only needed if `Observe` is called sporadically. |
-| `Flush()` | Force-flush the buffered samples now. |
+| `Flush()` | Force-flush the buffered samples now. No-op when empty; drops the window when sender is back-pressured. |
 | `SetSampleIntervalMs(n)` | Min interval between captured samples. `0` = every change (default). |
 | `SetPushIntervalMs(n)` | Push window in ms. Default `1000`. |
 | `SetChangeDetect(b)` | Toggle byte-wise change suppression. Default `TRUE`. |
-| `BindTracer(t)` | Attach an `FB_TcOtelTracer` — its innermost open span is snapshotted into every flushed frame. |
-| `WithSpan(span)` | One-shot trace-context override for the next flush. |
+| `BindTracer(t)` | Attach a tracer; flushes snapshot its innermost-open span. Pass `0` to unbind. |
+| `WithSpan(span)` | One-shot trace-context override for the very next flush — captures the span immediately, survives `End()`. |
 | `SetAggregation(nMask)` | Enable Welford online aggregation (numeric metrics only). Bitmask of `E_MetricStat` values, or `0` for raw single-value sampling. See "Aggregation" below. |
 
 ### Properties
@@ -192,11 +192,41 @@ typical "100 ms / 5 s" gauge frame is ~450 B (50 × LREAL = 400 B body +
 
 ## Trace-context correlation
 
-When a tracer is bound and a span is open at flush time, the frame includes
-the W3C trace_id / span_id of the innermost open span. tc-otel attaches
-these as `trace_id` / `span_id` attributes on every metric data point in
-the batch — backends that filter by attributes can jump from a metric
-anomaly to the trace.
+When a tracer is bound and a span is open **at flush time**, the frame
+carries the W3C trace_id / span_id of that span. tc-otel promotes these
+to a native OTel Exemplar on every data point in the batch, so Grafana
+Tempo renders "View trace" links directly from a metric anomaly.
+
+### How FB_Metrics reads trace context
+
+The correlation is **read-at-flush-time**, not remembered per sample.
+The table shows what ends up on the emitted frame:
+
+| Situation when `_DoFlush` runs                            | Trace on frame |
+| --------------------------------------------------------- | -------------- |
+| `WithSpan(span)` was called since the last flush          | that span (one-shot, cleared after) |
+| Tracer bound, a span is currently `Begin`'d (not `End`'d) | innermost open span on the tracer |
+| Tracer bound, no span open                                | none |
+| `BindTracer(0)` / never bound                             | none |
+
+A span that opens and closes *between* two flushes leaves **no** trace
+on either frame. If you want a closed span's ID pinned on the next
+emission, use `WithSpan(span)` just before the final `Observe` in the
+window — it snapshots the span even after `End()` by the time flush
+fires.
+
+### Lifetime
+
+`FB_TcOtelTracer` and `FB_Span` are FB instances, so their storage lives
+with their declaring scope. You don't `Delete()` them. Their `FB_exit`
+is a safety-net that force-ends any still-open spans with `eError`
+during online change / program stop.
+
+### Three ways to attach a trace to a metric window
+
+**1. Bind a tracer, let innermost-at-flush-time decide.** Use when the
+controller has a well-defined span that lives at least through one full
+push window.
 
 ```pascal
 VAR
@@ -212,14 +242,44 @@ IF FirstCycle THEN
 END_IF
 
 _spn.Begin('cycle');
-_temp.Observe(rTemperature);   // these samples will carry _spn's trace_id when flushed
-_spn.End();
-
+_temp.Observe(rTemperature);
+// _spn still open when the 5s push window ends → frame carries its ID
 PRG_TaskLog.Call();
 ```
 
-For a one-shot override use `WithSpan(specificSpan)` — consumed by the
-very next flush, then cleared.
+**2. `WithSpan(span)` — one-shot override, survives `End()`.** Use when
+you want a specific span (maybe a short-lived one) tagged on the next
+frame regardless of whether it's still open at flush time.
+
+```pascal
+_spn.Begin('quick_op');
+_temp.Observe(rValue);
+_temp.WithSpan(_spn);   // next _DoFlush will pin _spn, even after End()
+_spn.End();
+// Some time later, the push window expires → frame ships with _spn's ID
+```
+
+**3. `Flush()` — force an immediate send.** Use when you absolutely need
+the current window shipped *now*, e.g. right before an `End()` of a
+one-shot operation. Runs the same A/B swap as a scheduled push.
+
+```pascal
+_spn.Begin('op');
+_temp.Observe(rValue);
+_temp.Flush();          // ships now while _spn is still open
+_spn.End();
+```
+
+Caveat: `Flush()` is a no-op if the buffer is empty, and drops the
+window (`_nDropWindow++`) if the sender's A/B is still busy shipping
+the previous frame. For reliable correlation across back-pressure,
+prefer (2).
+
+### Unbinding
+
+To stop attaching trace context to future frames, call
+`fb.BindTracer(0)`. The internal reference becomes invalid and every
+subsequent `_DoFlush` skips the trace-context path.
 
 ## Resource cost per instance
 

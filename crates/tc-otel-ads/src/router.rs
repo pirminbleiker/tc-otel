@@ -370,6 +370,11 @@ impl AdsRouter {
                         histogram_count: me.histogram_count,
                         histogram_sum: me.histogram_sum,
                         is_monotonic: me.is_monotonic,
+                        // AdsMetricEntry (legacy polled/notify metrics path) has
+                        // no trace context — FB_Metrics aggregate pushes carry
+                        // that via diagnostics_bridge, not this router.
+                        trace_id: [0u8; 16],
+                        span_id: [0u8; 8],
                     };
                     let _ = m_tx.try_send(met);
                 }

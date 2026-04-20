@@ -13,11 +13,12 @@ TcOtel provides a complete observability pipeline for TwinCAT PLCs: Push logs, t
 
 - **Structured logging** — `F_Log(E_LogLevel.eInfo, 'Motor {0} started').WithAnyArg(sMotorName).CreateLog()` with typed placeholders
 - **Distributed traces** — W3C `traceparent` propagation across tasks and multiple PLCs; span lifecycle (Begin/Attribute/Event/End) emitted as OTLP to Grafana Tempo or Jaeger
-- **Push-based diagnostics** — Per-task cycle time, RT-violation detection, and custom metrics via active ADS writes; no polling needed
+- **Oversampled application metrics** — `FB_Metrics` per-instance push of any IEC scalar (BOOL, all int/REAL widths, STRING, ENUM) at task-cycle rate, with optional Welford on-line aggregation (min/max/mean/sum/count/stddev) so peaks between sample ticks aren't lost
+- **Push-based diagnostics** — Per-task cycle time, exec time, and RT-violation detection via active ADS writes; no polling needed
 - **UI-driven custom metrics** — Select PLC symbols in the web UI and register them as OTLP metrics at runtime (poll or ADS notification), no PLC rebuild required; see [`docs/custom-metrics-client.md`](docs/custom-metrics-client.md)
-- **Log-to-trace correlation** — Logs automatically linked to trace context for fast root-cause analysis in Grafana
+- **Log-to-trace correlation** — Logs and metrics automatically carry trace context so you can jump from anomaly to span in one click
 - **Multi-transport** — TCP (direct ADS route) or MQTT (publish-subscribe for fan-out and NAT traversal)
-- **High performance** — Zero-allocation hot path, handles thousands of log/span/metric entries per second
+- **High performance** — Zero-allocation hot path, A/B double-buffered metric pipeline, handles thousands of log/span/metric entries per second
 - **OpenTelemetry native** — OTLP HTTP/gRPC export to any compatible backend
 - **Cross-platform** — Linux (amd64/arm64), Windows, Docker; single static binary (~5 MB)
 
@@ -26,20 +27,21 @@ TcOtel provides a complete observability pipeline for TwinCAT PLCs: Push logs, t
 **System overview:**
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────┐
 │ TwinCAT PLC                                              │
-│  • F_Log(level, msg)          → Logs (ADS WRITE)        │
-│  • FB_Span.Begin/End          → Traces (ADS WRITE)      │
-│  • PRG_TaskLog.Call()         → Metrics (ADS WRITE)     │
-└────────────────────┬──────────────────────────────────────┘
+│  • F_Log(level, msg)          → Logs (ADS WRITE)         │
+│  • FB_Span.Begin/End          → Traces (ADS WRITE)       │
+│  • FB_Metrics.Observe(value)  → Metrics (ADS WRITE)      │
+│  • PRG_TaskLog.Call()         → drives all three         │
+└────────────────────┬─────────────────────────────────────┘
                      │ ADS (via TCP or MQTT)
                      ▼
-┌─────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────┐
 │ tc-otel Service (Rust)                                   │
 │  • ADS Router (decode, dispatch)                         │
 │  • Log/Trace/Metric processors                           │
 │  • OTLP Exporter                                         │
-└────────────────────┬──────────────────────────────────────┘
+└────────────────────┬─────────────────────────────────────┘
                      │ OTLP (HTTP/gRPC)
                      ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -48,7 +50,7 @@ TcOtel provides a complete observability pipeline for TwinCAT PLCs: Push logs, t
 │  • Tempo (traces)                                        │
 │  • Loki / Victoria-Logs (logs)                           │
 │  • Prometheus / Victoria-Metrics (metrics)               │
-│  • Or: Datadog, Elastic, Honeycomb, etc.                │
+│  • Or: Datadog, Elastic, Honeycomb, etc.                 │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -103,23 +105,46 @@ chmod +x tc-otel
 1. Go to **PLC > Library Repository > Install...**
 2. Select `library/TcOtel.library` from this repo
 3. In your PLC project, add **TcOtel** reference
-4. Start logging:
+4. In every task that uses TcOtel, drive the per-task pipeline once per cycle:
 
 ```iecst
-// Simple log
-F_Log(E_LogLevel.eInfo, 'Machine started').CreateLog();
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    PRG_TaskLog.Init('127.0.0.1.1.1');   // first cycle: tc-otel AMS net id
+END_IF
+PRG_TaskLog.Call();                   // every cycle: pumps logs / spans / metrics
+```
 
-// With arguments
+5. Emit telemetry — pick the pillar(s) you need:
+
+```iecst
+// --- Logs: structured + typed args ---------------------------------
 F_Log(E_LogLevel.eWarn, 'Temp {0}°C exceeds limit {1}°C')
     .WithAnyArg(fTemperature)
     .WithAnyArg(fTempLimit)
     .CreateLog();
 
-// Distributed trace (spans)
-VAR spn : FB_Span; END_VAR
+// --- Traces: bind a tracer once, then Begin/End ---------------------
+VAR
+    tracer : FB_Trace;
+    spn    : FB_Span;
+END_VAR
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    spn.BindTracer(tracer);          // first cycle
+END_IF
 spn.Begin('motion_step');
 spn.AddInt('axis', 1);
 spn.End();
+
+// --- Metrics: per-instance FB, oversampled, optional aggregation ----
+VAR fbTemp : FB_Metrics; END_VAR
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    fbTemp.Init('motor.temperature', 'celsius');
+    fbTemp.SetSampleIntervalMs(50);
+    fbTemp.SetPushIntervalMs(5000);
+    fbTemp.SetAggregation(                              // optional
+        E_MetricStat.eMin OR E_MetricStat.eMax OR E_MetricStat.eMean);
+END_IF
+fbTemp.Observe(rTemperature);    // every cycle is fine
 ```
 
 ### 3. Configure ADS Route
@@ -138,12 +163,12 @@ See [GETTING_STARTED.md](GETTING_STARTED.md) for detailed steps.
 |----------|---------|
 | [Getting Started](GETTING_STARTED.md) | Install, configure, and run tc-otel + PLC library |
 | [Architecture](docs/architecture.md) | Layered design, protocol/transport separation, extension points |
-| [Traces Setup](docs/traces-setup.md) | Push-based distributed tracing with span lifecycle (Phase 6 Stage 1) |
-| [Traces Design](docs/traces-design.md) | Wire format, parent linkage, W3C propagation (Phase 5+) |
-| [Traces Propagation](docs/traces-propagation.md) | Cross-PLC / cross-task `traceparent` handling |
-| [Instance Tracer Design](docs/traces-instance-tracer-design.md) | `FB_TcOtelTracer` per-instance span tracking |
+| [Traces Setup](docs/traces-setup.md) | Push-based distributed tracing — `FB_Span` lifecycle, W3C `traceparent` propagation, MQTT setup |
+| [Traces Internals](docs/traces-internals.md) | Wire format, parent linkage, instance-tracer LIFO chain |
+| [FB_Metrics — Oversampled App Metrics](source/TwinCat_Lib/tc-otel/tc-otel/TcOtel/POUs/Metrics/README.md) | Per-instance metric FB: sample-interval, push-interval, Welford aggregation, trace correlation |
 | [Push Diagnostics Setup](docs/push-diagnostics-setup.md) | Per-task cycle time, RT-violation metrics |
-| [Push Metrics Wire Format](docs/push-metrics-wire-format.md) | Diagnostic batch serialization |
+| [Push Diagnostics Wire Format](docs/push-diagnostics-wire-format.md) | Per-task diagnostic batch serialization |
+| [Push Metrics Wire Format](docs/push-metrics-wire-format.md) | `FB_Metrics` aggregate batch serialization |
 | [Contributing](CONTRIBUTING.md) | Development setup, building, testing |
 | [Changelog](CHANGELOG.md) | Release history and milestones |
 | [Security Policy](SECURITY.md) | Reporting vulnerabilities |
@@ -199,18 +224,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup.
 
 ## Status
 
-### Complete (Phase 1–6 Stage 1)
+### Complete
 - Structured logging (v2 format, context properties)
-- Distributed traces (w/ W3C `traceparent` propagation, cross-task, cross-PLC)
-- Instance tracer (`FB_TcOtelTracer` for task-aware span tracking)
-- Push-based diagnostics (per-task cycle time, RT violations)
-- Log-to-trace correlation (Loki → Tempo via trace ID)
+- Distributed traces with W3C `traceparent` propagation (cross-task, cross-PLC)
+- Per-instance tracer (`FB_Trace`) for isolated span trees per controller
+- Push-based diagnostics (per-task cycle time, exec time, RT violations)
+- **Application metrics (`FB_Metrics`)** — oversampled per-instance push, all IEC scalars + STRING/WSTRING, Welford on-line aggregation (min/max/mean/sum/count/stddev), A/B double-buffered sender (no drops on busy)
+- Log- and metric-to-trace correlation (trace_id/span_id stamped at flush)
 - TCP and MQTT transport
 - OTLP HTTP/gRPC export
 
-### In Progress / Planned
-- Span sampling (Phase 7)
-- Custom metric API enhancements
+### Planned
+- Promote trace_id/span_id to native OTLP exemplar fields (one-click jump from metric point to span in Grafana)
 - Helm charts and deployment templates
 
 ## Contributing

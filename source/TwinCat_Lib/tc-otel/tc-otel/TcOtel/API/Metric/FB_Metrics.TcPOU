@@ -923,11 +923,20 @@ END_FOR
       <Declaration><![CDATA[(*
 :Description: Bind this metric to an FB_TcOtelTracer for trace exemplar correlation.
 
-After binding, every flushed frame snapshots the tracer's innermost open
-span (trace_id + span_id) into the wire header so tc-otel can attach it
-as an OTel exemplar attribute on the resulting metric data points. When
-no span is open at flush time the trace bytes are simply omitted (no flag
-set, frame is 24 bytes shorter).
+Read-at-flush-time semantic: every ``_DoFlush`` snapshots the tracer's
+**currently** innermost-open span (trace_id + span_id) into the wire
+header. The span's ID gets promoted to an OTel Exemplar on every data
+point in that batch so Grafana / Tempo render "View trace" links.
+
+What ends up on the frame:
+
+* a span is open on the bound tracer at flush time → that span's trace_id
+* no span open (all ``End``'d, or never ``Begin``'d) → no trace bytes, frame is 24 B shorter
+* ``BindTracer(0)`` → no trace bytes
+
+A span that opens **and** closes between two flushes leaves no trace on
+either frame — if that matters, use ``WithSpan`` or call ``Flush``
+before ``End``.
 
 Pass ``0`` to unbind. Idempotent — safe to call repeatedly.
 
@@ -1419,13 +1428,27 @@ SetSampleIntervalMs := TRUE;
       <Declaration><![CDATA[(*
 :Description: Override the trace-context snapshot for the very next flush.
 
-One-shot — consumed by ``_DoFlush`` after the next push window expires
-(or ``Flush()`` is called manually). Subsequent flushes fall back to the
-``BindTracer``-bound innermost span, or no trace at all if neither is set.
+One-shot — consumed by ``_DoFlush`` and cleared. Subsequent flushes fall
+back to the ``BindTracer``-bound innermost span, or no trace at all if
+neither is set.
 
-Use when "innermost open span on this tracer" isn't the right thing —
-e.g. a metric you want bound to a specific long-running span rather than
-whichever short-lived span happens to be active at flush time.
+Unlike ``BindTracer``, ``WithSpan`` captures the span **immediately**,
+so it still pins the correct trace_id even if the span is ``End``'d
+before flush actually runs. This is the correct tool when:
+
+* a short-lived span closes inside the push window and you want the
+  window's metrics tagged with its ID, or
+* you want a specific span tagged instead of whichever happens to be
+  innermost at flush time.
+
+Typical pattern for "this metric window belongs to span X":
+
+.. code-block:: pascal
+
+    _spn.Begin('quick_op');
+    _temp.Observe(rValue);
+    _temp.WithSpan(_spn);    // pin _spn on the next flush
+    _spn.End();              // span closes, but frame still carries its ID
 *)
 METHOD PUBLIC WithSpan : BOOL
 VAR_INPUT

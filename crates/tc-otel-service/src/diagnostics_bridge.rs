@@ -212,9 +212,11 @@ pub fn diag_event_to_metrics(
 /// interpolates between `dc_time_start` and `dc_time_end`. Single-sample
 /// batches use `dc_time_start` directly.
 ///
-/// trace_id / span_id are attached as hex-string attributes (`trace_id`,
-/// `span_id`) on every sample. Phase 5 will promote these to proper OTel
-/// exemplars on `MetricEntry`.
+/// trace_id / span_id are stored on each ``MetricEntry`` as raw bytes and
+/// promoted to a proper OTel Exemplar on the OTLP NumberDataPoint later in
+/// the export path. Backends like Grafana Tempo / Prometheus follow the
+/// Exemplar field directly to render "View trace" links; plain attributes
+/// would require a TraceQL query hop.
 #[allow(clippy::too_many_arguments)]
 fn metric_aggregate_to_entries(
     net_id: &str,
@@ -238,8 +240,6 @@ fn metric_aggregate_to_entries(
 
     let span_ns = (dc_time_end - dc_time_start).max(0);
     let denom = (samples.len() as i64 - 1).max(1);
-    let trace_id_hex = trace_id.map(|tid| hex_lower(&tid));
-    let span_id_hex = span_id.map(|sid| hex_lower(&sid));
     let overflow_flag = flags & METRIC_FLAG_RING_OVERFLOWED != 0;
 
     for (i, sample) in samples.iter().enumerate() {
@@ -270,7 +270,7 @@ fn metric_aggregate_to_entries(
                 out.push(build_aggregate_entry(
                     metric_name, v, ts_ns, unit, net_id, task_index, metric_id,
                     body_schema, sample_size, overflow_flag,
-                    trace_id_hex.as_deref(), span_id_hex.as_deref(),
+                    trace_id, span_id,
                 ));
             }
             continue;
@@ -317,15 +317,11 @@ fn metric_aggregate_to_entries(
                 .attributes
                 .insert("ring_overflowed".into(), serde_json::Value::Bool(true));
         }
-        if let Some(ref t) = trace_id_hex {
-            entry
-                .attributes
-                .insert("trace_id".into(), serde_json::Value::String(t.clone()));
+        if let Some(tid) = trace_id {
+            entry.trace_id = tid;
         }
-        if let Some(ref s) = span_id_hex {
-            entry
-                .attributes
-                .insert("span_id".into(), serde_json::Value::String(s.clone()));
+        if let Some(sid) = span_id {
+            entry.span_id = sid;
         }
 
         out.push(entry);
@@ -338,7 +334,8 @@ fn metric_aggregate_to_entries(
 /// attribute set we attach to the raw-numeric path in
 /// ``metric_aggregate_to_entries`` so dashboards can group both kinds the
 /// same way (metric_id, body_schema, sample_size, ring_overflowed,
-/// optional trace_id / span_id).
+/// optional trace_id / span_id — the last two live on ``MetricEntry`` as
+/// raw bytes and become an OTel Exemplar on the exporter side).
 #[allow(clippy::too_many_arguments)]
 fn build_aggregate_entry(
     name: String,
@@ -351,8 +348,8 @@ fn build_aggregate_entry(
     body_schema: MetricBodySchema,
     sample_size: u32,
     overflow_flag: bool,
-    trace_id_hex: Option<&str>,
-    span_id_hex: Option<&str>,
+    trace_id: Option<[u8; 16]>,
+    span_id: Option<[u8; 8]>,
 ) -> MetricEntry {
     let mut entry = MetricEntry::gauge(name, value);
     entry.unit = unit.to_string();
@@ -377,15 +374,11 @@ fn build_aggregate_entry(
             .attributes
             .insert("ring_overflowed".into(), serde_json::Value::Bool(true));
     }
-    if let Some(t) = trace_id_hex {
-        entry
-            .attributes
-            .insert("trace_id".into(), serde_json::Value::String(t.to_string()));
+    if let Some(tid) = trace_id {
+        entry.trace_id = tid;
     }
-    if let Some(s) = span_id_hex {
-        entry
-            .attributes
-            .insert("span_id".into(), serde_json::Value::String(s.to_string()));
+    if let Some(sid) = span_id {
+        entry.span_id = sid;
     }
     entry
 }
@@ -397,16 +390,6 @@ fn discrete_bytes_to_f64(bytes: &[u8]) -> f64 {
     let n = bytes.len().min(8);
     buf[..n].copy_from_slice(&bytes[..n]);
     u64::from_le_bytes(buf) as f64
-}
-
-/// Lowercase hex of a byte slice — used for trace_id / span_id attributes
-/// so dashboards see the standard W3C representation.
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
 }
 
 /// Convert per-task diagnostic batch to metrics. Pre-aggregated stats (min/max/avg
@@ -1166,5 +1149,59 @@ mod tests {
         assert_eq!(by_name["temp"].value, 25.0);
         assert_eq!(by_name["count"].value, 7.0);
         assert!(by_name["count"].is_monotonic);
+    }
+
+    #[test]
+    fn metric_aggregate_promotes_trace_context_to_exemplar_fields() {
+        use tc_otel_ads::diagnostics::{MetricAggregateSample, MetricBodySchema};
+
+        // The PLC pushed a NumericAggregated frame with trace context set.
+        // The bridge must put trace_id / span_id on MetricEntry as raw bytes
+        // (later promoted to an OTel Exemplar on the data point), NOT as
+        // plain attributes.
+        let trace_id: [u8; 16] = [
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99,
+        ];
+        let span_id: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];
+        let stat_mask = 0b0000_0111; // Min | Max | Mean
+
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 0xCAFEBABE,
+            task_index: 1,
+            flags: 0,
+            body_schema: MetricBodySchema::NumericAggregated,
+            sample_size: 24,
+            stat_mask,
+            cycle_count_start: 0,
+            cycle_count_end: 0,
+            dc_time_start: 1_000_000,
+            dc_time_end: 1_000_000,
+            name: "demo.sineAgg".to_string(),
+            unit: "unit".to_string(),
+            trace_id: Some(trace_id),
+            span_id: Some(span_id),
+            samples: vec![MetricAggregateSample::NumericAggregated {
+                stat_mask,
+                values: vec![-1.0, 1.0, 0.0], // min, max, mean
+            }],
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+
+        assert_eq!(out.len(), 3, "one entry per set stat bit");
+        for entry in &out {
+            assert_eq!(entry.trace_id, trace_id, "trace_id byte-equal on every entry");
+            assert_eq!(entry.span_id, span_id, "span_id byte-equal on every entry");
+            assert!(
+                !entry.attributes.contains_key("trace_id"),
+                "trace_id must not leak into plain attributes anymore"
+            );
+            assert!(
+                !entry.attributes.contains_key("span_id"),
+                "span_id must not leak into plain attributes anymore"
+            );
+            assert!(entry.has_trace_context());
+        }
     }
 }

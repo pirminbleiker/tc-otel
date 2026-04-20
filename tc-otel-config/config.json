@@ -1,107 +1,143 @@
 {
-  "logging": {
-    "log_level": "info",
-    "format": "text",
-    "output_path": null
-  },
-  "receiver": {
-    "host": "0.0.0.0",
-    "http_port": 4318,
-    "grpc_port": 4317,
-    "max_body_size": 4194304,
-    "request_timeout_secs": 30,
-    "ams_net_id": "10.10.10.10.1.1",
-    "ams_tcp_port": 48898,
-    "ads_port": 16150,
-    "max_connections": 100,
-    "idle_timeout_secs": 300,
-    "max_connections_per_ip": 10,
-    "rate_limit_per_sec_per_ip": 10,
-    "keepalive_interval_secs": 60,
-    "send_buffer_size": 1048576,
-    "https_only": false,
-    "tls": {
-      "enabled": false,
-      "cert_path": null,
-      "key_path": null,
-      "ca_cert_path": null,
-      "require_client_cert": false,
-      "client_cert_path": null,
-      "client_key_path": null,
-      "insecure_skip_verify": false,
-      "min_version": "TLSv1_2",
-      "max_version": "TLSv1_3",
-      "ciphers": []
-    },
-    "transport": {
-      "type": "mqtt",
-      "broker": "mosquitto:1883",
-      "topic_prefix": "AdsOverMqtt",
-      "client_id": "tc-otel-compose",
-      "username": null,
-      "password": null,
-      "tls": null
-    }
-  },
-  "export": {
-    "endpoint": "http://otel-collector:4318/v1/logs",
-    "batch_size": 100,
-    "flush_interval_ms": 5000,
-    "timeout_secs": 10,
-    "max_retries": 3
-  },
-  "outputs": [],
-  "service": {
-    "name": "tc-otel",
-    "display_name": "tc-otel - TwinCAT OpenTelemetry Service (MQTT)",
-    "worker_threads": null,
-    "channel_capacity": 50000,
-    "shutdown_timeout_secs": 30
-  },
-  "web": {
-    "enabled": true,
-    "host": "0.0.0.0",
-    "port": 8080
-  },
-  "metrics": {
-    "cycle_time_enabled": true,
-    "cycle_time_window": 1000,
-    "custom_metrics": [],
-    "export_enabled": true,
-    "export_endpoint": null,
-    "export_batch_size": 100,
-    "export_flush_interval_ms": 1000
-  },
   "diagnostics": {
     "enabled": true,
     "targets": [
       {
         "ams_net_id": "172.28.41.37.1.1",
-        "poll_interval_ms": 200,
         "exceed_counter": true,
+        "poll_interval_ms": 200,
+        "rt_port": 200,
         "rt_usage": true,
+        "task_names": {
+          "340": "IO Idle",
+          "350": "PlcTask",
+          "351": "PlcTask1"
+        },
         "task_ports": [
           340,
           350,
           351
-        ],
-        "rt_port": 200,
-        "task_names": {
-          "340": "IO Idle",
-          "351": "PlcTask1",
-          "350": "PlcTask"
-        }
+        ]
       }
     ]
   },
+  "export": {
+    "batch_size": 100,
+    "endpoint": "http://otel-collector:4318/v1/logs",
+    "flush_interval_ms": 5000,
+    "max_retries": 3,
+    "timeout_secs": 10
+  },
+  "logging": {
+    "format": "text",
+    "log_level": "info",
+    "output_path": null
+  },
+  "metrics": {
+    "custom_metrics": [
+      {
+        "symbol": "PRG_TestTraceApi.nSeq",
+        "metric_name": "plc.test.trace_api.seq",
+        "description": "Poll: trace-api sequence counter (increments each recipe step)",
+        "unit": "1",
+        "kind": "gauge",
+        "is_monotonic": false,
+        "source": "poll",
+        "ams_net_id": "175.57.15.0.1.1",
+        "ams_port": 852,
+        "ams_router_host": "tc31-xar-base",
+        "poll": {
+          "interval_ms": 100
+        },
+        "notification": null
+      },
+      {
+        "symbol": "PRG_TestTracePropagation.nSeq",
+        "metric_name": "plc.test.propagation.seq",
+        "description": "Notification: workpiece sequence counter (fires on change)",
+        "unit": "1",
+        "kind": "gauge",
+        "is_monotonic": false,
+        "source": "notification",
+        "ams_net_id": "175.57.15.0.1.1",
+        "ams_port": 852,
+        "ams_router_host": "tc31-xar-base",
+        "poll": null,
+        "notification": {
+          "min_period_ms": 1,
+          "max_period_ms": 1,
+          "max_delay_ms": 1,
+          "transmission_mode": "cyclic"
+        }
+      }
+    ],
+    "cycle_time_enabled": true,
+    "cycle_time_window": 1000,
+    "export_batch_size": 100,
+    "export_enabled": true,
+    "export_endpoint": null,
+    "export_flush_interval_ms": 1000
+  },
+  "outputs": [],
+  "receiver": {
+    "ads_port": 16150,
+    "ams_net_id": "10.10.10.10.1.1",
+    "ams_tcp_port": 48898,
+    "grpc_port": 4317,
+    "host": "0.0.0.0",
+    "http_port": 4318,
+    "https_only": false,
+    "idle_timeout_secs": 300,
+    "keepalive_interval_secs": 60,
+    "max_body_size": 4194304,
+    "max_connections": 100,
+    "max_connections_per_ip": 10,
+    "rate_limit_per_sec_per_ip": 10,
+    "request_timeout_secs": 30,
+    "send_buffer_size": 1048576,
+    "tls": {
+      "ca_cert_path": null,
+      "cert_path": null,
+      "ciphers": [],
+      "client_cert_path": null,
+      "client_key_path": null,
+      "enabled": false,
+      "insecure_skip_verify": false,
+      "key_path": null,
+      "max_version": "TLSv1_3",
+      "min_version": "TLSv1_2",
+      "require_client_cert": false
+    },
+    "transport": {
+      "broker": "mosquitto:1883",
+      "client_id": "tc-otel-compose",
+      "password": null,
+      "tls": null,
+      "topic_prefix": "AdsOverMqtt",
+      "type": "mqtt",
+      "username": null
+    }
+  },
+  "service": {
+    "channel_capacity": 50000,
+    "display_name": "tc-otel - TwinCAT OpenTelemetry Service (MQTT)",
+    "name": "tc-otel",
+    "shutdown_timeout_secs": 30,
+    "worker_threads": null
+  },
   "traces": {
     "enabled": true,
-    "span_ttl_secs": 10,
-    "max_pending_spans": 1024,
     "export": {
-      "endpoint": "http://otel-collector:4318/v1/traces",
       "batch_size": 100,
+      "endpoint": "http://otel-collector:4318/v1/traces",
       "flush_interval_ms": 1000
-    }
+    },
+    "max_pending_spans": 1024,
+    "span_ttl_secs": 10
+  },
+  "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
   }
 }
