@@ -113,7 +113,8 @@ impl AdsRouter {
                             let ev = if wr.index_offset == IO_PUSH_BATCH {
                                 crate::diagnostics_push::decode_batch(&wr.data)
                             } else if wr.index_offset == IO_PUSH_METRIC_AGG {
-                                let decoded = crate::diagnostics_push::decode_metric_aggregate(&wr.data);
+                                let decoded =
+                                    crate::diagnostics_push::decode_metric_aggregate(&wr.data);
                                 if decoded.is_none() {
                                     tracing::warn!(
                                         "metric_agg decode failed: bytes={} first16={:02x?}",

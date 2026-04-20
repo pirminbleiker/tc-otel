@@ -360,13 +360,13 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     match body_schema {
         MetricBodySchema::Bool if sample_size != 1 => return None,
         MetricBodySchema::Numeric if sample_size != 8 => return None,
-        MetricBodySchema::Discrete | MetricBodySchema::String | MetricBodySchema::Wstring => {
-            if sample_size == 0 || sample_size > 65535 {
-                return None;
-            }
+        MetricBodySchema::Discrete | MetricBodySchema::String | MetricBodySchema::Wstring
+            if sample_size == 0 || sample_size > 65535 =>
+        {
+            return None;
         }
         MetricBodySchema::NumericAggregated => {
-            let expected = (stat_mask.count_ones() as u32) * 8;
+            let expected = stat_mask.count_ones() * 8;
             if expected == 0 || sample_size != expected {
                 return None;
             }
@@ -427,10 +427,12 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
             MetricBodySchema::Discrete => MetricAggregateSample::Discrete(slot.to_vec()),
             MetricBodySchema::String => {
                 // Trim trailing zero padding so callers see the live bytes only.
-                let end = slot.iter().rposition(|&b| b != 0).map(|p| p + 1).unwrap_or(0);
-                MetricAggregateSample::String(
-                    String::from_utf8_lossy(&slot[..end]).into_owned(),
-                )
+                let end = slot
+                    .iter()
+                    .rposition(|&b| b != 0)
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                MetricAggregateSample::String(String::from_utf8_lossy(&slot[..end]).into_owned())
             }
             MetricBodySchema::Wstring => {
                 // 2 bytes per char, UTF-16LE, trim trailing zero u16s.
@@ -452,10 +454,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
                 for k in 0..n {
                     values.push(read_f64(slot, k * 8));
                 }
-                MetricAggregateSample::NumericAggregated {
-                    stat_mask,
-                    values,
-                }
+                MetricAggregateSample::NumericAggregated { stat_mask, values }
             }
         };
         samples.push(sample);
@@ -1159,18 +1158,18 @@ mod tests {
     #[test]
     fn decode_metric_aggregate_numeric_round_trip() {
         let mut frame = agg_header(
-            0,                  // no trace ctx, no overflow
-            2,                  // Numeric
-            8,                  // sample_size
-            3,                  // sample_count
-            0xCAFEBABE,         // metric_id
-            5,                  // task_index
-            1000,               // cycle_count_start
-            1010,               // cycle_count_end
-            100_000,            // dc_time_start
-            120_000,            // dc_time_end
-            17,                 // name_len ("motor.temperature")
-            3,                  // unit_len ("Cel")
+            0,          // no trace ctx, no overflow
+            2,          // Numeric
+            8,          // sample_size
+            3,          // sample_count
+            0xCAFEBABE, // metric_id
+            5,          // task_index
+            1000,       // cycle_count_start
+            1010,       // cycle_count_end
+            100_000,    // dc_time_start
+            120_000,    // dc_time_end
+            17,         // name_len ("motor.temperature")
+            3,          // unit_len ("Cel")
         );
         frame.extend_from_slice(b"motor.temperature");
         frame.extend_from_slice(b"Cel");
@@ -1285,10 +1284,13 @@ mod tests {
     #[test]
     fn decode_metric_aggregate_overflow_flag_preserved() {
         let mut frame = agg_header(METRIC_FLAG_RING_OVERFLOWED, 2, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0);
-        frame.extend_from_slice(&3.14_f64.to_le_bytes());
+        frame.extend_from_slice(&1.5_f64.to_le_bytes());
         let ev = decode_metric_aggregate(&frame).unwrap();
         if let DiagEvent::MetricAggregateBatch { flags, .. } = ev {
-            assert_eq!(flags & METRIC_FLAG_RING_OVERFLOWED, METRIC_FLAG_RING_OVERFLOWED);
+            assert_eq!(
+                flags & METRIC_FLAG_RING_OVERFLOWED,
+                METRIC_FLAG_RING_OVERFLOWED
+            );
         } else {
             panic!("expected MetricAggregateBatch");
         }
@@ -1447,8 +1449,12 @@ mod tests {
 
     #[test]
     fn decode_metric_aggregate_full_six_stats() {
-        let mask = METRIC_STAT_MIN | METRIC_STAT_MAX | METRIC_STAT_MEAN
-            | METRIC_STAT_SUM | crate::diagnostics::METRIC_STAT_COUNT | METRIC_STAT_STDDEV;
+        let mask = METRIC_STAT_MIN
+            | METRIC_STAT_MAX
+            | METRIC_STAT_MEAN
+            | METRIC_STAT_SUM
+            | crate::diagnostics::METRIC_STAT_COUNT
+            | METRIC_STAT_STDDEV;
         let mut frame = agg_header_with_mask(0, 6, 48, 1, 0, 0, mask, 0, 0, 0, 0, 0, 0);
         for v in [10.0_f64, 20.0, 15.0, 75.0, 5.0, 3.5] {
             frame.extend_from_slice(&v.to_le_bytes());
