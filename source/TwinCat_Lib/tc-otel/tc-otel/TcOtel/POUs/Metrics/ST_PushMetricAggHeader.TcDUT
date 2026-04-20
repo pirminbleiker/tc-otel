@@ -4,6 +4,11 @@
     <Declaration><![CDATA[(*
 :Description: 52-byte fixed header of an FB_Metrics push frame.
 
+The ``{attribute 'pack_mode' := '1'}`` pragma must be on the line **above
+the TYPE keyword** (not inside the STRUCT body) — applied inside the
+struct it would only act as a per-field hint and TwinCAT would still pad
+the struct's tail to 8 bytes for the LINT members.
+
 Pushed via ADSWRITE to ``IG = 0x4D424301`` / ``IO = 2`` (IO_PUSH_METRIC_AGG).
 ``event_type = 21`` (PUSH_METRIC_AGG) discriminates this frame from the
 existing per-task diagnostic batch (event_type=10) and UI-driven custom
@@ -42,9 +47,9 @@ After this fixed header the frame contains, in order:
 Total frame size = 52 + (24 if has_trace_ctx else 0) + name_len + unit_len
                  + sample_count * sample_size.
 *)
+{attribute 'pack_mode' := '1'}
 TYPE ST_PushMetricAggHeader :
 STRUCT
-    {attribute 'pack_mode' := '1'}
     nVersion           : BYTE;                      // +0x00, = 2
     nEventType         : BYTE;                      // +0x01, = 21
     nFlags             : BYTE;                      // +0x02, bit0=has_trace_ctx, bit1=ring_overflowed

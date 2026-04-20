@@ -99,6 +99,12 @@ impl AdsRouter {
                     if header.target_port == self.ads_port {
                         // Check if this is a push-diagnostic batch write
                         if wr.index_group == IG_PUSH_DIAG {
+                            tracing::debug!(
+                                "push-diag dispatch: io_offset={} bytes={} from={}",
+                                wr.index_offset,
+                                wr.data.len(),
+                                source_net_id
+                            );
                             // Wire-format v2 dispatch:
                             //   IO=0 -> per-task diagnostic batch (event_type=10)
                             //   IO=2 -> FB_Metrics aggregate batch (event_type=21)
@@ -107,7 +113,15 @@ impl AdsRouter {
                             let ev = if wr.index_offset == IO_PUSH_BATCH {
                                 crate::diagnostics_push::decode_batch(&wr.data)
                             } else if wr.index_offset == IO_PUSH_METRIC_AGG {
-                                crate::diagnostics_push::decode_metric_aggregate(&wr.data)
+                                let decoded = crate::diagnostics_push::decode_metric_aggregate(&wr.data);
+                                if decoded.is_none() {
+                                    tracing::warn!(
+                                        "metric_agg decode failed: bytes={} first16={:02x?}",
+                                        wr.data.len(),
+                                        &wr.data[..wr.data.len().min(16)]
+                                    );
+                                }
+                                decoded
                             } else {
                                 None
                             };
