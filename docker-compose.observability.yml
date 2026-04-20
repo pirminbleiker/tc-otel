@@ -51,19 +51,6 @@ services:
       - tc-otel-obs
     restart: unless-stopped
 
-  jaeger-ui:
-    build:
-      context: ./observability/jaeger-ui
-    image: tc-otel-jaeger-ui:local
-    container_name: jaeger-ui
-    ports:
-      - "16686:80"
-    networks:
-      - tc-otel-obs
-    depends_on:
-      - victoria-traces
-    restart: unless-stopped
-
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
@@ -111,7 +98,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - RUST_LOG=tc_otel=info,tc_otel_ads=info
+      - RUST_LOG=tc_otel=info,tc_otel_ads=debug
     volumes:
       - ./tc-otel-config:/etc/tc-otel
     networks:
@@ -127,9 +114,8 @@ services:
     container_name: tc31-xar-base
     hostname: tc31-xar-base
     privileged: true
-    ports:
-      - "48898:48898/tcp"
-      - "48899:48899/udp"
+    # No ports exposed — ADS reaches tc-otel via MQTT over the internal
+    # tc-otel-obs network, so 48898/tcp + 48899/udp don't need host binding.
     volumes:
       - ./examples/twincat/StaticRoutes.xml:/etc/TwinCAT/3.1/Target/StaticRoutes.xml:ro
       - tc31-boot:/etc/TwinCAT/3.1/Boot

@@ -47,9 +47,8 @@ services:
     container_name: tc31-xar-base
     hostname: tc31-xar-base
     privileged: true
-    ports:
-      - "48898:48898/tcp"
-      - "48899:48899/udp"
+    # No ports exposed — ADS reaches tc-otel via MQTT over the internal
+    # tc-otel-test network, so 48898/tcp + 48899/udp don't need host binding.
     volumes:
       - ./examples/twincat/StaticRoutes.xml:/etc/TwinCAT/3.1/Target/StaticRoutes.xml:ro
       - tc31-boot:/etc/TwinCAT/3.1/Boot
