@@ -61,7 +61,13 @@ fn build_agg_header(
 }
 
 /// Wrap a payload as an AMS write request frame addressed to (ig, io).
-fn wrap_as_ams_write(source: AmsNetId, target_port: u16, ig: u32, io: u32, payload: &[u8]) -> Vec<u8> {
+fn wrap_as_ams_write(
+    source: AmsNetId,
+    target_port: u16,
+    ig: u32,
+    io: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut write_req = Vec::with_capacity(12 + payload.len());
     write_req.extend_from_slice(&ig.to_le_bytes());
     write_req.extend_from_slice(&io.to_le_bytes());
@@ -99,7 +105,7 @@ async fn numeric_aggregate_dispatches_with_lreal_samples() {
 
     let mut payload = build_agg_header(
         0,
-        2,                                // eNumeric
+        2, // eNumeric
         8,
         values.len() as u32,
         0xCAFEBABE,
@@ -117,11 +123,20 @@ async fn numeric_aggregate_dispatches_with_lreal_samples() {
         payload.extend_from_slice(&v.to_le_bytes());
     }
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let resp = router.dispatch(&frame).await.unwrap();
     assert!(resp.is_some(), "router should ACK the write");
 
-    let (received_net_id, ev) = push_rx.recv().await.expect("expected one MetricAggregateBatch");
+    let (received_net_id, ev) = push_rx
+        .recv()
+        .await
+        .expect("expected one MetricAggregateBatch");
     assert_eq!(received_net_id, plc_net_id);
 
     match ev {
@@ -179,11 +194,22 @@ async fn bool_aggregate_dispatches_with_correct_samples() {
     payload.extend_from_slice(name.as_bytes());
     payload.extend_from_slice(&[1, 0, 1, 1]);
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let _ = router.dispatch(&frame).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
-    if let DiagEvent::MetricAggregateBatch { samples, body_schema, .. } = ev {
+    if let DiagEvent::MetricAggregateBatch {
+        samples,
+        body_schema,
+        ..
+    } = ev
+    {
         assert_eq!(body_schema, MetricBodySchema::Bool);
         assert_eq!(
             samples,
@@ -219,7 +245,13 @@ async fn aggregate_with_trace_context_propagates_ids() {
     payload.extend_from_slice(b"trip");
     payload.push(1);
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let _ = router.dispatch(&frame).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
@@ -247,15 +279,25 @@ async fn aggregate_overflow_flag_propagates() {
 
     let plc_net_id = AmsNetId::from_str("172.28.41.37.1.1").unwrap();
 
-    let mut payload = build_agg_header(METRIC_FLAG_RING_OVERFLOWED, 2, 8, 1, 1, 0, 0, 0, 0, 0, 0, 0);
-    payload.extend_from_slice(&3.14_f64.to_le_bytes());
+    let mut payload =
+        build_agg_header(METRIC_FLAG_RING_OVERFLOWED, 2, 8, 1, 1, 0, 0, 0, 0, 0, 0, 0);
+    payload.extend_from_slice(&1.5_f64.to_le_bytes());
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let _ = router.dispatch(&frame).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
     if let DiagEvent::MetricAggregateBatch { flags, .. } = ev {
-        assert_eq!(flags & METRIC_FLAG_RING_OVERFLOWED, METRIC_FLAG_RING_OVERFLOWED);
+        assert_eq!(
+            flags & METRIC_FLAG_RING_OVERFLOWED,
+            METRIC_FLAG_RING_OVERFLOWED
+        );
     } else {
         panic!("expected MetricAggregateBatch");
     }
@@ -275,7 +317,13 @@ async fn aggregate_with_wrong_event_type_is_dropped() {
     payload[1] = 99;
     payload.extend_from_slice(&0.0_f64.to_le_bytes());
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let _ = router.dispatch(&frame).await.unwrap();
 
     assert!(
@@ -297,7 +345,13 @@ async fn aggregate_truncated_body_is_dropped() {
     let mut payload = build_agg_header(0, 2, 8, 3, 0, 0, 0, 0, 0, 0, 0, 0);
     payload.extend_from_slice(&[0_u8; 16]);
 
-    let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_METRIC_AGG, &payload);
+    let frame = wrap_as_ams_write(
+        plc_net_id,
+        16150,
+        IG_PUSH_DIAG,
+        IO_PUSH_METRIC_AGG,
+        &payload,
+    );
     let _ = router.dispatch(&frame).await.unwrap();
 
     assert!(

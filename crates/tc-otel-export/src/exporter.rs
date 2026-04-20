@@ -922,17 +922,14 @@ mod tests {
         let payload_str = exporter.build_otel_metrics_payload(&[record]).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
 
-        let dp = &payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
-            ["gauge"]["dataPoints"][0];
+        let dp = &payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]
+            ["dataPoints"][0];
         let exemplars = dp["exemplars"]
             .as_array()
             .expect("exemplars array present when trace context is set");
         assert_eq!(exemplars.len(), 1);
         assert_eq!(exemplars[0]["asDouble"], 0.42);
-        assert_eq!(
-            exemplars[0]["traceId"],
-            "abcdef0123456789abcdef0123456789"
-        );
+        assert_eq!(exemplars[0]["traceId"], "abcdef0123456789abcdef0123456789");
         assert_eq!(exemplars[0]["spanId"], "fedcba9876543210");
         // Exemplar timestamp should match the data point
         assert_eq!(exemplars[0]["timeUnixNano"], dp["timeUnixNano"]);

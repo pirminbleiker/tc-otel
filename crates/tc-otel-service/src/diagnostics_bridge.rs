@@ -17,9 +17,9 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tc_otel_ads::ams::AmsNetId;
 use tc_otel_ads::diagnostics::{
-    DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor,
-    MetricSample, METRIC_FLAG_RING_OVERFLOWED, METRIC_STAT_ORDER, SAMPLE_FLAG_CYCLE_EXCEED,
-    SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
+    DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor, MetricSample,
+    METRIC_FLAG_RING_OVERFLOWED, METRIC_STAT_ORDER, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
+    SAMPLE_FLAG_RT_VIOLATION,
 };
 use tc_otel_core::MetricEntry;
 
@@ -268,9 +268,18 @@ fn metric_aggregate_to_entries(
                 k += 1;
                 let metric_name = format!("{}.{}", name, suffix);
                 out.push(build_aggregate_entry(
-                    metric_name, v, ts_ns, unit, net_id, task_index, metric_id,
-                    body_schema, sample_size, overflow_flag,
-                    trace_id, span_id,
+                    metric_name,
+                    v,
+                    ts_ns,
+                    unit,
+                    net_id,
+                    task_index,
+                    metric_id,
+                    body_schema,
+                    sample_size,
+                    overflow_flag,
+                    trace_id,
+                    span_id,
                 ));
             }
             continue;
@@ -1191,7 +1200,10 @@ mod tests {
 
         assert_eq!(out.len(), 3, "one entry per set stat bit");
         for entry in &out {
-            assert_eq!(entry.trace_id, trace_id, "trace_id byte-equal on every entry");
+            assert_eq!(
+                entry.trace_id, trace_id,
+                "trace_id byte-equal on every entry"
+            );
             assert_eq!(entry.span_id, span_id, "span_id byte-equal on every entry");
             assert!(
                 !entry.attributes.contains_key("trace_id"),

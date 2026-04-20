@@ -65,8 +65,8 @@ pub const IO_PUSH_METRIC_BATCH: u32 = 1;
 
 /// Index offset for compact FB_Metrics aggregate batches within `IG_PUSH_DIAG`.
 ///
-/// A batch = 52-byte header + (optional 24-byte trace context) + name + unit
-/// + body, where body = `sample_count * sample_size` raw bytes interpreted by
+/// A batch = 52-byte header, optional 24-byte trace context, name, unit, and
+/// body. The body is `sample_count * sample_size` raw bytes interpreted by
 /// the header's `body_schema` (see [`MetricBodySchema`]). Designed for the
 /// PLC-side `FB_Metrics` user API: one frame per metric instance per push
 /// window.
@@ -380,7 +380,10 @@ pub enum MetricAggregateSample {
     /// `METRIC_STAT_ORDER` (Min, Max, Mean, Sum, Count, StdDev) and only
     /// include the stats whose bit is set in `stat_mask`. Both fields are
     /// surfaced so the bridge can attach the right suffix per emitted metric.
-    NumericAggregated { stat_mask: u8, values: Vec<f64> },
+    NumericAggregated {
+        stat_mask: u8,
+        values: Vec<f64>,
+    },
 }
 
 /// Metric descriptor — static metadata for a metric announced in a batch.

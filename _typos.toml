@@ -1,11 +1,15 @@
 [default]
 extend-ignore-re = [
-    # German words in PLC source code and comments
+    # German words in PLC source code, docs, and comments
     "(?i)(Adresse|Konfiguration|Attribut|Attributs|Ordner|Temperatur|Programm|Suche)",
-    "(?i)(alle|als|ein|ist|legt|lokal|oder|unter|startet)",
+    "(?i)(alle|als|ein|ist|legt|lokal|oder|unter|startet|vor|manuell|sie|separater)",
+    "(?i)(Alternativ|Variante)",
 ]
 
 [default.extend-words]
+# German / UI strings used intentionally
+"Prozess" = "Prozess"
+"Änderungen" = "Änderungen"
 # TwinCAT file extension .TcTTO
 TTO = "TTO"
 # German words used intentionally
@@ -13,10 +17,13 @@ programm = "programm"
 missin = "missin"
 # hyphenated compound that trips default rules
 mis = "mis"
-# MQTT broker name
+# MQTT broker name (software name, not a typo of "mosquito")
 mosquitto = "mosquitto"
+Mosquitto = "Mosquitto"
 # 2-char hex sequence in span_id literals and git short SHAs
 ba = "ba"
+# JS local variable (array of literals) in inline web page source
+lits = "lits"
 
 [default.extend-identifiers]
 # hex span_id literals in log-trace-correlation fixture
@@ -31,4 +38,6 @@ extend-exclude = [
     "source/TwinCat_Lib/**",
     # Compiled library binary
     "library/**",
+    # German-language design doc (kept in German intentionally)
+    "docs/router.md",
 ]
