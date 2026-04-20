@@ -78,7 +78,7 @@
     {
       "type": "timeseries",
       "title": "demo_sineAgg — min/max envelope + mean",
-      "description": "Same source signal as demo_sine_unit, but the PLC FB_Metrics instance ran with SetAggregation(cMetricStandard). Every cycle's value is folded into a Welford online aggregator; on each 50 ms sample tick the (min, max, mean) triple is shipped instead of one raw value. The receiver now sees the true envelope — peaks that would alias away in raw sampling stay visible, and mean traces the central tendency cleanly.",
+      "description": "Same source signal as demo_sine_unit, but the PLC FB_Metrics instance ran with SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax OR E_MetricStat.eMean). Every cycle's value is folded into a Welford online aggregator; on each 50 ms sample tick the (min, max, mean) triple is shipped instead of one raw value. The receiver now sees the true envelope — peaks that would alias away in raw sampling stay visible, and mean traces the central tendency cleanly.",
       "datasource": "VictoriaMetrics",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 11 },
       "id": 5,
@@ -130,7 +130,7 @@
       },
       "targets": [
         {
-          "expr": "demo_sineAgg_unit_min",
+          "expr": "demo_sineAgg_min_unit",
           "legendFormat": "min",
           "refId": "A",
           "interval": "50ms",
@@ -138,7 +138,7 @@
           "datasource": "VictoriaMetrics"
         },
         {
-          "expr": "demo_sineAgg_unit_max",
+          "expr": "demo_sineAgg_max_unit",
           "legendFormat": "max",
           "refId": "B",
           "interval": "50ms",
@@ -146,7 +146,7 @@
           "datasource": "VictoriaMetrics"
         },
         {
-          "expr": "demo_sineAgg_unit_mean",
+          "expr": "demo_sineAgg_mean_unit",
           "legendFormat": "mean",
           "refId": "C",
           "interval": "50ms",

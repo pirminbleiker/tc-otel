@@ -18,7 +18,7 @@ VAR
 	(* Phase 6 Stage 4: span reference for explicit log-to-trace correlation.
 	   Set via WithSpan for logs that should be correlated to a specific span.
 	   NULL (default) means no span correlation. *)
-	_pSpan				: POINTER TO FB_Span;
+	_pSpan				: REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -75,7 +75,7 @@ IF NOT _IsLogLevelActive() THEN
 END_IF
 THIS^.fbLogEntry.Reset();
 THIS^.iContextBuilder := 0;
-THIS^._pSpan := 0;
+THIS^._pSpan REF= 0;
 THIS^.sMessage := sMessage;
 IF pLogger <> 0 THEN
 	THIS^.sLogger := pLogger^;
@@ -203,7 +203,7 @@ IF NOT _IsLogLevelActive() THEN
 	RETURN;
 END_IF
 
-_pSpan := ADR(span);
+_pSpan REF= span;
 ]]></ST>
       </Implementation>
     </Method>

@@ -31,12 +31,12 @@ VAR
        the same task. Set once via BindTracer before first Begin. *)
     _pTracer    : REFERENCE TO FB_TcOtelTracer;
 
-    (* Pointer to the span that was the tracer's innermost-open span
+    (* Reference to the span that was the tracer's innermost-open span
        at the moment THIS span's Begin() ran. Forms the outer-chain
-       used by FB_TcOtelTracer's LIFO stack. NULL when this is the
+       used by FB_TcOtelTracer's LIFO stack. Invalid when this is the
        outermost open span on the bound tracer (or when unbound).
        Accessed only via _GetOuterSpan / _SetOuterSpan below. *)
-    _pOuterSpan : POINTER TO FB_Span;
+    _pOuterSpan : REFERENCE TO FB_Span;
 
     (* Phase 6 — Stage 3: span state owned by FB_Span, not in tracer slot.
        Trace_id and span_id bytes. Populated during Begin().
@@ -57,10 +57,10 @@ Body empty — all work happens in methods that delegate to PRG_TaskLog.Span.
 LIFO stack. Returns the span that was innermost-open when THIS span
 began — or 0 if this is the outermost / unbound. Not user-visible.
 *)
-METHOD INTERNAL _GetOuterSpan : POINTER TO FB_Span
+METHOD INTERNAL _GetOuterSpan : REFERENCE TO FB_Span
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_GetOuterSpan := _pOuterSpan;
+        <ST><![CDATA[_GetOuterSpan REF= _pOuterSpan;
 ]]></ST>
       </Implementation>
     </Method>
@@ -71,11 +71,11 @@ and detach this span from its LIFO stack. Not user-visible.
 *)
 METHOD INTERNAL _SetOuterSpan
 VAR_INPUT
-    pOuter : POINTER TO FB_Span;
+    pOuter : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_pOuterSpan := pOuter;
+        <ST><![CDATA[_pOuterSpan REF= pOuter;
 ]]></ST>
       </Implementation>
     </Method>
@@ -102,7 +102,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddAny := _pTracer._AddAny(THIS, sKey, stArg);
+AddAny := _pTracer._AddAny(THIS^, sKey, stArg);
 ]]></ST>
       </Implementation>
     </Method>
@@ -131,7 +131,7 @@ IF NOT _bOpen THEN
     RETURN;
 END_IF;
 
-AddEvent := _pTracer._AddEvent(THIS, sName);
+AddEvent := _pTracer._AddEvent(THIS^, sName);
 ]]></ST>
       </Implementation>
     </Method>
@@ -232,7 +232,7 @@ END_IF;
 
 (* Route through the bound tracer's _Begin method, which resolves
    parent and calls the task tracer. *)
-_pTracer._Begin(THIS, sName, eKind, sTraceParent);
+_pTracer._Begin(THIS^, sName, eKind, sTraceParent);
 
 (* Mark open and reset status *)
 _bOpen := TRUE;
@@ -241,7 +241,7 @@ _sMsg := '';
 
 (* Register with the bound tracer so CurrentTraceParent and
    future nested Begin calls can see us. *)
-_pTracer._RegisterOpen(THIS);
+_pTracer._RegisterOpen(THIS^);
 
 Begin := TRUE;
 ]]></ST>
@@ -300,16 +300,16 @@ END_IF;
 
 (* If status is Error, pass the error message through *)
 IF _eStatus = E_SpanStatus.eError THEN
-    _pTracer._SetError(THIS, _sMsg);
+    _pTracer._SetError(THIS^, _sMsg);
 END_IF;
 
 (* End the span via the tracer's wire emitter *)
-_pTracer._End(THIS);
+_pTracer._End(THIS^);
 
 (* Unregister from the bound tracer's open stack BEFORE clearing
    state, so the tracer's _UnregisterOpen can still read our
    _pOuterSpan to splice the LIFO chain. *)
-_pTracer._UnregisterOpen(THIS);
+_pTracer._UnregisterOpen(THIS^);
 
 (* Clear state *)
 _bOpen := FALSE;

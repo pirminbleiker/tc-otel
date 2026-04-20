@@ -53,9 +53,9 @@ tc-otel doesn't wait out the TTL.
 FUNCTION_BLOCK FB_TcOtelTracer
 VAR
     (* Innermost (most-recently-begun) span bound to this tracer.
-       NULL when no span is open. The chain walks via each span's
-       _pOuterSpan pointer back to the first Begin. *)
-    _pInnermost : POINTER TO FB_Span;
+       Invalid reference when no span is open. The chain walks via
+       each span's _pOuterSpan reference back to the first Begin. *)
+    _pInnermost : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -78,8 +78,8 @@ END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[
-IF _pInnermost <> 0 THEN
-    CurrentTraceParent := _pInnermost^.TraceParent;
+IF __ISVALIDREF(_pInnermost) THEN
+    CurrentTraceParent := _pInnermost.TraceParent;
 ELSE
     CurrentTraceParent := '';
 END_IF;
@@ -99,27 +99,27 @@ PROPERTY PUBLIC IsAnyOpen : BOOL]]></Declaration>
 END_VAR
 ]]></Declaration>
         <Implementation>
-          <ST><![CDATA[IsAnyOpen := _pInnermost <> 0;
+          <ST><![CDATA[IsAnyOpen := __ISVALIDREF(_pInnermost);
 ]]></ST>
         </Implementation>
       </Get>
     </Property>
     <Property Name="InnermostSpan" Id="{e2f3a4b5-c6d7-8e9f-0011-223344556677}">
       <Declaration><![CDATA[(*
-:Description: INTERNAL — pointer to the innermost open span on this tracer's stack.
+:Description: INTERNAL — reference to the innermost open span on this tracer's stack.
 
 Used by FB_Metrics during flush to snapshot trace_id/span_id for OTel
 exemplar correlation without parsing the W3C traceparent string. Returns
-0 when no span is open. Not part of the public API — do not use from
-controller code.
+an invalid reference (check via ``__ISVALIDREF``) when no span is open.
+Not part of the public API — do not use from controller code.
 *)
-PROPERTY INTERNAL InnermostSpan : POINTER TO FB_Span]]></Declaration>
+PROPERTY INTERNAL InnermostSpan : REFERENCE TO FB_Span]]></Declaration>
       <Get Name="Get" Id="{f3a4b5c6-d7e8-9f00-1122-334455667788}">
         <Declaration><![CDATA[VAR
 END_VAR
 ]]></Declaration>
         <Implementation>
-          <ST><![CDATA[InnermostSpan := _pInnermost;
+          <ST><![CDATA[InnermostSpan REF= _pInnermost;
 ]]></ST>
         </Implementation>
       </Get>
@@ -132,18 +132,18 @@ open stack. Must not be called by user code.
 *)
 METHOD INTERNAL _RegisterOpen
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
 (* Push: new span's outer = current top. New top = this span. *)
-pSpan^._SetOuterSpan(_pInnermost);
-_pInnermost := pSpan;
+pSpan._SetOuterSpan(_pInnermost);
+_pInnermost REF= pSpan;
 ]]></ST>
       </Implementation>
     </Method>
@@ -159,35 +159,38 @@ Must not be called by user code.
 *)
 METHOD INTERNAL _UnregisterOpen
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 VAR
-    pCur : POINTER TO FB_Span;
+    pCur   : REFERENCE TO FB_Span;
+    pOuter : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
-IF _pInnermost = pSpan THEN
+IF __ISVALIDREF(_pInnermost) AND ADR(_pInnermost) = ADR(pSpan) THEN
     (* Common path: closing the innermost span. Pop. *)
-    _pInnermost := pSpan^._GetOuterSpan();
-    pSpan^._SetOuterSpan(0);
+    _pInnermost REF= pSpan._GetOuterSpan();
+    pSpan._SetOuterSpan(0);
     RETURN;
 END_IF;
 
 (* Out-of-order close: find the span whose outer is pSpan, splice
-   it out. If not found (pSpan is not on our stack), quiet no-op. *)
-pCur := _pInnermost;
-WHILE pCur <> 0 DO
-    IF pCur^._GetOuterSpan() = pSpan THEN
-        pCur^._SetOuterSpan(pSpan^._GetOuterSpan());
-        pSpan^._SetOuterSpan(0);
+   it out. If not found (pSpan is not on our stack), quiet no-op.
+   Method returns are rvalues — bind to a REFERENCE local before ADR. *)
+pCur REF= _pInnermost;
+WHILE __ISVALIDREF(pCur) DO
+    pOuter REF= pCur._GetOuterSpan();
+    IF __ISVALIDREF(pOuter) AND ADR(pOuter) = ADR(pSpan) THEN
+        pCur._SetOuterSpan(pSpan._GetOuterSpan());
+        pSpan._SetOuterSpan(0);
         RETURN;
     END_IF;
-    pCur := pCur^._GetOuterSpan();
+    pCur REF= pOuter;
 END_WHILE;
 ]]></ST>
       </Implementation>
@@ -203,7 +206,7 @@ Must only be called from FB_Span.Begin.
 *)
 METHOD INTERNAL _Begin : BOOL
 VAR_INPUT
-    pSpan        : POINTER TO FB_Span;
+    pSpan        : REFERENCE TO FB_Span;
     sName        : STRING(60);
     eKind        : E_SpanKind := E_SpanKind.eInternal;
     sTraceParent : STRING(60) := '';
@@ -218,7 +221,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -233,12 +236,12 @@ bInheritTraceId := FALSE;
    supplied an explicit W3C traceparent — that takes priority inside the
    task tracer). Copies both the parent's span_id (for parent linkage)
    and the parent's trace_id (so child lands in the same trace). *)
-IF sTraceParent = '' AND _pInnermost <> 0 THEN
+IF sTraceParent = '' AND __ISVALIDREF(_pInnermost) THEN
     Tc2_System.MEMCPY(ADR(abParentSpanId[0]),
-                      ADR(_pInnermost^._abSpanId[0]),
+                      ADR(_pInnermost._abSpanId[0]),
                       8);
-    Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]),
-                      ADR(_pInnermost^._abTraceId[0]),
+    Tc2_System.MEMCPY(ADR(pSpan._abTraceId[0]),
+                      ADR(_pInnermost._abTraceId[0]),
                       16);
     bInheritTraceId := TRUE;
 END_IF;
@@ -261,12 +264,12 @@ Must only be called from FB_Span.End.
 *)
 METHOD INTERNAL _End : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -283,14 +286,14 @@ on the ANY's TypeClass.
 *)
 METHOD INTERNAL _AddAny : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sKey  : STRING(30);
     stArg : ANY;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -301,13 +304,13 @@ _AddAny := PRG_TaskLog.TaskTracer.AddAny(pSpan, sKey, stArg);
     <Method Name="_AddEvent" Id="{d6b7c8d9-eafb-7071-911c-111e2f3a4b5c}">
       <Declaration><![CDATA[METHOD INTERNAL _AddEvent : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sName : STRING(30);
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -318,13 +321,13 @@ _AddEvent := PRG_TaskLog.TaskTracer.AddEvent(pSpan, sName);
     <Method Name="_SetError" Id="{e7c8d9ea-fbac-7172-921d-111f2a3b4c5d}">
       <Declaration><![CDATA[METHOD INTERNAL _SetError : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sMsg  : STRING(120) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -348,8 +351,8 @@ VAR_INPUT
     bInCopyCode : BOOL;
 END_VAR
 VAR
-    pCur  : POINTER TO FB_Span;
-    pNext : POINTER TO FB_Span;
+    pCur  : REFERENCE TO FB_Span;
+    pNext : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -359,16 +362,16 @@ IF bInCopyCode THEN
     RETURN;
 END_IF;
 
-pCur := _pInnermost;
-WHILE pCur <> 0 DO
+pCur REF= _pInnermost;
+WHILE __ISVALIDREF(pCur) DO
     (* End() modifies the tracer's stack (pops pCur). Capture the
-       outer pointer BEFORE calling End so we can iterate safely. *)
-    pNext := pCur^._GetOuterSpan();
-    pCur^.MarkError('FB_TcOtelTracer destroyed while span open');
-    pCur^.End();
-    pCur := pNext;
+       outer reference BEFORE calling End so we can iterate safely. *)
+    pNext REF= pCur._GetOuterSpan();
+    pCur.MarkError('FB_TcOtelTracer destroyed while span open');
+    pCur.End();
+    pCur REF= pNext;
 END_WHILE;
-_pInnermost := 0;
+_pInnermost REF= 0;
 
 FB_exit := TRUE;
 ]]></ST>

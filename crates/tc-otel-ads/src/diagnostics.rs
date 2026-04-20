@@ -100,9 +100,9 @@ pub const METRIC_FLAG_HAS_TRACE_CTX: u8 = 1 << 0;
 /// the per-instance body buffer filled up. Surfaced for ops dashboards.
 pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 
-/// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum and
-/// ``GVL_MetricAggregation`` constants encode the same values; ``stat_mask``
-/// in the wire header is the OR of zero or more of these.
+/// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum
+/// encodes the same values; ``stat_mask`` in the wire header is the OR
+/// of zero or more of these.
 ///
 /// When ``body_schema = NumericAggregated`` (6) the body holds
 /// ``sample_count * popcount(stat_mask)`` LREALs in **bit-index order**

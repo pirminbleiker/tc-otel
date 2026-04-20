@@ -15,12 +15,17 @@ are written into the body in **bit-index order** (Min first if set,
 then Max, then Mean, then Sum, then Count, then StdDev) — the decoder
 walks the mask bit-by-bit and reads 8 bytes per set bit.
 
-Use the convenience constants in ``GVL_MetricAggregation`` for the
-common combinations rather than typing the OR yourself:
+OR the values together to pick the stats you want:
 
-* ``cMetricEnvelope`` = eMin OR eMax
-* ``cMetricStandard`` = eMin OR eMax OR eMean (recommended default)
-* ``cMetricFull``     = all six
+.. code-block:: pascal
+
+    fb.SetAggregation(E_MetricStat.eSum);                                   // counter
+    fb.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax);              // envelope
+    fb.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax
+                      OR E_MetricStat.eMean);                               // recommended
+    fb.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax
+                      OR E_MetricStat.eMean OR E_MetricStat.eSum
+                      OR E_MetricStat.eCount OR E_MetricStat.eStdDev);      // full
 
 Single-stat selections are valid and useful — e.g. ``eSum`` alone for
 energy / counter metrics.

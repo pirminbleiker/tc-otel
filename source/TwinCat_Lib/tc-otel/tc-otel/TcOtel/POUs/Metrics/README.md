@@ -114,13 +114,17 @@ Bitmask values from `E_MetricStat`:
 | `eCount`| count      | observations folded — gap / drop detection            |
 | `eStdDev`| stddev    | jitter / stability (controller tuning, vibration)    |
 
-Convenience constants in `GVL_MetricAggregation`:
+OR the `E_MetricStat` bits to pick exactly the stats you want — no
+hidden indirection:
 
 ```pascal
-fbEnergy.SetAggregation(E_MetricStat.eSum);                        // counter — 8 B/sample
-fbTemp.SetAggregation(GVL_MetricAggregation.cMetricEnvelope);      // min+max  — 16 B
-fbProcess.SetAggregation(GVL_MetricAggregation.cMetricStandard);   // min+max+mean — 24 B  ← recommended
-fbCritical.SetAggregation(GVL_MetricAggregation.cMetricFull);      // all six — 48 B
+fbEnergy.SetAggregation(E_MetricStat.eSum);                                 // counter — 8 B/sample
+fbTemp.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax);              // envelope — 16 B
+fbProcess.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax
+                          OR E_MetricStat.eMean);                           // standard — 24 B  ← recommended
+fbCritical.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax
+                           OR E_MetricStat.eMean OR E_MetricStat.eSum
+                           OR E_MetricStat.eCount OR E_MetricStat.eStdDev); // full — 48 B
 ```
 
 Wire impact: `body_schema = eNumericAggregated (6)`, `sample_size =
@@ -219,33 +223,55 @@ very next flush, then cleared.
 
 ## Resource cost per instance
 
+Phase 8 added A/B double-buffering so the sender can ship one frame while
+`Observe` continues writing to the other half — no MEMCPY of the body.
+Per-half = `HDR_RESERVE (256) + BODY_CAPACITY (8192)` = 8448 B.
+
 | Item | Bytes |
 | --- | --- |
-| Header / state | ~140 |
-| Body buffer | 8192 |
+| Frame A (header reserve + body) | 8448 |
+| Frame B (header reserve + body) | 8448 |
+| Header staging stack (transient, only during `_DoFlush`) | ~256 |
 | Last-value cache | 64 |
-| Frame staging stack (transient, only during `_DoFlush`) | ~256 |
-| **Total resident** | ~8.4 KB |
+| Header / counters / state | ~200 |
+| **Total resident** | ~17.2 KB |
 
-Memory is fixed at compile time — no dynamic allocation. For low-rate
-metrics this is more than enough; if you have many high-rate metrics on
-a single task, plan for the cumulative footprint.
+Memory is fixed at compile time — no dynamic allocation. Per-task sender
+holds a small pointer ring (≤ 64 B) and no longer copies frames into a
+staging buffer, so the sender itself shrank by the old 8 KB staging area
+— net memory grows by ~8.4 KB per additional metric.
 
 ## Backpressure
 
-The per-task `FB_TcOtelTaskMetrics` sender is single-flight: while one
-frame is being shipped via `ADSWRITE`, further `Emit` calls return FALSE
-and increment a drop counter. `FB_Metrics` accepts the drop and tries
-again on its next push window — losing one window is preferable to
-per-instance queueing memory cost. Inspect `FB_TcOtelTaskMetrics`
-counters (`nFlushOkCount`, `nFlushErrorCount`, `nFlushDropCount`) on the
-online view if you suspect backpressure.
+Phase 8 replaced the drop-on-busy sender with a per-task dispatch ring
+of `POINTER TO FB_Metrics` (depth 8). Each `_DoFlush` swaps `_eActiveBuf`,
+stamps the frozen header into the pending half's header reserve (one ≤ 160 B
+MEMCPY, body stays put), and calls `sender.Enqueue(THIS)`. The sender
+drives ADSWRITE directly from the FB's own memory — zero body copy — and
+calls back `_NotifyFrameSent` when the transfer completes so the half can
+be reused.
+
+Drop paths:
+
+* `_nDropWindow` — a push window expired while the previous frame was still
+  queued (sender backlog exceeds A/B = 2). The active half is reset and the
+  window is lost. Should stay near zero in practice (one ADS roundtrip is
+  much shorter than any reasonable push interval).
+* `_nDropEmit` — the sender's dispatch ring was full (8 concurrent pending
+  FBs on one task) or the sender was uninitialised. Also counts ADSWRITE
+  error replies.
+* `FB_TcOtelTaskMetrics.nFlushDropCount` — ring-overflow counter on the
+  sender side; mirrors `_nDropEmit` per metric but aggregated per task.
+* `FB_TcOtelTaskMetrics.nPendingHighWater` — peak queue depth since boot.
+  Useful for tuning `SIZEOF_RING` if you genuinely have ≥ 8 metrics all
+  flushing on the same cycle.
 
 ## Counters surfaced for ops
 
 `FB_Metrics` instance:
 
-* `_nFlushOk` — successful Emit calls
-* `_nDropEmit` — sender returned FALSE (busy / oversize)
-* `_nDropAppend` — body buffer was full when a sample arrived
+* `_nFlushOk` — successful ADSWRITE completions
+* `_nDropEmit` — sender ring full / ADSWRITE error / sender missing
+* `_nDropAppend` — active body was full when a sample arrived
+* `_nDropWindow` — window expired while previous frame still pending
 * `_nWrongTypeDrops` — `Observe` called with a different `TypeClass` than locked

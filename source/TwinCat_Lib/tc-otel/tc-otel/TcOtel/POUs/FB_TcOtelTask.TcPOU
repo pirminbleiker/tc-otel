@@ -55,16 +55,16 @@ END_IF]]></ST>
       </Implementation>
     </Method>
     <Property Name="_ReadBuffer" Id="{89350028-23fb-44f2-92f4-54c18e36deb9}">
-      <Declaration><![CDATA[PROPERTY PRIVATE _ReadBuffer : POINTER TO FB_LogBuffer]]></Declaration>
+      <Declaration><![CDATA[PROPERTY PRIVATE _ReadBuffer : REFERENCE TO FB_LogBuffer]]></Declaration>
       <Get Name="Get" Id="{7c4c9ce0-9138-424d-a830-32f3cd97a4d1}">
         <Declaration><![CDATA[VAR
 END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[IF nWriteBuffer = 1 THEN
-	_ReadBuffer := ADR(fbLogBuffer2);
+	_ReadBuffer REF= fbLogBuffer2;
 ELSE
-	_ReadBuffer := ADR(fbLogBuffer1);
+	_ReadBuffer REF= fbLogBuffer1;
 END_IF]]></ST>
         </Implementation>
       </Get>
@@ -72,7 +72,7 @@ END_IF]]></ST>
     <Method Name="_WriteByte" Id="{d3e4f5a6-b7c8-d9e0-f1a2-b3c4d5e6f7a8}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteByte
 VAR_INPUT
-	pWriteBuffer	: POINTER TO FB_LogBuffer;
+	pWriteBuffer	: REFERENCE TO FB_LogBuffer;
 	nValue			: BYTE;
 END_VAR
 VAR
@@ -81,9 +81,9 @@ VAR
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF pWriteBuffer^.BufferFree >= SIZEOF(nValue) THEN
-	Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nValue), SIZEOF(nValue));
-	pWriteBuffer^.DataAdded(SIZEOF(nValue));
+        <ST><![CDATA[IF pWriteBuffer.BufferFree >= SIZEOF(nValue) THEN
+	Tc2_System.MEMCPY(pWriteBuffer.BufferPtr, ADR(nValue), SIZEOF(nValue));
+	pWriteBuffer.DataAdded(SIZEOF(nValue));
 END_IF
 ]]></ST>
       </Implementation>
@@ -91,11 +91,11 @@ END_IF
     <Method Name="_WriteRegistration" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteRegistration
 VAR
-	pWriteBuffer	: POINTER TO FB_LogBuffer;
+	pWriteBuffer	: REFERENCE TO FB_LogBuffer;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[pWriteBuffer := WriteBuffer;
+        <ST><![CDATA[pWriteBuffer REF= WriteBuffer;
 
 // Write Registration message (0x03)
 _WriteByte(pWriteBuffer, 3);										// Type = 0x03 (Registration)
@@ -110,7 +110,7 @@ _WriteUDInt(pWriteBuffer, TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt);		
     <Method Name="_WriteString" Id="{e4f5a6b7-c8d9-e0f1-a2b3-c4d5e6f7a8b9}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteString
 VAR_INPUT
-	pWriteBuffer	: POINTER TO FB_LogBuffer;
+	pWriteBuffer	: REFERENCE TO FB_LogBuffer;
 	pValue			: POINTER TO Tc2_Utilities.T_MaxString;
 END_VAR
 VAR
@@ -123,9 +123,9 @@ END_VAR
 	nLen := TO_INT(Tc2_Utilities.LEN2(pValue));
 	IF nLen >= 0 AND nLen <= 255 THEN
 		_WriteByte(pWriteBuffer, INT_TO_BYTE(nLen));
-		IF pWriteBuffer^.BufferFree >= INT_TO_UINT(nLen) THEN
-			Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, pValue, INT_TO_UINT(nLen));
-			pWriteBuffer^.DataAdded(INT_TO_UINT(nLen));
+		IF pWriteBuffer.BufferFree >= INT_TO_UINT(nLen) THEN
+			Tc2_System.MEMCPY(pWriteBuffer.BufferPtr, pValue, INT_TO_UINT(nLen));
+			pWriteBuffer.DataAdded(INT_TO_UINT(nLen));
 		END_IF
 	END_IF
 END_IF
@@ -135,7 +135,7 @@ END_IF
     <Method Name="_WriteUDInt" Id="{f5a6b7c8-d9e0-f1a2-b3c4-d5e6f7a8b9ca}">
       <Declaration><![CDATA[METHOD PRIVATE _WriteUDInt
 VAR_INPUT
-	pWriteBuffer	: POINTER TO FB_LogBuffer;
+	pWriteBuffer	: REFERENCE TO FB_LogBuffer;
 	nValue			: UDINT;
 END_VAR
 VAR
@@ -143,9 +143,9 @@ VAR
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF pWriteBuffer^.BufferFree >= SIZEOF(nValue) THEN
-	Tc2_System.MEMCPY(pWriteBuffer^.BufferPtr, ADR(nValue), SIZEOF(nValue));
-	pWriteBuffer^.DataAdded(SIZEOF(nValue));
+        <ST><![CDATA[IF pWriteBuffer.BufferFree >= SIZEOF(nValue) THEN
+	Tc2_System.MEMCPY(pWriteBuffer.BufferPtr, ADR(nValue), SIZEOF(nValue));
+	pWriteBuffer.DataAdded(SIZEOF(nValue));
 END_IF
 ]]></ST>
       </Implementation>
@@ -157,8 +157,8 @@ declared.
 *)
 METHOD INTERNAL Call
 VAR
-	pWriteBuffer		: POINTER TO FB_LogBuffer;
-	pReadBuffer			: POINTER TO FB_LogBuffer;
+	pWriteBuffer		: REFERENCE TO FB_LogBuffer;
+	pReadBuffer			: REFERENCE TO FB_LogBuffer;
 END_VAR
 VAR_INST
 	nState				: UINT;
@@ -176,7 +176,7 @@ CASE nState OF
 		nState := 10;
 		
 	10: // Wait for log entry; add them to the send buffer
-		pWriteBuffer := WriteBuffer;
+		pWriteBuffer REF= WriteBuffer;
 
 		// Emit a one-shot log on the FALSE->TRUE transition of bConnected so the
 		// service receives a marker when the PLC resumes logging.
@@ -193,13 +193,13 @@ CASE nState OF
 		END_IF
 
 		// Send registration if needed
-		IF bRegistrationDirty AND pWriteBuffer^.BufferFree > 100 THEN
+		IF bRegistrationDirty AND pWriteBuffer.BufferFree > 100 THEN
 			_WriteRegistration();
 			bRegistrationDirty := FALSE;
 			nLastOnlineChange := TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt;
 		END_IF
 
-		IF pWriteBuffer^.BufferUsed > 0 THEN
+		IF pWriteBuffer.BufferUsed > 0 THEN
 			// Switch buffer for next write
 			nWriteBuffer := SEL(nWriteBuffer = 1, 1 , 2);
 
@@ -209,8 +209,8 @@ CASE nState OF
 				NETID	:= sAmsNetId,
 				IDXGRP 	:= nLogIndexGrp,
 				IDXOFFS := nLogIndexOffs,
-				LEN		:= pWriteBuffer^.BufferUsed,
-				SRCADDR	:= pWriteBuffer^.BufferStartPtr,
+				LEN		:= pWriteBuffer.BufferUsed,
+				SRCADDR	:= pWriteBuffer.BufferStartPtr,
 			);
 
 			F_InternalLog(
@@ -269,8 +269,8 @@ CASE nState OF
 					TcOtelInfo.aTaskInfo[nTaskIndex].bReconnectPending := TRUE;
 				END_IF
 
-				pReadBuffer := _ReadBuffer;
-				pReadBuffer^.Clear();
+				pReadBuffer REF= _ReadBuffer;
+				pReadBuffer.Clear();
 				nState := 10;
 			END_IF
 		END_IF
@@ -311,16 +311,16 @@ END_VAR
       </Get>
     </Property>
     <Property Name="WriteBuffer" Id="{fb964da2-3fa4-48e9-92ae-ad64ee990d37}">
-      <Declaration><![CDATA[PROPERTY INTERNAL WriteBuffer : POINTER TO FB_LogBuffer]]></Declaration>
+      <Declaration><![CDATA[PROPERTY INTERNAL WriteBuffer : REFERENCE TO FB_LogBuffer]]></Declaration>
       <Get Name="Get" Id="{5093a44b-ef4a-4bf5-a3c2-f101475cf92d}">
         <Declaration><![CDATA[VAR
 END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[IF nWriteBuffer = 1 THEN
-	WriteBuffer := ADR(fbLogBuffer1);
+	WriteBuffer REF= fbLogBuffer1;
 ELSE
-	WriteBuffer := ADR(fbLogBuffer2);
+	WriteBuffer REF= fbLogBuffer2;
 END_IF]]></ST>
         </Implementation>
       </Get>

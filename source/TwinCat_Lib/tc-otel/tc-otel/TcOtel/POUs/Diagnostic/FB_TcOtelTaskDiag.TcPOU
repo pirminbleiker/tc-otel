@@ -23,7 +23,7 @@ VAR
     bInitialized        : BOOL;
     sTcOtelNetId        : T_AmsNetId;
     nTcOtelPort         : UINT := 16150;
-    pConfig             : POINTER TO ST_PushDiagConfig;
+    pConfig             : REFERENCE TO ST_PushDiagConfig;
 
     (* Wire-format constants — kept as VAR to avoid a separate GVL. *)
     nWireVersion        : BYTE  := 2;
@@ -154,16 +154,16 @@ IF bFlushInFlight THEN
     END_IF
 END_IF
 
-IF NOT bInitialized OR pConfig = 0 THEN
+IF NOT bInitialized OR NOT __ISVALIDREF(pConfig) THEN
     RETURN;
 END_IF
 
-IF NOT pConfig^.enabled THEN
+IF NOT pConfig.enabled THEN
     RETURN;
 END_IF
 
 (* Divider: skip cycles if configured to sub-sample a very fast task. *)
-nRequestedDivider := pConfig^.divider;
+nRequestedDivider := pConfig.divider;
 IF nRequestedDivider > 1 THEN
     nDividerCounter := nDividerCounter + 1;
     IF nDividerCounter < nRequestedDivider THEN
@@ -293,7 +293,7 @@ VAR
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF pConfig = 0 OR pConfig^.window_ms = 0 THEN
+        <ST><![CDATA[IF NOT __ISVALIDREF(pConfig) OR pConfig.window_ms = 0 THEN
     RETURN;
 END_IF
 
@@ -316,7 +316,7 @@ nCycleTimeUs := pTi^.CycleTime / 10;
 IF nCycleTimeUs = 0 THEN
     nCycleTimeUs := 1000; (* safety fallback: assume 1 ms *)
 END_IF
-nTargetCycles := (pConfig^.window_ms * 1000) / nCycleTimeUs;
+nTargetCycles := (pConfig.window_ms * 1000) / nCycleTimeUs;
 IF nTargetCycles = 0 THEN
     nTargetCycles := 1;
 END_IF
@@ -381,7 +381,7 @@ stHeader.event_type         := nEventTypeBatch;
 stHeader.reserved0          := 0;
 stHeader.task_obj_id        := pTask^.ObjId;
 stHeader.task_port          := DWORD_TO_UINT(pTask^.AdsPort AND 16#FFFF);
-stHeader.window_ms          := UDINT_TO_UINT(pConfig^.window_ms);
+stHeader.window_ms          := UDINT_TO_UINT(pConfig.window_ms);
 stHeader.sample_count       := UDINT_TO_UINT(nRingCount);
 stHeader.reserved1          := 0;
 stHeader.cycle_count_start  := nCycleCountStart;
@@ -483,9 +483,9 @@ of each task.
 *)
 METHOD PUBLIC Init : BOOL
 VAR_INPUT
-    sAmsNetId   : T_AmsNetId;                   // tc-otel AMS net id
-    nPort       : UINT;                         // tc-otel ADS port (default 16150)
-    pCfg        : POINTER TO ST_PushDiagConfig; // per-task config slot
+    sAmsNetId   : T_AmsNetId;                     // tc-otel AMS net id
+    nPort       : UINT;                           // tc-otel ADS port (default 16150)
+    pCfg        : REFERENCE TO ST_PushDiagConfig; // per-task config slot
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -493,7 +493,7 @@ END_VAR
 IF nPort <> 0 THEN
     nTcOtelPort := nPort;
 END_IF
-pConfig := pCfg;
+pConfig REF= pCfg;
 bInitialized := TRUE;
 bWindowStartSet := FALSE;
 Init := TRUE;

@@ -54,6 +54,19 @@ VAR_INPUT
 END_VAR
 VAR_OUTPUT
 END_VAR
+VAR CONSTANT
+    (* Each frame is laid out as one contiguous byte array where the header
+       grows backward into a 256-byte reserve immediately before the body.
+       ADSWRITE reads a single pointer that starts at [HDR_RESERVE - hdrLen]
+       and runs through the body — no MEMCPY of either region on flush.
+
+       Header max observed size (v2 frame + 24 B trace_ctx + 63 B name + 15 B
+       unit) is ~154 B; 256 B is generous padding. Body stays at 8 KB per
+       half. Total per-half = HDR_RESERVE + BODY_CAPACITY = 8448 B. *)
+    HDR_RESERVE         : UDINT := 256;
+    BODY_CAPACITY       : UDINT := 8192;
+    FRAME_SIZE          : UDINT := 8448;              // HDR_RESERVE + BODY_CAPACITY
+END_VAR
 VAR
     (* Identification *)
     _bInitialized       : BOOL;
@@ -67,11 +80,28 @@ VAR
     _nLockedTypeClass   : __SYSTEM.TYPE_CLASS;
     _nStringSize        : UDINT := 64;                // for eString / eWstring; bytes for eString, chars for eWstring
 
-    (* Sample buffer — append-only; reset on flush. 8 KB body. *)
-    _abyBody            : ARRAY[0..8191] OF BYTE;
-    _nBodyOffset        : UDINT;
+    (* Phase 8 — A/B frame layout. Each half is one contiguous byte array
+       with the header staged into [HDR_RESERVE - hdrLen .. HDR_RESERVE - 1]
+       and body samples appended from [HDR_RESERVE..]. Observe writes into
+       whichever half is ACTIVE; the pending half stays frozen while the
+       sender ships it via ADSWRITE with SRCADDR pointing directly here.
+       No MEMCPY of the body on flush. *)
+    _aFrameA            : ARRAY[0..8447] OF BYTE;
+    _aFrameB            : ARRAY[0..8447] OF BYTE;
+    _eActiveBuf         : USINT;                      // 0 = A is active, 1 = B is active
+
+    (* Active-half mutable state. Reset on flush when the active half flips. *)
+    _nBodyOffset        : UDINT;                      // bytes appended into active body region (from HDR_RESERVE)
     _nSampleCount       : UDINT;
     _bOverflow          : BOOL;
+
+    (* Pending-half snapshot — owned by the sender from Enqueue until the
+       _NotifyFrameSent callback. Stable pointer region:
+       frame[HDR_RESERVE - _nPendingHdrLen .. HDR_RESERVE + _nPendingBodyLen - 1]. *)
+    _bPending           : BOOL;
+    _ePendingBuf        : USINT;                      // 0 = A is pending, 1 = B is pending
+    _nPendingHdrLen     : UDINT;
+    _nPendingBodyLen    : UDINT;
 
     (* Change-detect cache — first 64 B of the last sampled value. Long
        strings (>64 B) lose change-detect precision past byte 64; this
@@ -98,8 +128,9 @@ VAR
 
     (* Counters surfaced for online inspection *)
     _nFlushOk           : UDINT;
-    _nDropAppend        : UDINT;                      // appends dropped (overflow)
-    _nDropEmit          : UDINT;                      // Emit returned FALSE (sender busy / oversize)
+    _nDropAppend        : UDINT;                      // appends dropped (active body overflow)
+    _nDropEmit          : UDINT;                      // sender ring full / ADSWRITE err
+    _nDropWindow        : UDINT;                      // window expired while previous still queued
     _nWrongTypeDrops    : UDINT;                      // Observe called with type ≠ locked
 
     (* Phase 7 — bitmask aggregation. When _nStatMask > 0 and the locked
@@ -124,14 +155,114 @@ VAR
        _pSpanOverride is set by WithSpan and consumed by the very next
        flush — lets users force a specific span when "innermost" isn't
        what they want. *)
-    _pTracer            : POINTER TO FB_TcOtelTracer;
-    _pSpanOverride      : POINTER TO FB_Span;
+    _pTracer            : REFERENCE TO FB_TcOtelTracer;
+    _pSpanOverride      : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
     <Folder Name="Private" Id="{a5b6c7d8-e9f0-1a2b-3c4d-5e6f7a8b9c0a}" />
+    <Method Name="_ActiveBodyPtr" Id="{12345678-9abc-def0-1234-567890abcd01}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Byte pointer to the start of the body region in the ACTIVE frame.
+
+Body writes land at ``_ActiveBodyPtr() + _nBodyOffset``. Swapping buffers
+at flush time only toggles ``_eActiveBuf``; subsequent Observe calls land
+in the now-fresh half without touching the pending half still being shipped.
+*)
+METHOD PRIVATE _ActiveBodyPtr : POINTER TO BYTE
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _eActiveBuf = 0 THEN
+    _ActiveBodyPtr := ADR(_aFrameA[HDR_RESERVE]);
+ELSE
+    _ActiveBodyPtr := ADR(_aFrameB[HDR_RESERVE]);
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_ActiveFrameAddr" Id="{12345678-9abc-def0-1234-567890abcd02}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Byte pointer to the start of the ACTIVE frame (i.e. the header
+reserve base). Used by _DoFlush to position the header immediately before the
+body via ``_ActiveFrameAddr() + (HDR_RESERVE - hdrLen)``.
+*)
+METHOD PRIVATE _ActiveFrameAddr : POINTER TO BYTE
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _eActiveBuf = 0 THEN
+    _ActiveFrameAddr := ADR(_aFrameA[0]);
+ELSE
+    _ActiveFrameAddr := ADR(_aFrameB[0]);
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AggReset" Id="{c4d5e6f7-a8b9-c0d1-e2f3-a4b5c6d7e8f0}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Clear the Welford aggregator state at the start of every sample window.
+*)
+METHOD PRIVATE _AggReset
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_aggMin        := 0.0;
+_aggMax        := 0.0;
+_aggMean       := 0.0;
+_aggSumSq      := 0.0;
+_aggSum        := 0.0;
+_nAggCount     := 0;
+_bAggHasSample := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AggUpdate" Id="{d5e6f7a8-b9c0-d1e2-f3a4-b5c6d7e8f9a0}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Fold one observation into the Welford online aggregator.
+
+Maintains running min/max/sum/count exactly, and mean / sum-of-squared-
+deltas via Welford so the per-Observe cost stays at ~6 LREAL ops without
+ever rebuilding from a stored sample list. StdDev is derived from
+``_aggSumSq / (n - 1)`` only at flush time.
+
+Reference: B. P. Welford, *Note on a Method for Calculating Corrected
+Sums of Squares and Products*, Technometrics 4(3), 1962.
+*)
+METHOD PRIVATE _AggUpdate
+VAR_INPUT
+    fValue : LREAL;
+END_VAR
+VAR
+    fDelta  : LREAL;
+    fDelta2 : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT _bAggHasSample THEN
+    _aggMin        := fValue;
+    _aggMax        := fValue;
+    _aggMean       := fValue;
+    _aggSumSq      := 0.0;
+    _aggSum        := fValue;
+    _nAggCount     := 1;
+    _bAggHasSample := TRUE;
+ELSE
+    IF fValue < _aggMin THEN
+        _aggMin := fValue;
+    END_IF
+    IF fValue > _aggMax THEN
+        _aggMax := fValue;
+    END_IF
+    _aggSum    := _aggSum + fValue;
+    _nAggCount := _nAggCount + 1;
+    fDelta     := fValue - _aggMean;
+    _aggMean   := _aggMean + fDelta / UDINT_TO_LREAL(_nAggCount);
+    fDelta2    := fValue - _aggMean;
+    _aggSumSq  := _aggSumSq + fDelta * fDelta2;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="_AnyToLreal" Id="{b6c7d8e9-f0a1-2b3c-4d5e-6f7a8b9c0d0b}" FolderPath="Private\">
       <Declaration><![CDATA[(*
 :Description: Widen any IEC numeric (or BOOL) to LREAL.
@@ -218,70 +349,6 @@ END_CASE
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_AggReset" Id="{c4d5e6f7-a8b9-c0d1-e2f3-a4b5c6d7e8f0}" FolderPath="Private\">
-      <Declaration><![CDATA[(*
-:Description: Clear the Welford aggregator state at the start of every sample window.
-*)
-METHOD PRIVATE _AggReset
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[_aggMin        := 0.0;
-_aggMax        := 0.0;
-_aggMean       := 0.0;
-_aggSumSq      := 0.0;
-_aggSum        := 0.0;
-_nAggCount     := 0;
-_bAggHasSample := FALSE;
-]]></ST>
-      </Implementation>
-    </Method>
-    <Method Name="_AggUpdate" Id="{d5e6f7a8-b9c0-d1e2-f3a4-b5c6d7e8f9a0}" FolderPath="Private\">
-      <Declaration><![CDATA[(*
-:Description: Fold one observation into the Welford online aggregator.
-
-Maintains running min/max/sum/count exactly, and mean / sum-of-squared-
-deltas via Welford so the per-Observe cost stays at ~6 LREAL ops without
-ever rebuilding from a stored sample list. StdDev is derived from
-``_aggSumSq / (n - 1)`` only at flush time.
-
-Reference: B. P. Welford, *Note on a Method for Calculating Corrected
-Sums of Squares and Products*, Technometrics 4(3), 1962.
-*)
-METHOD PRIVATE _AggUpdate
-VAR_INPUT
-    fValue : LREAL;
-END_VAR
-VAR
-    fDelta  : LREAL;
-    fDelta2 : LREAL;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[IF NOT _bAggHasSample THEN
-    _aggMin        := fValue;
-    _aggMax        := fValue;
-    _aggMean       := fValue;
-    _aggSumSq      := 0.0;
-    _aggSum        := fValue;
-    _nAggCount     := 1;
-    _bAggHasSample := TRUE;
-ELSE
-    IF fValue < _aggMin THEN
-        _aggMin := fValue;
-    END_IF
-    IF fValue > _aggMax THEN
-        _aggMax := fValue;
-    END_IF
-    _aggSum    := _aggSum + fValue;
-    _nAggCount := _nAggCount + 1;
-    fDelta     := fValue - _aggMean;
-    _aggMean   := _aggMean + fDelta / UDINT_TO_LREAL(_nAggCount);
-    fDelta2    := fValue - _aggMean;
-    _aggSumSq  := _aggSumSq + fDelta * fDelta2;
-END_IF
-]]></ST>
-      </Implementation>
-    </Method>
     <Method Name="_AppendAggregated" Id="{e6f7a8b9-c0d1-e2f3-a4b5-c6d7e8f9a0b1}" FolderPath="Private\">
       <Declaration><![CDATA[(*
 :Description: Snapshot the current Welford aggregator into the body buffer.
@@ -303,12 +370,12 @@ VAR
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > SIZEOF(_abyBody) THEN
+        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > BODY_CAPACITY THEN
     _AppendAggregated := FALSE;
     RETURN;
 END_IF
 
-pDst    := ADR(_abyBody) + _nBodyOffset;
+pDst    := _ActiveBodyPtr() + _nBodyOffset;
 nOffset := 0;
 
 IF (_nStatMask AND E_MetricStat.eMin) <> 0 THEN
@@ -348,31 +415,6 @@ _AppendAggregated := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="_PopCount8" Id="{f7a8b9c0-d1e2-f3a4-b5c6-d7e8f9a0b1c2}" FolderPath="Private\">
-      <Declaration><![CDATA[(*
-:Description: Bit-count of a BYTE — used to size the aggregated sample.
-
-Trivial loop is fine for an 8-bit value; called once per SetAggregation,
-not per cycle.
-*)
-METHOD PRIVATE _PopCount8 : UDINT
-VAR_INPUT
-    nByte : BYTE;
-END_VAR
-VAR
-    nBit : INT;
-END_VAR
-]]></Declaration>
-      <Implementation>
-        <ST><![CDATA[_PopCount8 := 0;
-FOR nBit := 0 TO 7 DO
-    IF (nByte AND SHL(BYTE#1, nBit)) <> 0 THEN
-        _PopCount8 := _PopCount8 + 1;
-    END_IF
-END_FOR
-]]></ST>
-      </Implementation>
-    </Method>
     <Method Name="_AppendSample" Id="{c7d8e9f0-a1b2-3c4d-5e6f-7a8b9c0d1e0c}" FolderPath="Private\">
       <Declaration><![CDATA[(*
 :Description: Write one sample of the locked schema into the body buffer.
@@ -392,12 +434,12 @@ VAR
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > SIZEOF(_abyBody) THEN
+        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > BODY_CAPACITY THEN
     _AppendSample := FALSE;
     RETURN;
 END_IF
 
-pDst := ADR(_abyBody) + _nBodyOffset;
+pDst := _ActiveBodyPtr() + _nBodyOffset;
 
 CASE _eBodySchema OF
     E_MetricBodySchema.eBool:
@@ -511,32 +553,62 @@ _nWindowStartCycle := nNowCycle;
     </Method>
     <Method Name="_DoFlush" Id="{e9f0a1b2-c3d4-5e6f-7a8b-9c0d1e2f3a0e}" FolderPath="Private\">
       <Declaration><![CDATA[(*
-:Description: Build header + (name + unit) on the stack and ship via the per-task sender.
+:Description: Finalize the active window into a sendable frame and enqueue for the sender.
 
-Resets all window state on success or sender drop — a dropped frame
-counts in ``_nDropEmit`` but the buffer is cleared either way to keep
-the next window honest about its time bounds.
+Phase 8 — zero-copy queued dispatch:
+
+1. If the previous window is still queued (``_bPending``) the sender has
+   fallen behind. Increment ``_nDropWindow`` and reset the active half —
+   we cannot touch the pending half nor duplicate ourselves in the queue.
+2. Otherwise: build the header into a small stack staging (≤ ~160 B),
+   MEMCPY the staged header into the active frame's reserve region so it
+   sits directly before the body (one contiguous byte run), snapshot the
+   pending metadata (buf index, hdr len, body len), flip ``_eActiveBuf``,
+   reset the now-active (previously empty) half, and call
+   ``sender.Enqueue(THIS)``.
+
+The sender later calls ``_GetPendingPtr`` / ``_GetPendingLen`` to read the
+frame pointer + length directly into ADSWRITE, and ``_NotifyFrameSent``
+when the transfer completes. The body buffer is never MEMCPY'd.
 *)
 METHOD PRIVATE _DoFlush
 VAR
-    stHeader  : ST_PushMetricAggHeader;
-    abyHdr    : ARRAY[0..255] OF BYTE;     // header(52) + name(63) + unit(15) ≤ 130; +trace(24) ≤ 154
-    nHdrLen   : UDINT;
-    nNameLen  : UDINT;
-    nUnitLen  : UDINT;
-    refSender : REFERENCE TO FB_TcOtelTaskMetrics;
-    bOk       : BOOL;
-    pSpan     : POINTER TO FB_Span;
+    stHeader    : ST_PushMetricAggHeader;
+    abyHdr      : ARRAY[0..255] OF BYTE;   // header(52) + trace(24) + name(63) + unit(15) ≤ 154
+    nHdrLen     : UDINT;
+    nNameLen    : UDINT;
+    nUnitLen    : UDINT;
+    refSender   : REFERENCE TO FB_TcOtelTaskMetrics;
+    refSpan     : REFERENCE TO FB_Span;
+    pActiveBase : POINTER TO BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[(* Resolve trace context: per-flush WithSpan override beats persistent
-   BindTracer; an explicit override that points to a closed span still
-   wins — we honour the user's intent and let the receiver decide what
-   that span_id means. *)
-pSpan := _pSpanOverride;
-IF pSpan = 0 AND _pTracer <> 0 THEN
-    pSpan := _pTracer^.InnermostSpan;
+        <ST><![CDATA[(* Backlog guard: if the sender is still shipping our previous frame, the
+   pending half is in use and we have no clean buffer to swap into. Drop
+   this window rather than risk body corruption. In practice this only
+   fires during a dead / slow tc-otel endpoint. *)
+IF _bPending THEN
+    _nDropWindow      := _nDropWindow + 1;
+    _nBodyOffset      := 0;
+    _nSampleCount     := 0;
+    _bOverflow        := FALSE;
+    _bWindowHasSample := FALSE;
+    _nCycleStart      := 0;
+    _nCycleEnd        := 0;
+    _nDcTimeStart     := 0;
+    _nDcTimeEnd       := 0;
+    RETURN;
+END_IF
+
+(* Resolve trace context: per-flush WithSpan override beats persistent
+   BindTracer. Both candidates and the chosen handle stay as REFERENCE TO —
+   nullable via REF= 0 + __ISVALIDREF, no pointer round-trip needed. *)
+refSpan REF= 0;
+IF __ISVALIDREF(_pSpanOverride) THEN
+    refSpan REF= _pSpanOverride;
+ELSIF __ISVALIDREF(_pTracer) THEN
+    refSpan REF= _pTracer.InnermostSpan;
 END_IF
 
 (* Build fixed header. *)
@@ -546,7 +618,7 @@ stHeader.nFlags           := 0;
 IF _bOverflow THEN
     stHeader.nFlags := stHeader.nFlags OR 16#02;    (* bit1 = ring_overflowed *)
 END_IF
-IF pSpan <> 0 THEN
+IF __ISVALIDREF(refSpan) THEN
     stHeader.nFlags := stHeader.nFlags OR 16#01;    (* bit0 = has_trace_ctx *)
 END_IF
 stHeader.eBodySchema      := _eBodySchema;
@@ -575,15 +647,14 @@ stHeader.nUnitLen := TO_BYTE(nUnitLen);
 Tc2_System.MEMCPY(ADR(abyHdr), ADR(stHeader), SIZEOF(stHeader));
 nHdrLen := SIZEOF(stHeader);
 
-IF pSpan <> 0 THEN
-    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen,      ADR(pSpan^._abTraceId[0]), 16);
-    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen + 16, ADR(pSpan^._abSpanId[0]),  8);
+IF __ISVALIDREF(refSpan) THEN
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen,      ADR(refSpan._abTraceId[0]), 16);
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen + 16, ADR(refSpan._abSpanId[0]),  8);
     nHdrLen := nHdrLen + 24;
 END_IF
 
-(* Consume per-flush span override after one frame — BindTracer keeps the
-   tracer pointer for next time, but WithSpan is one-shot. *)
-_pSpanOverride := 0;
+(* Consume per-flush span override — BindTracer stays, WithSpan is one-shot. *)
+_pSpanOverride REF= 0;
 
 IF nNameLen > 0 THEN
     Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen, ADR(_sName), nNameLen);
@@ -594,20 +665,40 @@ IF nUnitLen > 0 THEN
     nHdrLen := nHdrLen + nUnitLen;
 END_IF
 
-refSender REF= PRG_TaskLog.TaskMetrics;
-IF __ISVALIDREF(refSender) THEN
-    bOk := refSender.Emit(ADR(abyHdr), nHdrLen, ADR(_abyBody), _nBodyOffset);
-ELSE
-    bOk := FALSE;
-END_IF
-
-IF bOk THEN
-    _nFlushOk := _nFlushOk + 1;
-ELSE
+(* Defensive clamp: the header reserve is HDR_RESERVE bytes. Oversized
+   headers would overlap the body. In practice nHdrLen ≤ 154. *)
+IF nHdrLen > HDR_RESERVE THEN
     _nDropEmit := _nDropEmit + 1;
+    (* Reset window and bail — don't corrupt the frame layout. *)
+    _nBodyOffset      := 0;
+    _nSampleCount     := 0;
+    _bOverflow        := FALSE;
+    _bWindowHasSample := FALSE;
+    _nCycleStart      := 0;
+    _nCycleEnd        := 0;
+    _nDcTimeStart     := 0;
+    _nDcTimeEnd       := 0;
+    RETURN;
 END_IF
 
-(* Reset window content regardless — next window starts clean. *)
+(* Position the staged header so its last byte sits at offset HDR_RESERVE-1
+   of the active frame — i.e. flush against the body start. Single MEMCPY
+   of ≤ 160 B; no body copy. *)
+pActiveBase := _ActiveFrameAddr();
+Tc2_System.MEMCPY(pActiveBase + (HDR_RESERVE - nHdrLen), ADR(abyHdr), nHdrLen);
+
+(* Snapshot pending metadata: the active (now-to-be-shipped) half. *)
+_ePendingBuf     := _eActiveBuf;
+_nPendingHdrLen  := nHdrLen;
+_nPendingBodyLen := _nBodyOffset;
+_bPending        := TRUE;
+
+(* Flip active → the other half. Reset the new-active mutable state. *)
+IF _eActiveBuf = 0 THEN
+    _eActiveBuf := 1;
+ELSE
+    _eActiveBuf := 0;
+END_IF
 _nBodyOffset      := 0;
 _nSampleCount     := 0;
 _bOverflow        := FALSE;
@@ -616,6 +707,68 @@ _nCycleStart      := 0;
 _nCycleEnd        := 0;
 _nDcTimeStart     := 0;
 _nDcTimeEnd       := 0;
+
+(* Hand the pending half to the sender's dispatch ring. *)
+refSender REF= PRG_TaskLog.TaskMetrics;
+IF __ISVALIDREF(refSender) THEN
+    IF NOT refSender.Enqueue(THIS) THEN
+        (* Ring overflow — real drop. Release the pending half so the next
+           window can still flush, and count as emit drop. *)
+        _bPending  := FALSE;
+        _nDropEmit := _nDropEmit + 1;
+    END_IF
+ELSE
+    (* Sender missing — treat like ring overflow. *)
+    _bPending  := FALSE;
+    _nDropEmit := _nDropEmit + 1;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetPendingLen" Id="{23456789-abcd-ef01-2345-6789abcdef03}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — total bytes of the frame currently in the sender queue.
+
+Called by ``FB_TcOtelTaskMetrics._KickHead`` to populate ADSWRITE.LEN.
+Returns 0 when ``_bPending`` is FALSE (spurious call — sender should ignore).
+*)
+METHOD INTERNAL _GetPendingLen : UDINT
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF _bPending THEN
+    _GetPendingLen := _nPendingHdrLen + _nPendingBodyLen;
+ELSE
+    _GetPendingLen := 0;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_GetPendingPtr" Id="{34567890-bcde-f012-3456-789abcdef004}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — byte pointer to the first byte of the pending frame.
+
+Frame layout in the pending half (``_ePendingBuf``):
+  [HDR_RESERVE - _nPendingHdrLen .. HDR_RESERVE - 1]  header + trace + name + unit
+  [HDR_RESERVE .. HDR_RESERVE + _nPendingBodyLen - 1] body samples
+So the frame starts at ``frame[HDR_RESERVE - _nPendingHdrLen]`` and runs
+``_nPendingHdrLen + _nPendingBodyLen`` bytes — a single contiguous ADS range.
+
+Called by ``FB_TcOtelTaskMetrics._KickHead`` to populate ADSWRITE.SRCADDR.
+Returns 0 when no frame is pending.
+*)
+METHOD INTERNAL _GetPendingPtr : PVOID
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT _bPending THEN
+    _GetPendingPtr := 0;
+    RETURN;
+END_IF
+
+IF _ePendingBuf = 0 THEN
+    _GetPendingPtr := ADR(_aFrameA[0]) + (HDR_RESERVE - _nPendingHdrLen);
+ELSE
+    _GetPendingPtr := ADR(_aFrameB[0]) + (HDR_RESERVE - _nPendingHdrLen);
+END_IF
 ]]></ST>
       </Implementation>
     </Method>
@@ -690,6 +843,34 @@ _LockSchema       := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
+    <Method Name="_NotifyFrameSent" Id="{45678901-cdef-0123-4567-89abcdef0005}">
+      <Declaration><![CDATA[(*
+:Description: INTERNAL — sender completion callback.
+
+Called by ``FB_TcOtelTaskMetrics.Call`` once ADSWRITE finishes (success, ADS
+error, or watchdog). Releases the pending half so the next ``_DoFlush`` can
+swap into it, and updates per-metric counters.
+
+Do not call from user code.
+*)
+METHOD INTERNAL _NotifyFrameSent
+VAR_INPUT
+    bOk : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bOk THEN
+    _nFlushOk := _nFlushOk + 1;
+ELSE
+    _nDropEmit := _nDropEmit + 1;
+END_IF
+
+_bPending        := FALSE;
+_nPendingHdrLen  := 0;
+_nPendingBodyLen := 0;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="_NowDcTime" Id="{a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c10}" FolderPath="Private\">
       <Declaration><![CDATA[(*
 :Description: Live DC time, falling back to cycle-start task DC time.
@@ -710,6 +891,31 @@ IF _NowDcTime = 0 THEN
         _NowDcTime := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].DcTaskTime;
     END_IF
 END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_PopCount8" Id="{f7a8b9c0-d1e2-f3a4-b5c6-d7e8f9a0b1c2}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Bit-count of a BYTE — used to size the aggregated sample.
+
+Trivial loop is fine for an 8-bit value; called once per SetAggregation,
+not per cycle.
+*)
+METHOD PRIVATE _PopCount8 : UDINT
+VAR_INPUT
+    nByte : BYTE;
+END_VAR
+VAR
+    nBit : INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_PopCount8 := 0;
+FOR nBit := 0 TO 7 DO
+    IF (nByte AND SHL(BYTE#1, nBit)) <> 0 THEN
+        _PopCount8 := _PopCount8 + 1;
+    END_IF
+END_FOR
 ]]></ST>
       </Implementation>
     </Method>
@@ -741,11 +947,11 @@ Pass ``0`` to unbind. Idempotent — safe to call repeatedly.
 *)
 METHOD PUBLIC BindTracer : BOOL
 VAR_INPUT
-    pTracer : POINTER TO FB_TcOtelTracer;
+    pTracer : REFERENCE TO FB_TcOtelTracer;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_pTracer := pTracer;
+        <ST><![CDATA[_pTracer REF= pTracer;
 BindTracer := TRUE;
 ]]></ST>
       </Implementation>
@@ -778,11 +984,36 @@ METHOD FB_exit : BOOL
 VAR_INPUT
     bInCopyCode : BOOL;
 END_VAR
+VAR
+    refSender : REFERENCE TO FB_TcOtelTaskMetrics;
+END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF _bInitialized AND _nSampleCount > 0 AND NOT bInCopyCode THEN
-    _DoFlush();
+        <ST><![CDATA[IF bInCopyCode THEN
+    FB_exit := TRUE;
+    RETURN;
 END_IF
+
+(* Online change / FB destruction: the sender holds POINTER TO FB_Metrics
+   in its dispatch ring (and maybe pInFlight). If we die before it notifies
+   us back, those become stale pointers. De-register first so the sender
+   can't read our frame after we're gone, then flush any last samples. *)
+IF _bInitialized THEN
+    refSender REF= PRG_TaskLog.TaskMetrics;
+    IF __ISVALIDREF(refSender) THEN
+        refSender.Dequeue(THIS);
+    END_IF
+
+    (* Mark pending cleared so _DoFlush can still produce a final frame —
+       but that frame will immediately bail on ring-full if the sender is
+       already backlogged. Acceptable for teardown. *)
+    _bPending := FALSE;
+
+    IF _nSampleCount > 0 THEN
+        _DoFlush();
+    END_IF
+END_IF
+
 FB_exit := TRUE;
 ]]></ST>
       </Implementation>
@@ -1034,15 +1265,43 @@ END_VAR
       <Declaration><![CDATA[(*
 :Description: Enable / change online aggregation over the sample interval.
 
-Pass a bitmask of ``E_MetricStat`` values (or one of the convenience
-constants in ``GVL_MetricAggregation``) to specify which statistics
-should be computed and shipped per sample tick:
+``nMask`` is a bitmask **OR-combined from individual ``E_MetricStat``
+values**. Each set bit selects one statistic to compute via Welford
+online aggregation and ship per sample tick:
+
+==================== === ===============================================
+Bit                  Hex Stat shipped per sample
+==================== === ===============================================
+``E_MetricStat.eMin``    1   minimum observed value
+``E_MetricStat.eMax``    2   maximum observed value
+``E_MetricStat.eMean``   4   arithmetic mean
+``E_MetricStat.eSum``    8   sum (totalizer — energy, parts, distance)
+``E_MetricStat.eCount`` 16   observations folded (gap / drop detection)
+``E_MetricStat.eStdDev`` 32   standard deviation (jitter / stability)
+==================== === ===============================================
+
+The bits ship in **bit-index order** (Min first if set, then Max, Mean,
+Sum, Count, StdDev). Wire size per sample = ``popcount(nMask) * 8``.
 
 .. code-block:: pascal
 
-    fbEnergy.SetAggregation(E_MetricStat.eSum);                  // counter
-    fbTemp.SetAggregation(GVL_MetricAggregation.cMetricStandard); // min/max/mean
-    fbCritical.SetAggregation(GVL_MetricAggregation.cMetricFull);
+	// Raw - use raw value (last), 8 B/sample (Default)
+	fbEnergy.SetAggregation(0);
+
+    // Counter — totalizer only, 8 B/sample.
+    fbEnergy.SetAggregation(E_MetricStat.eSum);
+
+    // Envelope — min + max, 16 B/sample. Catch peaks/troughs.
+    fbTemp.SetAggregation(E_MetricStat.eMin OR E_MetricStat.eMax);
+
+    // Standard — min + max + mean, 24 B/sample. Recommended default.
+    fbProcess.SetAggregation(
+        E_MetricStat.eMin OR E_MetricStat.eMax OR E_MetricStat.eMean);
+
+    // Full — all six, 48 B/sample. Diagnostic / tuning.
+    fbCritical.SetAggregation(
+        E_MetricStat.eMin OR E_MetricStat.eMax OR E_MetricStat.eMean
+        OR E_MetricStat.eSum OR E_MetricStat.eCount OR E_MetricStat.eStdDev);
 
 Pass ``0`` to revert to raw single-value sampling. With aggregation
 enabled, every ``Observe`` call updates the Welford aggregator
@@ -1170,11 +1429,11 @@ whichever short-lived span happens to be active at flush time.
 *)
 METHOD PUBLIC WithSpan : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[_pSpanOverride := pSpan;
+        <ST><![CDATA[_pSpanOverride REF= pSpan;
 WithSpan := TRUE;
 ]]></ST>
       </Implementation>

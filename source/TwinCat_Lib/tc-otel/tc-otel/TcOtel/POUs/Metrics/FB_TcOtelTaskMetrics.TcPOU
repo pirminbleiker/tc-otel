@@ -1,26 +1,48 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="FB_TcOtelTaskMetrics" Id="{c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e03}" SpecialFunc="None">
     <Declaration><![CDATA[(*
-:Description: Per-task transport for FB_Metrics push frames.
+:Description: Per-task transport for FB_Metrics push frames — queued, zero-copy.
 
 INTERNAL — never instantiated by user code. One instance per task lives in
 ``PRG_TaskLog.aTaskMetrics`` and is driven once per cycle by
 ``PRG_TaskLog.Call()``. Owns the ``ADSWRITE`` FB that ships pre-assembled
 metric frames to ``IG = 0x4D424301`` / ``IO = 2`` (IO_PUSH_METRIC_AGG).
 
-Backpressure: while a flush is in flight the next ``Emit`` call is dropped
-(``nFlushDropCount`` increments). FB_Metrics retries on the next push
-window — losing one window is preferable to per-instance queueing memory
-cost.
+**Phase 8: queued dispatch instead of single-flight drop.**
+
+Multiple FB_Metrics instances on the same task routinely flush in the same
+window (e.g. two metrics both at 5 s push interval). The previous version
+single-flighted ADSWRITE and dropped every concurrent Emit — the second
+metric lost its frame. This version keeps a small ring of POINTER TO
+FB_Metrics and drives ADSWRITE through them one at a time.
+
+The sender never copies the frame. FB_Metrics lays out its header + body in
+a single contiguous buffer (header grows backward into a 256-byte reserve
+right before the body). On enqueue the sender grabs ``_GetPendingPtr`` +
+``_GetPendingLen`` from the FB; ADSWRITE reads directly from the FB's own
+memory. On completion the sender calls ``_NotifyFrameSent`` so the FB
+releases its pending half and either resumes collecting into it or drops
+the next window if the sender has fallen behind.
 
 Watchdog mirrors ``FB_TcOtelTaskDiag`` — if ADSWRITE.BUSY stays true past
-``nFlightWatchdogCycles`` the FB force-resets ``WRITE := FALSE`` so a
-transient tc-otel outage doesn't wedge the sender forever.
+``nFlightWatchdogCycles`` the in-flight frame is cut loose (``WRITE := FALSE``)
+so a transient tc-otel outage doesn't wedge the sender forever.
+
+Ring overflow (``nCount = SIZEOF_RING``) is the only remaining drop path.
+It means ADSWRITE is grinding through a backlog deeper than the ring. In
+normal operation ``nFlushDropCount`` should stay at 0; a non-zero value
+signals either a dead tc-otel endpoint or a massive burst of FBs flushing
+simultaneously on one task.
 *)
 {attribute 'no_explicit_call' := 'no direct call necessary'}
 {attribute 'conditionalshow'}
 FUNCTION_BLOCK FB_TcOtelTaskMetrics
+VAR CONSTANT
+    (* Queue depth. 8 covers up to 8 FB_Metrics flushing on the same cycle
+       before any drop. Memory cost = 8 * SIZEOF(POINTER) ≈ 32-64 B. *)
+    SIZEOF_RING             : UDINT := 8;
+END_VAR
 VAR
     bInitialized            : BOOL;
     sTcOtelNetId            : T_AmsNetId;
@@ -30,40 +52,124 @@ VAR
     nIdxGroupPushDiag       : UDINT := 16#4D424301;
     nIdxOffsetMetricAgg     : UDINT := 2;
 
-    (* ADS write state. Single-flight: backpressure via Emit-time drop. *)
+    (* ADS write state. Zero-copy: SRCADDR points directly into whichever
+       FB_Metrics frame half is pending. *)
     fbAdsWrite              : Tc2_System.ADSWRITE;
     bFlushInFlight          : BOOL;
+    (* Identity-critical: compared against ring slots (POINTER TO FB_Metrics)
+       during Dequeue. Kept as POINTER because ADR() of a REFERENCE returns
+       the reference-storage address, not the target — which would never
+       match the target address stored in the ring. *)
+    pInFlight               : POINTER TO FB_Metrics;
     nFlushStartCycle        : UDINT;
     nFlightWatchdogCycles   : UDINT := 2000;
     nLastFlushSuccessCycle  : UDINT;
-    nFlushDropCount         : UDINT;     // dropped because already in flight or oversized
-    nFlushErrorCount        : UDINT;     // ADSWRITE returned ERR
-    nFlushOkCount           : UDINT;
 
-    (* Send buffer — must persist across cycles while ADSWRITE references
-       SRCADDR. Sized for the worst-case frame:
-         header(52) + trace_ctx(24) + name(63) + unit(15) + body(8192) ≈ 8346 B.
-       Rounded up. *)
-    abySendBuffer           : ARRAY [0..8447] OF BYTE;
-    nSendBufferSize         : UDINT := 8448;
+    (* Per-task enqueue ring — FIFO of FB_Metrics waiting to ship. *)
+    aPending                : ARRAY[0..7] OF POINTER TO FB_Metrics;
+    nPendingHead            : UDINT;
+    nPendingTail            : UDINT;
+    nPendingCount           : UDINT;
+
+    (* Ops counters. *)
+    nFlushDropCount         : UDINT;     // ring overflow — real drops
+    nFlushErrorCount        : UDINT;     // ADSWRITE returned ERR
+    nFlushOkCount           : UDINT;     // successful ships
+    nPendingHighWater       : UDINT;     // peak nPendingCount since boot
 END_VAR
 ]]></Declaration>
     <Implementation>
       <ST><![CDATA[]]></ST>
     </Implementation>
+    <Folder Name="Private" Id="{f5a4b3c2-d1e0-9f8a-7b6c-5d4e3f2a1b00}" />
+    <Method Name="_KickHead" Id="{a1b2c3d4-e5f6-7890-abcd-ef1234567801}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Start ADSWRITE for the head of the pending ring.
+
+No-op when a flush is already in flight or when the ring is empty. Reads
+the pending frame's byte pointer and length directly from the FB_Metrics
+instance (zero-copy) and arms the ADSWRITE FB with rising-edge WRITE.
+*)
+METHOD PRIVATE _KickHead
+VAR
+    pHead     : POINTER TO FB_Metrics;
+    pFb       : REFERENCE TO FB_Metrics;
+    pSrc      : PVOID;
+    nLen      : UDINT;
+    nTaskIdx  : DINT;
+    nNowCycle : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF bFlushInFlight OR nPendingCount = 0 OR NOT bInitialized THEN
+    RETURN;
+END_IF
+
+(* Peek-then-pop: read the head slot FIRST, then clear it and advance.
+   Reordering these three writes corrupts the queue — the defensive check
+   below only fires when the enqueue itself was buggy. *)
+pHead := aPending[nPendingHead];
+aPending[nPendingHead] := 0;
+nPendingHead  := (nPendingHead + 1) MOD SIZEOF_RING;
+nPendingCount := nPendingCount - 1;
+
+IF pHead = 0 THEN
+    (* Defensive — should not happen with well-formed enqueue/dequeue. *)
+    RETURN;
+END_IF
+pFb REF= pHead^;
+
+(* Ask the FB for the pending frame's byte pointer + length. *)
+pSrc := pFb._GetPendingPtr();
+nLen := pFb._GetPendingLen();
+IF pSrc = 0 OR nLen = 0 THEN
+    (* FB had nothing pending — the enqueue was spurious. Notify with
+       success so the FB resets its pending state, then try the next. *)
+    pFb._NotifyFrameSent(TRUE);
+    _KickHead();
+    RETURN;
+END_IF
+
+(* Rising-edge ADSWRITE kick — same idiom as FB_TcOtelTask. *)
+fbAdsWrite(WRITE := FALSE);
+fbAdsWrite(
+    NETID   := sTcOtelNetId,
+    PORT    := nTcOtelPort,
+    IDXGRP  := nIdxGroupPushDiag,
+    IDXOFFS := nIdxOffsetMetricAgg,
+    LEN     := nLen,
+    SRCADDR := pSrc,
+    WRITE   := TRUE,
+    TMOUT   := T#1S
+);
+
+pInFlight        := pHead;
+bFlushInFlight   := TRUE;
+
+nTaskIdx  := Tc2_Utilities.GETCURTASKINDEXEX();
+IF nTaskIdx > 0 THEN
+    nNowCycle        := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].CycleCount;
+    nFlushStartCycle := nNowCycle;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="Call" Id="{d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f04}">
       <Declaration><![CDATA[(*
 :Description: Pump in-flight ADSWRITE — drives flush completion + watchdog.
 
-Called once per task cycle from ``PRG_TaskLog.Call()``. Cheap when no flush
-is pending. The first ``IF`` block mirrors the equivalent block in
-``FB_TcOtelTaskDiag.Call`` so the two senders agree on the ADSWRITE life
-cycle and the watchdog semantics.
+Called once per task cycle from ``PRG_TaskLog.Call()``. Cheap when the
+queue is empty. On ADSWRITE completion the FB that owned the frame is
+notified (so it can release its pending half) and the next queued frame
+is kicked off immediately within the same cycle — no cycle-delay between
+back-to-back frames.
 *)
 METHOD PUBLIC Call
 VAR
-    nTaskIdx : DINT;
-    nNowCycle : UDINT;
+    nTaskIdx   : DINT;
+    nNowCycle  : UDINT;
+    pCompleted : POINTER TO FB_Metrics;
+    bOk        : BOOL;
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -73,113 +179,158 @@ END_IF
 
 fbAdsWrite();
 
-nTaskIdx := Tc2_Utilities.GETCURTASKINDEXEX();
+nTaskIdx  := Tc2_Utilities.GETCURTASKINDEXEX();
 nNowCycle := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].CycleCount;
 
 IF NOT fbAdsWrite.BUSY THEN
-    IF fbAdsWrite.ERR THEN
-        nFlushErrorCount := nFlushErrorCount + 1;
-    ELSE
+    bOk := NOT fbAdsWrite.ERR;
+    IF bOk THEN
         nFlushOkCount          := nFlushOkCount + 1;
         nLastFlushSuccessCycle := nNowCycle;
+    ELSE
+        nFlushErrorCount := nFlushErrorCount + 1;
     END_IF
-    fbAdsWrite(WRITE := FALSE);
+
+    (* Notify the FB first (so it can release its pending half), THEN
+       clear our in-flight latch, THEN kick the next queued frame. *)
+    pCompleted     := pInFlight;
+    pInFlight      := 0;
     bFlushInFlight := FALSE;
+    fbAdsWrite(WRITE := FALSE);
+
+    IF pCompleted <> 0 THEN
+        pCompleted^._NotifyFrameSent(bOk);
+    END_IF
+
+    _KickHead();
+
 ELSIF nFlushStartCycle <> 0
     AND (nNowCycle - nFlushStartCycle) > nFlightWatchdogCycles THEN
     (* Watchdog tripped — cut the wedged call loose so later pushes can
-       still reach tc-otel when connectivity is restored. *)
-    nFlushDropCount := nFlushDropCount + 1;
+       still reach tc-otel when connectivity is restored. Notify the FB
+       with failure so its pending half is freed anyway. *)
+    nFlushErrorCount := nFlushErrorCount + 1;
+    pCompleted     := pInFlight;
+    pInFlight      := 0;
+    bFlushInFlight := FALSE;
     fbAdsWrite(WRITE := FALSE);
+
+    IF pCompleted <> 0 THEN
+        pCompleted^._NotifyFrameSent(FALSE);
+    END_IF
+
+    _KickHead();
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Dequeue" Id="{b2c3d4e5-f6a7-8901-bcde-f12345678902}">
+      <Declaration><![CDATA[(*
+:Description: Remove every pending entry for ``pFb`` from the ring.
+
+Called from ``FB_Metrics.FB_exit`` so a destroyed instance can't leave a
+stale pointer in the ring. Safe to call when the FB is in-flight — in that
+case the pending ring is already clean but ``pInFlight`` is cleared and
+ADSWRITE is cut loose to prevent a post-destruction SRCADDR read. Linear
+scan; ring depth is small.
+*)
+METHOD PUBLIC Dequeue
+VAR_INPUT
+    pFb : POINTER TO FB_Metrics;
+END_VAR
+VAR
+    nRead   : UDINT;
+    nWrite  : UDINT;
+    nKept   : UDINT;
+    i       : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF pFb = 0 THEN
+    RETURN;
+END_IF
+
+(* Compact in place: iterate head→tail, drop entries whose pointer equals pFb.
+   Identity by raw address — ring slots and pInFlight both store target-of-FB
+   addresses. Using REFERENCE TO with ADR() wouldn't work here because ADR
+   on a REFERENCE returns the reference-storage address, not the target's. *)
+nKept := 0;
+FOR i := 0 TO nPendingCount - 1 DO
+    nRead := (nPendingHead + i) MOD SIZEOF_RING;
+    IF aPending[nRead] <> pFb THEN
+        IF nKept <> i THEN
+            nWrite := (nPendingHead + nKept) MOD SIZEOF_RING;
+            aPending[nWrite] := aPending[nRead];
+        END_IF
+        nKept := nKept + 1;
+    END_IF
+END_FOR
+
+(* Zero out the tail slots left behind. *)
+FOR i := nKept TO nPendingCount - 1 DO
+    nWrite := (nPendingHead + i) MOD SIZEOF_RING;
+    aPending[nWrite] := 0;
+END_FOR
+
+nPendingCount := nKept;
+nPendingTail  := (nPendingHead + nKept) MOD SIZEOF_RING;
+
+(* If the destroyed FB is currently being shipped, cut ADSWRITE loose
+   without notifying — the FB is gone, notification would double-free.
+   nFlushOkCount / nFlushErrorCount stay unchanged since the outcome is
+   unknown and the frame is being abandoned mid-flight. *)
+IF bFlushInFlight AND pInFlight = pFb THEN
+    fbAdsWrite(WRITE := FALSE);
+    pInFlight      := 0;
     bFlushInFlight := FALSE;
 END_IF
 ]]></ST>
       </Implementation>
     </Method>
-    <Method Name="Emit" Id="{e5f6a7b8-c9d0-1e2f-3a4b-5c6d7e8f9005}">
+    <Method Name="Enqueue" Id="{c3d4e5f6-a7b8-9012-cdef-123456789003}">
       <Declaration><![CDATA[(*
-:Description: Ship one metric frame to tc-otel as ``[header | body]``.
+:Description: Queue ``pFb`` for next ADSWRITE dispatch.
 
-Two-part API so FB_Metrics doesn't need its own contiguous frame buffer:
-the header lives on the caller's stack (≤ ~160 B with trace+name+unit),
-the body is a pointer into FB_Metrics's own append-only sample buffer.
-We MEMCPY both into ``abySendBuffer`` here — by the time ADSWRITE consumes
-SRCADDR the caller's stack is gone.
+Returns FALSE only when the ring is already full (real overflow — should
+stay near zero; signals sender backlog). Returns TRUE on successful enqueue
+and, if the sender is idle, kicks the head immediately so single-enqueue
+scenarios ship within the same cycle.
 
-Returns FALSE when the send was dropped — caller should not assume the
-frame reached the wire. Drop reasons:
-
-* ``bFlushInFlight`` — a previous frame is still being shipped (single-
-  flight transport). Caller will retry on the next push window.
-* ``nHeaderLen + nBodyLen > nSendBufferSize`` — frame too large.
-* ``NOT bInitialized`` — Init() never called. Never seen in normal use
-  because PRG_TaskLog.Init wires it up on every task that calls it.
+The caller (``FB_Metrics._DoFlush``) must guarantee that the pending half
+stays stable until ``_NotifyFrameSent`` is called back.
 *)
-METHOD PUBLIC Emit : BOOL
+METHOD PUBLIC Enqueue : BOOL
 VAR_INPUT
-    pHeader    : PVOID;
-    nHeaderLen : UDINT;
-    pBody      : PVOID;     // may be 0 when nBodyLen = 0
-    nBodyLen   : UDINT;
-END_VAR
-VAR
-    nTaskIdx  : DINT;
-    nNowCycle : UDINT;
-    nTotalLen : UDINT;
+    pFb : POINTER TO FB_Metrics;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF NOT bInitialized OR pHeader = 0 OR nHeaderLen = 0 THEN
-    Emit := FALSE;
+        <ST><![CDATA[IF NOT bInitialized OR pFb = 0 THEN
+    Enqueue := FALSE;
     RETURN;
 END_IF
 
-IF bFlushInFlight THEN
+IF nPendingCount >= SIZEOF_RING THEN
     nFlushDropCount := nFlushDropCount + 1;
-    Emit := FALSE;
+    Enqueue := FALSE;
     RETURN;
 END_IF
 
-nTotalLen := nHeaderLen + nBodyLen;
-IF nTotalLen > nSendBufferSize THEN
-    F_InternalLog(
-        E_LogLevel.eError,
-        'FB_TcOtelTaskMetrics.Emit',
-        'Metric frame too large: nTotalLen=%d nSendBufferSize=%d',
-        Tc2_Utilities.F_UDINT(nTotalLen),
-        Tc2_Utilities.F_UDINT(nSendBufferSize),
-        Tc2_Utilities.EMPTY_ARG_VALUE,
-        Tc2_Utilities.EMPTY_ARG_VALUE
-    );
-    nFlushDropCount := nFlushDropCount + 1;
-    Emit := FALSE;
-    RETURN;
+aPending[nPendingTail] := pFb;
+nPendingTail  := (nPendingTail + 1) MOD SIZEOF_RING;
+nPendingCount := nPendingCount + 1;
+
+IF nPendingCount > nPendingHighWater THEN
+    nPendingHighWater := nPendingCount;
 END_IF
 
-Tc2_System.MEMCPY(ADR(abySendBuffer), pHeader, nHeaderLen);
-IF nBodyLen > 0 AND pBody <> 0 THEN
-    Tc2_System.MEMCPY(ADR(abySendBuffer) + nHeaderLen, pBody, nBodyLen);
+(* If sender is idle, fire immediately so small loads ship without a
+   cycle delay. If busy, Call() will kick the head on completion. *)
+IF NOT bFlushInFlight THEN
+    _KickHead();
 END_IF
 
-nTaskIdx  := Tc2_Utilities.GETCURTASKINDEXEX();
-nNowCycle := TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx].CycleCount;
-
-(* Rising-edge ADSWRITE kick — same idiom as FB_TcOtelTask / FB_TcOtelTaskDiag. *)
-fbAdsWrite(WRITE := FALSE);
-fbAdsWrite(
-    NETID   := sTcOtelNetId,
-    PORT    := nTcOtelPort,
-    IDXGRP  := nIdxGroupPushDiag,
-    IDXOFFS := nIdxOffsetMetricAgg,
-    LEN     := nTotalLen,
-    SRCADDR := ADR(abySendBuffer),
-    WRITE   := TRUE,
-    TMOUT   := T#1S
-);
-bFlushInFlight   := TRUE;
-nFlushStartCycle := nNowCycle;
-
-Emit := TRUE;
+Enqueue := TRUE;
 ]]></ST>
       </Implementation>
     </Method>
@@ -209,10 +360,10 @@ Init := TRUE;
     </Method>
     <Property Name="IsBusy" Id="{a7b8c9d0-e1f2-3a4b-5c6d-7e8f90010207}">
       <Declaration><![CDATA[(*
-:Description: TRUE while a previous Emit is still being shipped.
+:Description: TRUE while ADSWRITE is shipping a frame.
 
-Surfaced for FB_Metrics so it can decide between retry-now and skip-this-window
-without going through Emit's drop counter.
+Surfaced for diagnostics / tests. Not consulted by FB_Metrics (Enqueue
+always succeeds unless the ring is full).
 *)
 PROPERTY PUBLIC IsBusy : BOOL]]></Declaration>
       <Get Name="Get" Id="{b8c9d0e1-f2a3-4b5c-6d7e-8f9001020308}">
@@ -221,6 +372,22 @@ END_VAR
 ]]></Declaration>
         <Implementation>
           <ST><![CDATA[IsBusy := bFlushInFlight;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="QueueDepth" Id="{d1e2f3a4-b5c6-7d8e-9f01-020304050609}">
+      <Declaration><![CDATA[(*
+:Description: Current number of pending frames in the dispatch ring
+(not counting the in-flight frame, if any).
+*)
+PROPERTY PUBLIC QueueDepth : UDINT]]></Declaration>
+      <Get Name="Get" Id="{e2f3a4b5-c6d7-8e9f-0102-03040506070a}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[QueueDepth := nPendingCount;
 ]]></ST>
         </Implementation>
       </Get>

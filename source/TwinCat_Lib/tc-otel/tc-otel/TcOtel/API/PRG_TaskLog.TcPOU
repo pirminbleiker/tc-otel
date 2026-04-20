@@ -82,7 +82,7 @@ END_VAR]]></Declaration>
       <Implementation>
         <ST><![CDATA[nIdx := Tc2_Utilities.GETCURTASKINDEXEX();
 aTaskLogger[nIdx].Init(sAmsNetId);
-aTaskDiag[nIdx].Init(sAmsNetId, 16150, ADR(aTaskDiagConfig[nIdx]));
+aTaskDiag[nIdx].Init(sAmsNetId, 16150, aTaskDiagConfig[nIdx]);
 aTaskMetrics[nIdx].Init(sAmsNetId, 16150);
 ]]></ST>
       </Implementation>
@@ -129,7 +129,7 @@ END_VAR]]></Declaration>
 aTaskDiagConfig[nIdx].window_ms := nWindowMs;
 aTaskDiagConfig[nIdx].enabled   := bEnabled;
 aTaskDiagConfig[nIdx].divider   := nDivider;
-aTaskDiag[nIdx].Init(sAmsNetId, nPort, ADR(aTaskDiagConfig[nIdx]));
+aTaskDiag[nIdx].Init(sAmsNetId, nPort, aTaskDiagConfig[nIdx]);
 InitDiag := TRUE;
 ]]></ST>
       </Implementation>

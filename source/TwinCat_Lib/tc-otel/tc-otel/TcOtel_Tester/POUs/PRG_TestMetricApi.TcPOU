@@ -36,13 +36,13 @@ END_VAR
 	fbStateString.SetPushIntervalMs(10000);
 
 	// Aggregated sine: same source, same 50 ms / 5 s cadence — but
-	// SetAggregation(cMetricStandard) folds every Observe into Welford
-	// online (min/max/mean), so each sample tick captures the real envelope
-	// of the underlying signal instead of a stochastic point on it.
+	// SetAggregation(eMin OR eMax OR eMean) folds every Observe into
+	// Welford online so each sample tick captures the real envelope of
+	// the underlying signal instead of a stochastic point on it.
 	fbSineAgg.Init('demo.sineAgg', 'unit');
 	fbSineAgg.SetSampleIntervalMs(50);
 	fbSineAgg.SetPushIntervalMs(5000);
-	fbSineAgg.SetAggregation(GVL_MetricAggregation.cMetricStandard);
+	fbSineAgg.SetAggregation(E_MetricStat.eMean OR E_MetricStat.eMax OR E_MetricStat.eMin);
 END_IF
 
 // Drive the sine: phase advances 0.005 rad per 1 ms task cycle ≈ 0.8 Hz.

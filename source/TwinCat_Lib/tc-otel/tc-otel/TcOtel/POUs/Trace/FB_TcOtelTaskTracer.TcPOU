@@ -24,8 +24,8 @@ Users should use FB_TcOtelTracer and FB_Span instead.
 FUNCTION_BLOCK FB_TcOtelTaskTracer
 VAR
     (* Phase 6 Stage 3: innermost-open span chain. Spans register/unregister
-       as they begin/end. NULL when no spans are open. *)
-    _pInnermost      : POINTER TO FB_Span;
+       as they begin/end. Invalid reference when no spans are open. *)
+    _pInnermost      : REFERENCE TO FB_Span;
 
     (* Wire format event-type constants *)
     nEventTypeBegin  : BYTE := 5;
@@ -103,7 +103,7 @@ END_IF;
       <Declaration><![CDATA[(* Fills the 8-byte span_id of the FB_Span with one xorshift64 draw. *)
 METHOD PRIVATE _MintSpanId
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 VAR
     v : ULINT;
@@ -111,12 +111,12 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
 v := _NextRandom();
-Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
+Tc2_System.MEMCPY(ADR(pSpan._abSpanId[0]), ADR(v), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -124,7 +124,7 @@ Tc2_System.MEMCPY(ADR(pSpan^._abSpanId[0]), ADR(v), 8);
       <Declaration><![CDATA[(* Fills the 16-byte trace_id of the FB_Span with two xorshift64 draws. *)
 METHOD PRIVATE _MintTraceId
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 VAR
     hi  : ULINT;
@@ -133,14 +133,14 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
 hi := _NextRandom();
 lo := _NextRandom();
-Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[0]), ADR(hi), 8);
-Tc2_System.MEMCPY(ADR(pSpan^._abTraceId[8]), ADR(lo), 8);
+Tc2_System.MEMCPY(ADR(pSpan._abTraceId[0]), ADR(hi), 8);
+Tc2_System.MEMCPY(ADR(pSpan._abTraceId[8]), ADR(lo), 8);
 ]]></ST>
       </Implementation>
     </Method>
@@ -304,13 +304,13 @@ add to the dispatch CASE when a consumer needs them.
 *)
 METHOD INTERNAL AddAny : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sKey  : STRING(30);
     stArg : ANY;
 END_VAR
 VAR
     stFrame        : ST_SpanAttrFrame;
-    pBuffer        : POINTER TO FB_LogBuffer;
+    pBuffer        : REFERENCE TO FB_LogBuffer;
     pDst           : POINTER TO BYTE;
     nKeyLen        : UDINT;
     nValBytes      : UDINT;
@@ -342,7 +342,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 OR_ELSE stArg.pValue = 0 THEN
+IF NOT __ISVALIDREF(pSpan) OR_ELSE stArg.pValue = 0 THEN
     RETURN;
 END_IF;
 
@@ -451,25 +451,25 @@ END_CASE;
 
 (* Buffer capacity check — fixed header + key + value *)
 nTotalLen := SIZEOF(stFrame) + nKeyLen + nValBytes;
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
+pBuffer REF= PRG_TaskLog.TaskLogger.WriteBuffer;
+IF NOT __ISVALIDREF(pBuffer) OR_ELSE pBuffer.BufferFree < nTotalLen THEN
     RETURN;
 END_IF;
 
 (* Build frame header on stack (aligned) *)
 stFrame.nEventType   := nEventTypeAttr;
-stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nSpanIdByte0 := pSpan._abSpanId[0];
 stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 stFrame.nFlags       := 0;
 stFrame.nDcTime      := _NowDcTime();
-Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan._abSpanId[1]), 7);
 stFrame.nValueType   := nWireType;
 stFrame.nKeyLen      := TO_BYTE(nKeyLen);
 stFrame.nValueLen    := TO_BYTE(nValBytes);
 stFrame.nReserved    := 0;
 
 (* Emit: 3 MEMCPYs — header, key, value *)
-pDst := pBuffer^.BufferPtr;
+pDst := pBuffer.BufferPtr;
 Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
 IF nKeyLen > 0 THEN
     Tc2_System.MEMCPY(pDst + SIZEOF(stFrame), ADR(sKey), nKeyLen);
@@ -478,7 +478,7 @@ IF nValBytes > 0 THEN
     Tc2_System.MEMCPY(pDst + SIZEOF(stFrame) + nKeyLen, pValueSrc, nValBytes);
 END_IF;
 
-pBuffer^.DataAdded(nTotalLen);
+pBuffer.DataAdded(nTotalLen);
 AddAny := TRUE;
 ]]></ST>
       </Implementation>
@@ -486,12 +486,12 @@ AddAny := TRUE;
     <Method Name="AddEvent" Id="{731c0681-f28c-468d-9a22-08d93456bc4b}">
       <Declaration><![CDATA[METHOD INTERNAL AddEvent : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sName : STRING(30);
 END_VAR
 VAR
     stFrame    : ST_SpanEventFrame;
-    pBuffer    : POINTER TO FB_LogBuffer;
+    pBuffer    : REFERENCE TO FB_LogBuffer;
     pDst       : POINTER TO BYTE;
     nNameLen   : UDINT;
     nTotalLen  : UDINT;
@@ -499,7 +499,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -509,29 +509,29 @@ IF nNameLen > 31 THEN
 END_IF;
 
 nTotalLen := SIZEOF(stFrame) + nNameLen;
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
+pBuffer REF= PRG_TaskLog.TaskLogger.WriteBuffer;
+IF NOT __ISVALIDREF(pBuffer) OR_ELSE pBuffer.BufferFree < nTotalLen THEN
     RETURN;
 END_IF;
 
 stFrame.nEventType   := nEventTypeEvent;
-stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nSpanIdByte0 := pSpan._abSpanId[0];
 stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 stFrame.nFlags       := 0;
 stFrame.nDcTime      := _NowDcTime();
-Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan._abSpanId[1]), 7);
 stFrame.nNameLen     := TO_BYTE(nNameLen);
 stFrame.nAttrCount   := 0;
 stFrame.nReserved[0] := 0;
 stFrame.nReserved[1] := 0;
 
-pDst := pBuffer^.BufferPtr;
+pDst := pBuffer.BufferPtr;
 Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
 IF nNameLen > 0 THEN
     Tc2_System.MEMCPY(pDst + SIZEOF(stFrame), ADR(sName), nNameLen);
 END_IF;
 
-pBuffer^.DataAdded(nTotalLen);
+pBuffer.DataAdded(nTotalLen);
 AddEvent := TRUE;
 ]]></ST>
       </Implementation>
@@ -544,13 +544,13 @@ Phase 6 Stage 3 refactored: FB_Span owns its trace_id and span_id. This method
 populates them directly into the pSpan pointer. Parent trace_id is resolved
 from sTraceParent (external) or minted fresh. parent_span_id must be supplied
 by the caller (typically FB_TcOtelTracer._Begin, which reads its own
-_pInnermost^._abSpanId or passes [0u8;8] for root).
+_pInnermost._abSpanId or passes [0u8;8] for root).
 
 Called only from FB_TcOtelTracer._Begin.
 *)
 METHOD INTERNAL Begin
 VAR_INPUT
-    pSpan           : POINTER TO FB_Span;
+    pSpan           : REFERENCE TO FB_Span;
     sName           : STRING(60);
     eKind           : E_SpanKind := E_SpanKind.eInternal;
     sTraceParent    : STRING(60) := '';
@@ -559,7 +559,7 @@ VAR_INPUT
 END_VAR
 VAR
     stHdr            : ST_SpanBeginPrefix;
-    pBuffer          : POINTER TO FB_LogBuffer;
+    pBuffer          : REFERENCE TO FB_LogBuffer;
     pDst             : POINTER TO BYTE;
     nNameLen         : UDINT;
     nTpLen           : UDINT;
@@ -572,7 +572,7 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
@@ -587,7 +587,7 @@ _SeedRng();
 bExternalValid := FALSE;
 IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     bExternalValid := _ParseTraceParent(sTraceParent,
-                                         pSpan^._abTraceId,
+                                         pSpan._abTraceId,
                                          abExternalSpanId);
 END_IF;
 
@@ -617,8 +617,8 @@ IF nTpLen > 0 THEN
     nTotalLen := nTotalLen + 1 + nTpLen;
 END_IF;
 
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < nTotalLen THEN
+pBuffer REF= PRG_TaskLog.TaskLogger.WriteBuffer;
+IF NOT __ISVALIDREF(pBuffer) OR_ELSE pBuffer.BufferFree < nTotalLen THEN
     RETURN;
 END_IF;
 
@@ -646,10 +646,10 @@ _nNextLocalId := _nNextLocalId + 1;
      [40..47]  span_id  (8 B)
      [48..]    name
      optional: tp_len(1) + traceparent *)
-pDst := pBuffer^.BufferPtr;
+pDst := pBuffer.BufferPtr;
 Tc2_System.MEMCPY(pDst, ADR(stHdr), SIZEOF(stHdr));
-Tc2_System.MEMCPY(pDst + SIZEOF(stHdr),        ADR(pSpan^._abTraceId[0]), 16);
-Tc2_System.MEMCPY(pDst + SIZEOF(stHdr) + 16,   ADR(pSpan^._abSpanId[0]),  8);
+Tc2_System.MEMCPY(pDst + SIZEOF(stHdr),        ADR(pSpan._abTraceId[0]), 16);
+Tc2_System.MEMCPY(pDst + SIZEOF(stHdr) + 16,   ADR(pSpan._abSpanId[0]),  8);
 
 nTailOffset := SIZEOF(stHdr) + 24;
 IF nNameLen > 0 THEN
@@ -664,7 +664,7 @@ IF nTpLen > 0 THEN
     Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen + 1, ADR(sTraceParent),  nTpLen);
 END_IF;
 
-pBuffer^.DataAdded(nTotalLen);
+pBuffer.DataAdded(nTotalLen);
 ]]></ST>
       </Implementation>
     </Method>
@@ -700,12 +700,12 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF _pInnermost = 0 THEN
+IF NOT __ISVALIDREF(_pInnermost) THEN
     CurrentTraceParent := '';
     RETURN;
 END_IF;
 
-CurrentTraceParent := _pInnermost^.TraceParent;
+CurrentTraceParent := _pInnermost.TraceParent;
 ]]></ST>
       </Implementation>
     </Method>
@@ -718,53 +718,53 @@ that is the responsibility of FB_TcOtelTracer.
 *)
 METHOD INTERNAL End
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
 END_VAR
 VAR
     stFrame  : ST_SpanEndFrame;
-    pBuffer  : POINTER TO FB_LogBuffer;
+    pBuffer  : REFERENCE TO FB_LogBuffer;
     pDst     : POINTER TO BYTE;
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 
-pBuffer := PRG_TaskLog.TaskLogger.WriteBuffer;
-IF pBuffer = 0 OR_ELSE pBuffer^.BufferFree < SIZEOF(stFrame) THEN
+pBuffer REF= PRG_TaskLog.TaskLogger.WriteBuffer;
+IF NOT __ISVALIDREF(pBuffer) OR_ELSE pBuffer.BufferFree < SIZEOF(stFrame) THEN
     RETURN;
 END_IF;
 
 stFrame.nEventType   := nEventTypeEnd;
-stFrame.nSpanIdByte0 := pSpan^._abSpanId[0];
+stFrame.nSpanIdByte0 := pSpan._abSpanId[0];
 stFrame.nTaskIdx     := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
 stFrame.nFlags       := 0;
 stFrame.nDcTime      := _NowDcTime();
-Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan^._abSpanId[1]), 7);
+Tc2_System.MEMCPY(ADR(stFrame.abSpanIdRest[0]), ADR(pSpan._abSpanId[1]), 7);
 stFrame.nStatus      := 1;   (* 1 = ok; FB_Span overrides via SetError path *)
 stFrame.nMsgLen      := 0;
 stFrame.nReserved[0] := 0;
 stFrame.nReserved[1] := 0;
 
-pDst := pBuffer^.BufferPtr;
+pDst := pBuffer.BufferPtr;
 Tc2_System.MEMCPY(pDst, ADR(stFrame), SIZEOF(stFrame));
 
-pBuffer^.DataAdded(SIZEOF(stFrame));
+pBuffer.DataAdded(SIZEOF(stFrame));
 ]]></ST>
       </Implementation>
     </Method>
     <Method Name="SetError" Id="{1323314a-5f82-499e-a923-f4a110bbfa07}">
       <Declaration><![CDATA[METHOD INTERNAL SetError : BOOL
 VAR_INPUT
-    pSpan : POINTER TO FB_Span;
+    pSpan : REFERENCE TO FB_Span;
     sMsg  : STRING(120) := '';
 END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF pSpan = 0 THEN
+IF NOT __ISVALIDREF(pSpan) THEN
     RETURN;
 END_IF;
 

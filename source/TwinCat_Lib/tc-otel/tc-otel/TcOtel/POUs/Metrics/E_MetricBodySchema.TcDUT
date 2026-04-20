@@ -22,8 +22,7 @@ TYPE E_MetricBodySchema :
     eString             := 4,    // body: sample_count * sample_size UTF-8 bytes (zero-padded fixed)
     eWstring            := 5,    // body: sample_count * sample_size UTF-16LE bytes (zero-padded fixed)
     eNumericAggregated  := 6     // body: sample_count * popcount(stat_mask) LREALs in bit-order
-                                 // — see E_MetricStat for the bit assignments and
-                                 // GVL_MetricAggregation for convenience constants
+                                 // — see E_MetricStat for the bit assignments
 ) BYTE;
 END_TYPE
 ]]></Declaration>
