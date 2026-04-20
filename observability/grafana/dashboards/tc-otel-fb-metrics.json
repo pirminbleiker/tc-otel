@@ -1,0 +1,206 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "title": "TC-OTel FB_Metrics — every sample",
+  "uid": "tc-otel-fb-metrics",
+  "tags": ["tc-otel", "fb-metrics", "demo"],
+  "schemaVersion": 39,
+  "style": "dark",
+  "time": { "from": "now-1m", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["1s", "2s", "5s", "10s", "30s"]
+  },
+  "refresh": "1s",
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Sine — eNumeric (LREAL widened)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "demo_sine_unit — every sample",
+      "description": "Raw sample stream. Each PLC FB_Metrics push batch carries 50 LREAL samples per 5s window, evenly time-interpolated. maxDataPoints high + interval low so Grafana does not down-sample.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 1 },
+      "id": 1,
+      "interval": "50ms",
+      "maxDataPoints": 10000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": -1.1,
+          "max": 1.1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "showPoints": "always",
+            "spanNulls": false,
+            "fillOpacity": 5
+          },
+          "color": { "mode": "fixed", "fixedColor": "green" }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "demo_sine_unit",
+          "legendFormat": "demo.sine",
+          "refId": "A",
+          "interval": "50ms",
+          "exemplar": false,
+          "datasource": "VictoriaMetrics"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Toggle — eBool",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "id": 200,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "demo_toggle — every sample (step-before)",
+      "description": "BOOL captured on every change (default change-detect). Step-before interpolation + visible points so the square wave is never smoothed away. Last() reducer per render bucket so a sample is kept whole.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 11 },
+      "id": 2,
+      "interval": "100ms",
+      "maxDataPoints": 10000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bool_on_off",
+          "min": -0.1,
+          "max": 1.1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepBefore",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "always",
+            "spanNulls": false,
+            "fillOpacity": 15
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "demo_toggle",
+          "legendFormat": "demo.toggle",
+          "refId": "A",
+          "interval": "100ms",
+          "exemplar": false,
+          "datasource": "VictoriaMetrics"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Pipeline diagnostics",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "id": 300,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Sample arrival rate (Hz) — per metric",
+      "description": "rate() of the sample stream. Use this to verify the configured push interval and sample interval per FB_Metrics instance. demo_sine_unit ≈ 20 Hz (sample every 50 ms), demo_toggle ≈ 4 Hz (toggle every 250 ms).",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "id": 3,
+      "interval": "1s",
+      "maxDataPoints": 1000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Hz",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 3,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "fillOpacity": 0
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "expr": "rate({__name__=~\"demo_.*\"}[10s])",
+          "legendFormat": "{{__name__}}",
+          "refId": "A",
+          "interval": "1s",
+          "datasource": "VictoriaMetrics"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total samples / metric (1 m)",
+      "description": "Sample count over the last minute. Confirms the PLC keeps pushing — 0 means a flush stalled or change-detect suppressed everything.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "id": 4,
+      "interval": "",
+      "maxDataPoints": 100,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "green", "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "count_over_time({__name__=~\"demo_.*\"}[1m])",
+          "legendFormat": "{{__name__}}",
+          "refId": "A",
+          "interval": "",
+          "datasource": "VictoriaMetrics"
+        }
+      ]
+    }
+  ]
+}
