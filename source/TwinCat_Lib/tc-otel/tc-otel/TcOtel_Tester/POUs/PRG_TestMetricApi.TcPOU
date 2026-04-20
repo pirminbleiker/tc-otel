@@ -32,8 +32,10 @@ END_VAR
 	fbStateString.SetPushIntervalMs(10000);
 END_IF
 
-// Drive a slow sine: phase advances ~0.05 rad/cycle at 1 ms task = 8 Hz.
-rPhase     := rPhase + 0.05;
+// Drive the sine: phase advances 0.005 rad per 1 ms task cycle ≈ 0.8 Hz.
+// Combined with SetSampleIntervalMs(50) → ~25 samples per period — clean
+// curve in Grafana (well above Nyquist, no visible aliasing).
+rPhase     := rPhase + 0.005;
 rSineValue := SIN(rPhase);
 fbSineLreal.Observe(rSineValue);
 
