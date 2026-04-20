@@ -11,7 +11,7 @@
   "tags": ["tc-otel", "fb-metrics", "demo"],
   "schemaVersion": 39,
   "style": "dark",
-  "time": { "from": "now-1m", "to": "now" },
+  "time": { "from": "now-1m-30s", "to": "now-30s" },
   "timepicker": {
     "refresh_intervals": ["1s", "2s", "5s", "10s", "30s"]
   },
