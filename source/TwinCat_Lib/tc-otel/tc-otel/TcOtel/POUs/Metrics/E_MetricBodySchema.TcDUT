@@ -15,12 +15,15 @@ sample size.
 *)
 TYPE E_MetricBodySchema :
 (
-    eUnknown    := 0,
-    eBool       := 1,    // body: sample_count * 1 byte
-    eNumeric    := 2,    // body: sample_count * 8 bytes (LREAL, widened)
-    eDiscrete   := 3,    // body: sample_count * sample_size raw bytes (BYTE/WORD/DWORD/LWORD/ENUM)
-    eString     := 4,    // body: sample_count * sample_size UTF-8 bytes (zero-padded fixed)
-    eWstring    := 5     // body: sample_count * sample_size UTF-16LE bytes (zero-padded fixed)
+    eUnknown            := 0,
+    eBool               := 1,    // body: sample_count * 1 byte
+    eNumeric            := 2,    // body: sample_count * 8 bytes (LREAL, widened)
+    eDiscrete           := 3,    // body: sample_count * sample_size raw bytes (BYTE/WORD/DWORD/LWORD/ENUM)
+    eString             := 4,    // body: sample_count * sample_size UTF-8 bytes (zero-padded fixed)
+    eWstring            := 5,    // body: sample_count * sample_size UTF-16LE bytes (zero-padded fixed)
+    eNumericAggregated  := 6     // body: sample_count * popcount(stat_mask) LREALs in bit-order
+                                 // — see E_MetricStat for the bit assignments and
+                                 // GVL_MetricAggregation for convenience constants
 ) BYTE;
 END_TYPE
 ]]></Declaration>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="E_MetricStat" Id="{c8d9e0f1-a2b3-4c5d-8e9f-0123456789ab}">
+    <Declaration><![CDATA[(*
+:Description: Bitmask values for the FB_Metrics aggregation stats.
+
+Each bit selects one statistic that will be computed online (Welford
+algorithm for mean / variance) over each sample interval and shipped as
+8 bytes inside the body of an FB_Metrics aggregate frame
+(``body_schema = eNumericAggregated``).
+
+The wire-side ``nStatMask`` byte at header offset +0x11 is the OR of
+the selected values. Body sample size = ``popcount(mask) * 8``. Stats
+are written into the body in **bit-index order** (Min first if set,
+then Max, then Mean, then Sum, then Count, then StdDev) — the decoder
+walks the mask bit-by-bit and reads 8 bytes per set bit.
+
+Use the convenience constants in ``GVL_MetricAggregation`` for the
+common combinations rather than typing the OR yourself:
+
+* ``cMetricEnvelope`` = eMin OR eMax
+* ``cMetricStandard`` = eMin OR eMax OR eMean (recommended default)
+* ``cMetricFull``     = all six
+
+Single-stat selections are valid and useful — e.g. ``eSum`` alone for
+energy / counter metrics.
+*)
+TYPE E_MetricStat :
+(
+    eMin    := 16#01,    // bit 0
+    eMax    := 16#02,    // bit 1
+    eMean   := 16#04,    // bit 2 — Welford online mean
+    eSum    := 16#08,    // bit 3 — total over the sample interval
+    eCount  := 16#10,    // bit 4 — number of Observe() calls aggregated
+    eStdDev := 16#20     // bit 5 — Welford online sample stddev
+) BYTE;
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

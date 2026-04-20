@@ -102,6 +102,22 @@ VAR
     _nDropEmit          : UDINT;                      // Emit returned FALSE (sender busy / oversize)
     _nWrongTypeDrops    : UDINT;                      // Observe called with type ≠ locked
 
+    (* Phase 7 — bitmask aggregation. When _nStatMask > 0 and the locked
+       schema is numeric, Observe updates the aggregator on every call
+       (Welford online for mean/stddev) instead of just rate-limiting.
+       At each sample tick popcount(_nStatMask) LREALs are written into
+       the body in bit-order (Min, Max, Mean, Sum, Count, StdDev) and the
+       aggregator resets. Mask=0 keeps the original raw-sample behaviour. *)
+    _nStatMask          : BYTE;                       // E_MetricStat bitmask, 0 = raw
+    _nAggSampleSize     : UDINT;                      // popcount(mask) * 8, cached
+    _aggMin             : LREAL;
+    _aggMax             : LREAL;
+    _aggMean            : LREAL;                      // Welford running mean
+    _aggSumSq           : LREAL;                      // sum of squared deltas (Welford M2)
+    _aggSum             : LREAL;
+    _nAggCount          : UDINT;
+    _bAggHasSample      : BOOL;                       // first observation in current window seen?
+
     (* Trace-context binding (Phase 5).
        _pTracer is set persistently by BindTracer — at flush time the
        tracer's innermost open span is snapshotted into the frame.
@@ -199,6 +215,161 @@ END_VAR
     ELSE
         _AnyToLreal := 0.0;
 END_CASE
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AggReset" Id="{c4d5e6f7-a8b9-c0d1-e2f3-a4b5c6d7e8f0}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Clear the Welford aggregator state at the start of every sample window.
+*)
+METHOD PRIVATE _AggReset
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_aggMin        := 0.0;
+_aggMax        := 0.0;
+_aggMean       := 0.0;
+_aggSumSq      := 0.0;
+_aggSum        := 0.0;
+_nAggCount     := 0;
+_bAggHasSample := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AggUpdate" Id="{d5e6f7a8-b9c0-d1e2-f3a4-b5c6d7e8f9a0}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Fold one observation into the Welford online aggregator.
+
+Maintains running min/max/sum/count exactly, and mean / sum-of-squared-
+deltas via Welford so the per-Observe cost stays at ~6 LREAL ops without
+ever rebuilding from a stored sample list. StdDev is derived from
+``_aggSumSq / (n - 1)`` only at flush time.
+
+Reference: B. P. Welford, *Note on a Method for Calculating Corrected
+Sums of Squares and Products*, Technometrics 4(3), 1962.
+*)
+METHOD PRIVATE _AggUpdate
+VAR_INPUT
+    fValue : LREAL;
+END_VAR
+VAR
+    fDelta  : LREAL;
+    fDelta2 : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT _bAggHasSample THEN
+    _aggMin        := fValue;
+    _aggMax        := fValue;
+    _aggMean       := fValue;
+    _aggSumSq      := 0.0;
+    _aggSum        := fValue;
+    _nAggCount     := 1;
+    _bAggHasSample := TRUE;
+ELSE
+    IF fValue < _aggMin THEN
+        _aggMin := fValue;
+    END_IF
+    IF fValue > _aggMax THEN
+        _aggMax := fValue;
+    END_IF
+    _aggSum    := _aggSum + fValue;
+    _nAggCount := _nAggCount + 1;
+    fDelta     := fValue - _aggMean;
+    _aggMean   := _aggMean + fDelta / UDINT_TO_LREAL(_nAggCount);
+    fDelta2    := fValue - _aggMean;
+    _aggSumSq  := _aggSumSq + fDelta * fDelta2;
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_AppendAggregated" Id="{e6f7a8b9-c0d1-e2f3-a4b5-c6d7e8f9a0b1}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Snapshot the current Welford aggregator into the body buffer.
+
+Writes ``popcount(_nStatMask) * 8`` bytes — one LREAL per set bit, in
+bit-index order (Min, Max, Mean, Sum, Count, StdDev). Returns FALSE on
+body overflow without touching the buffer; the caller marks ``_bOverflow``.
+
+Empty windows (no Observe call landed since the previous snapshot) still
+produce a sample slot — all zeros — so ``sample_count`` keeps matching the
+expected wall-clock cadence on the receiver side.
+*)
+METHOD PRIVATE _AppendAggregated : BOOL
+VAR
+    pDst    : POINTER TO BYTE;
+    nOffset : UDINT;
+    fStdDev : LREAL;
+    fCount  : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > SIZEOF(_abyBody) THEN
+    _AppendAggregated := FALSE;
+    RETURN;
+END_IF
+
+pDst    := ADR(_abyBody) + _nBodyOffset;
+nOffset := 0;
+
+IF (_nStatMask AND E_MetricStat.eMin) <> 0 THEN
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(_aggMin), 8);
+    nOffset := nOffset + 8;
+END_IF
+IF (_nStatMask AND E_MetricStat.eMax) <> 0 THEN
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(_aggMax), 8);
+    nOffset := nOffset + 8;
+END_IF
+IF (_nStatMask AND E_MetricStat.eMean) <> 0 THEN
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(_aggMean), 8);
+    nOffset := nOffset + 8;
+END_IF
+IF (_nStatMask AND E_MetricStat.eSum) <> 0 THEN
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(_aggSum), 8);
+    nOffset := nOffset + 8;
+END_IF
+IF (_nStatMask AND E_MetricStat.eCount) <> 0 THEN
+    fCount := UDINT_TO_LREAL(_nAggCount);
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(fCount), 8);
+    nOffset := nOffset + 8;
+END_IF
+IF (_nStatMask AND E_MetricStat.eStdDev) <> 0 THEN
+    IF _nAggCount > 1 THEN
+        fStdDev := SQRT(_aggSumSq / UDINT_TO_LREAL(_nAggCount - 1));
+    ELSE
+        fStdDev := 0.0;
+    END_IF
+    Tc2_System.MEMCPY(pDst + nOffset, ADR(fStdDev), 8);
+    nOffset := nOffset + 8;
+END_IF
+
+_nBodyOffset      := _nBodyOffset + _nSampleSize;
+_nSampleCount     := _nSampleCount + 1;
+_AppendAggregated := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_PopCount8" Id="{f7a8b9c0-d1e2-f3a4-b5c6-d7e8f9a0b1c2}" FolderPath="Private\">
+      <Declaration><![CDATA[(*
+:Description: Bit-count of a BYTE — used to size the aggregated sample.
+
+Trivial loop is fine for an 8-bit value; called once per SetAggregation,
+not per cycle.
+*)
+METHOD PRIVATE _PopCount8 : UDINT
+VAR_INPUT
+    nByte : BYTE;
+END_VAR
+VAR
+    nBit : INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_PopCount8 := 0;
+FOR nBit := 0 TO 7 DO
+    IF (nByte AND SHL(BYTE#1, nBit)) <> 0 THEN
+        _PopCount8 := _PopCount8 + 1;
+    END_IF
+END_FOR
 ]]></ST>
       </Implementation>
     </Method>
@@ -383,6 +554,7 @@ stHeader.nSampleSize      := _nSampleSize;
 stHeader.nSampleCount     := _nSampleCount;
 stHeader.nMetricId        := _nMetricId;
 stHeader.nTaskIndex       := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stHeader.nStatMask        := _nStatMask;
 stHeader.nCycleCountStart := _nCycleStart;
 stHeader.nCycleCountEnd   := _nCycleEnd;
 stHeader.nDcTimeStart     := _nDcTimeStart;
@@ -475,8 +647,13 @@ END_VAR
     __SYSTEM.TYPE_CLASS.TYPE_ULINT,
     __SYSTEM.TYPE_CLASS.TYPE_REAL,
     __SYSTEM.TYPE_CLASS.TYPE_LREAL:
-        _eBodySchema := E_MetricBodySchema.eNumeric;
-        _nSampleSize := 8;     (* widened to LREAL *)
+        IF _nStatMask <> 0 THEN
+            _eBodySchema := E_MetricBodySchema.eNumericAggregated;
+            _nSampleSize := _nAggSampleSize;
+        ELSE
+            _eBodySchema := E_MetricBodySchema.eNumeric;
+            _nSampleSize := 8;     (* widened to LREAL *)
+        END_IF
 
     __SYSTEM.TYPE_CLASS.TYPE_BYTE,
     __SYSTEM.TYPE_CLASS.TYPE_WORD,
@@ -710,6 +887,8 @@ VAR
     nSampleTargetCycles : UDINT;
     nCmpLen        : UDINT;
     nDcNow         : LINT;
+    fLrealForAgg   : LREAL;     // widened sample for the online aggregator
+    bAggMode       : BOOL;      // shorthand for "stat-mask aggregation active"
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -748,6 +927,17 @@ END_IF
 pTi := ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIdx]);
 nNowCycle := pTi^.CycleCount;
 
+bAggMode := _eBodySchema = E_MetricBodySchema.eNumericAggregated;
+
+(* Aggregation: in eNumericAggregated mode the aggregator absorbs every
+   single Observe call (Welford online for mean/stddev). The rate-limit
+   below still gates how often we *snapshot* the aggregator into the body
+   buffer — but no value is dropped between ticks. *)
+IF bAggMode THEN
+    fLrealForAgg := _AnyToLreal(stArg);
+    _AggUpdate(fLrealForAgg);
+END_IF
+
 (* Sample-interval rate limit (cycle-based, derived from CycleTime). *)
 IF _nSampleIntervalMs > 0 AND _bLastSampleSet THEN
     nCycleTimeUs := pTi^.CycleTime / 10;
@@ -764,8 +954,9 @@ IF _nSampleIntervalMs > 0 AND _bLastSampleSet THEN
     END_IF
 END_IF
 
-(* Change-detect using the byte-wise cache (capped at 64 B). *)
-IF _bChangeDetect AND _bLastValueValid THEN
+(* Change-detect path (raw mode only — for aggregated mode every Observe
+   already updated the aggregator above, no point in suppressing). *)
+IF NOT bAggMode AND _bChangeDetect AND _bLastValueValid THEN
     nCmpLen := _nSampleSize;
     IF nCmpLen > SIZEOF(_abyLastValue) THEN
         nCmpLen := SIZEOF(_abyLastValue);
@@ -781,21 +972,32 @@ IF _bChangeDetect AND _bLastValueValid THEN
     END_IF
 END_IF
 
-(* Append. On overflow the buffer stops growing until next flush; the flag
-   is shipped in the next frame's flags byte. *)
-IF NOT _AppendSample(stArg) THEN
-    _bOverflow   := TRUE;
-    _nDropAppend := _nDropAppend + 1;
-END_IF
+IF bAggMode THEN
+    (* Snapshot the aggregator into the body, then reset for the next window.
+       _AppendAggregated falls through to FALSE only on body overflow — bail
+       early in that case, the old aggregator state would be wrong to keep
+       around for the next snapshot anyway. *)
+    IF NOT _AppendAggregated() THEN
+        _bOverflow   := TRUE;
+        _nDropAppend := _nDropAppend + 1;
+    END_IF
+    _AggReset();
+ELSE
+    (* Raw append (single value per sample tick). *)
+    IF NOT _AppendSample(stArg) THEN
+        _bOverflow   := TRUE;
+        _nDropAppend := _nDropAppend + 1;
+    END_IF
 
-(* Update last-value cache regardless of append success — change-detect
-   should still suppress the next no-change observation. *)
-nCmpLen := _nSampleSize;
-IF nCmpLen > SIZEOF(_abyLastValue) THEN
-    nCmpLen := SIZEOF(_abyLastValue);
+    (* Update last-value cache regardless of append success — change-detect
+       should still suppress the next no-change observation. *)
+    nCmpLen := _nSampleSize;
+    IF nCmpLen > SIZEOF(_abyLastValue) THEN
+        nCmpLen := SIZEOF(_abyLastValue);
+    END_IF
+    Tc2_System.MEMCPY(ADR(_abyLastValue), stArg.pValue, nCmpLen);
+    _bLastValueValid := TRUE;
 END_IF
-Tc2_System.MEMCPY(ADR(_abyLastValue), stArg.pValue, nCmpLen);
-_bLastValueValid := TRUE;
 
 _nLastSampleCycle := nNowCycle;
 _bLastSampleSet   := TRUE;
@@ -828,6 +1030,75 @@ END_VAR
         </Implementation>
       </Get>
     </Property>
+    <Method Name="SetAggregation" Id="{a8b9c0d1-e2f3-a4b5-c6d7-e8f9a0b1c2d3}">
+      <Declaration><![CDATA[(*
+:Description: Enable / change online aggregation over the sample interval.
+
+Pass a bitmask of ``E_MetricStat`` values (or one of the convenience
+constants in ``GVL_MetricAggregation``) to specify which statistics
+should be computed and shipped per sample tick:
+
+.. code-block:: pascal
+
+    fbEnergy.SetAggregation(E_MetricStat.eSum);                  // counter
+    fbTemp.SetAggregation(GVL_MetricAggregation.cMetricStandard); // min/max/mean
+    fbCritical.SetAggregation(GVL_MetricAggregation.cMetricFull);
+
+Pass ``0`` to revert to raw single-value sampling. With aggregation
+enabled, every ``Observe`` call updates the Welford aggregator
+regardless of rate-limit; the rate-limit then controls how often the
+aggregator is *snapshotted* into the body buffer. So values that
+appear between sample ticks are no longer dropped — they're folded
+into the next snapshot's min/max/mean/etc.
+
+Aggregation is numeric-only. On non-numeric metrics (BOOL, STRING,
+WSTRING, ENUM/discrete) the mask is ignored and a warning is logged
+the first time. The mask is a hint applied at the next ``Observe``;
+in-flight body content is not retroactively converted, so call
+``SetAggregation`` at startup before the first ``Observe``.
+*)
+METHOD PUBLIC SetAggregation : BOOL
+VAR_INPUT
+    nMask : BYTE;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_nStatMask      := nMask;
+_nAggSampleSize := _PopCount8(nMask) * 8;
+
+(* If the schema is already locked to a numeric type, switch in/out of
+   the aggregated body schema on the fly so the next sample tick uses
+   the right write path. For non-numeric locked types the mask is held
+   but never consumed (the locked schema decides which append-path runs);
+   warn once so the user knows it's a no-op. *)
+IF _eBodySchema = E_MetricBodySchema.eNumeric AND nMask <> 0 THEN
+    _eBodySchema := E_MetricBodySchema.eNumericAggregated;
+    _nSampleSize := _nAggSampleSize;
+ELSIF _eBodySchema = E_MetricBodySchema.eNumericAggregated AND nMask = 0 THEN
+    _eBodySchema := E_MetricBodySchema.eNumeric;
+    _nSampleSize := 8;
+ELSIF _eBodySchema = E_MetricBodySchema.eNumericAggregated AND nMask <> 0 THEN
+    _nSampleSize := _nAggSampleSize;
+ELSIF nMask <> 0 AND (_eBodySchema = E_MetricBodySchema.eBool
+                   OR _eBodySchema = E_MetricBodySchema.eString
+                   OR _eBodySchema = E_MetricBodySchema.eWstring
+                   OR _eBodySchema = E_MetricBodySchema.eDiscrete) THEN
+    F_InternalLog(
+        E_LogLevel.eWarn,
+        'FB_Metrics.SetAggregation',
+        'Aggregation only valid for numeric metrics — %s is non-numeric, mask ignored',
+        Tc2_Utilities.F_StringEx(_sName),
+        Tc2_Utilities.EMPTY_ARG_VALUE,
+        Tc2_Utilities.EMPTY_ARG_VALUE,
+        Tc2_Utilities.EMPTY_ARG_VALUE
+    );
+END_IF
+
+_AggReset();
+SetAggregation := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
     <Method Name="SetChangeDetect" Id="{a7b8c9d0-e1f2-3a4b-5c6d-7e8f90010216}">
       <Declaration><![CDATA[(*
 :Description: Enable / disable byte-wise change-detect (default TRUE).

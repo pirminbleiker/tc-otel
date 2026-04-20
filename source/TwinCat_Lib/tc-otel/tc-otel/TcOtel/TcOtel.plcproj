@@ -369,6 +369,12 @@
     <Compile Include="POUs\Metrics\E_MetricBodySchema.TcDUT">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="POUs\Metrics\E_MetricStat.TcDUT">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="POUs\Metrics\GVL_MetricAggregation.TcGVL">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="POUs\Metrics\FB_DiagnosticCalculations.TcPOU">
       <SubType>Code</SubType>
     </Compile>

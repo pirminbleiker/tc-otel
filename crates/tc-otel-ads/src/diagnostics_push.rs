@@ -345,6 +345,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     let sample_count = read_u32(bytes, 0x08);
     let metric_id = read_u32(bytes, 0x0C);
     let task_index = bytes[0x10];
+    let stat_mask = bytes[0x11];
     let cycle_count_start = read_u32(bytes, 0x14);
     let cycle_count_end = read_u32(bytes, 0x18);
     let dc_time_start = read_i64(bytes, 0x20);
@@ -353,13 +354,20 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     let unit_len = bytes[0x31] as usize;
 
     // Schema-vs-sample-size sanity. Numeric is always 8 bytes; Bool is always 1.
-    // Discrete / String / Wstring honour the wire `sample_size`. Reject early
+    // Discrete / String / Wstring honour the wire `sample_size`.
+    // NumericAggregated must match popcount(stat_mask) * 8. Reject early
     // when the combination is impossible — keeps the body slicer simple.
     match body_schema {
         MetricBodySchema::Bool if sample_size != 1 => return None,
         MetricBodySchema::Numeric if sample_size != 8 => return None,
         MetricBodySchema::Discrete | MetricBodySchema::String | MetricBodySchema::Wstring => {
             if sample_size == 0 || sample_size > 65535 {
+                return None;
+            }
+        }
+        MetricBodySchema::NumericAggregated => {
+            let expected = (stat_mask.count_ones() as u32) * 8;
+            if expected == 0 || sample_size != expected {
                 return None;
             }
         }
@@ -435,6 +443,20 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
                 }
                 MetricAggregateSample::Wstring(String::from_utf16_lossy(&units))
             }
+            MetricBodySchema::NumericAggregated => {
+                // popcount(stat_mask) LREALs in METRIC_STAT_ORDER. We only walk
+                // the bits that are set so the values vec stays in canonical
+                // order without storing the mask redundantly per value.
+                let n = stat_mask.count_ones() as usize;
+                let mut values: Vec<f64> = Vec::with_capacity(n);
+                for k in 0..n {
+                    values.push(read_f64(slot, k * 8));
+                }
+                MetricAggregateSample::NumericAggregated {
+                    stat_mask,
+                    values,
+                }
+            }
         };
         samples.push(sample);
     }
@@ -445,6 +467,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
         flags,
         body_schema,
         sample_size,
+        stat_mask,
         cycle_count_start,
         cycle_count_end,
         dc_time_start,
@@ -1075,6 +1098,41 @@ mod tests {
         name_len: u8,
         unit_len: u8,
     ) -> Vec<u8> {
+        agg_header_with_mask(
+            flags,
+            body_schema,
+            sample_size,
+            sample_count,
+            metric_id,
+            task_index,
+            0, // stat_mask = 0 (raw / non-aggregated frames)
+            cycle_count_start,
+            cycle_count_end,
+            dc_time_start,
+            dc_time_end,
+            name_len,
+            unit_len,
+        )
+    }
+
+    /// Build a 52-byte FB_Metrics aggregate header with explicit stat_mask
+    /// at +0x11. Used by NumericAggregated tests below.
+    #[allow(clippy::too_many_arguments)]
+    fn agg_header_with_mask(
+        flags: u8,
+        body_schema: u8,
+        sample_size: u32,
+        sample_count: u32,
+        metric_id: u32,
+        task_index: u8,
+        stat_mask: u8,
+        cycle_count_start: u32,
+        cycle_count_end: u32,
+        dc_time_start: i64,
+        dc_time_end: i64,
+        name_len: u8,
+        unit_len: u8,
+    ) -> Vec<u8> {
         let mut v = Vec::with_capacity(PUSH_METRIC_AGG_HEADER_SIZE);
         v.push(PUSH_WIRE_VERSION);
         v.push(PUSH_METRIC_AGG_EVENT_TYPE);
@@ -1084,7 +1142,8 @@ mod tests {
         v.extend_from_slice(&sample_count.to_le_bytes());
         v.extend_from_slice(&metric_id.to_le_bytes());
         v.push(task_index);
-        v.extend_from_slice(&[0_u8; 3]); // pad to 0x14
+        v.push(stat_mask);
+        v.extend_from_slice(&[0_u8; 2]); // pad to 0x14
         v.extend_from_slice(&cycle_count_start.to_le_bytes());
         v.extend_from_slice(&cycle_count_end.to_le_bytes());
         v.extend_from_slice(&0_u32.to_le_bytes()); // pad to 0x20
@@ -1136,6 +1195,7 @@ mod tests {
                 trace_id,
                 span_id,
                 samples,
+                ..
             } => {
                 assert_eq!(metric_id, 0xCAFEBABE);
                 assert_eq!(task_index, 5);
@@ -1305,5 +1365,119 @@ mod tests {
         } else {
             panic!("expected MetricAggregateBatch");
         }
+    }
+
+    // ----- Phase 7: NumericAggregated (Welford bitmask aggregation) -------
+
+    use crate::diagnostics::{
+        METRIC_STAT_MAX, METRIC_STAT_MEAN, METRIC_STAT_MIN, METRIC_STAT_STDDEV, METRIC_STAT_SUM,
+    };
+
+    #[test]
+    fn decode_metric_aggregate_numeric_aggregated_min_max_mean() {
+        // mask = min|max|mean = 7, sample_size = 24, 2 samples in body.
+        let mask = METRIC_STAT_MIN | METRIC_STAT_MAX | METRIC_STAT_MEAN; // = 7
+        let mut frame = agg_header_with_mask(0, 6, 24, 2, 0, 0, mask, 0, 0, 0, 0, 0, 0);
+        // sample 0: min=-1.0, max=1.0, mean=0.0
+        frame.extend_from_slice(&(-1.0_f64).to_le_bytes());
+        frame.extend_from_slice(&(1.0_f64).to_le_bytes());
+        frame.extend_from_slice(&(0.0_f64).to_le_bytes());
+        // sample 1: min=-0.5, max=0.7, mean=0.1
+        frame.extend_from_slice(&(-0.5_f64).to_le_bytes());
+        frame.extend_from_slice(&(0.7_f64).to_le_bytes());
+        frame.extend_from_slice(&(0.1_f64).to_le_bytes());
+
+        let ev = decode_metric_aggregate(&frame).expect("aggregated decodes");
+        if let DiagEvent::MetricAggregateBatch {
+            body_schema,
+            stat_mask,
+            samples,
+            ..
+        } = ev
+        {
+            assert_eq!(body_schema, MetricBodySchema::NumericAggregated);
+            assert_eq!(stat_mask, mask);
+            assert_eq!(samples.len(), 2);
+            match &samples[0] {
+                MetricAggregateSample::NumericAggregated {
+                    stat_mask: m,
+                    values,
+                } => {
+                    assert_eq!(*m, mask);
+                    assert_eq!(values, &vec![-1.0, 1.0, 0.0]);
+                }
+                _ => panic!("expected NumericAggregated"),
+            }
+            match &samples[1] {
+                MetricAggregateSample::NumericAggregated { values, .. } => {
+                    assert_eq!(values, &vec![-0.5, 0.7, 0.1]);
+                }
+                _ => panic!("expected NumericAggregated"),
+            }
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sum_only_for_energy_counter() {
+        // Single bit (sum) — sample_size = 8.
+        let mask = METRIC_STAT_SUM;
+        let mut frame = agg_header_with_mask(0, 6, 8, 3, 0, 0, mask, 0, 0, 0, 0, 0, 0);
+        for s in [12.5_f64, 7.0, 3.25] {
+            frame.extend_from_slice(&s.to_le_bytes());
+        }
+        let ev = decode_metric_aggregate(&frame).expect("sum-only decodes");
+        if let DiagEvent::MetricAggregateBatch { samples, .. } = ev {
+            assert_eq!(samples.len(), 3);
+            for (i, s) in samples.iter().enumerate() {
+                match s {
+                    MetricAggregateSample::NumericAggregated { values, stat_mask } => {
+                        assert_eq!(*stat_mask, METRIC_STAT_SUM);
+                        assert_eq!(values.len(), 1);
+                        assert_eq!(values[0], [12.5_f64, 7.0, 3.25][i]);
+                    }
+                    _ => panic!("expected NumericAggregated"),
+                }
+            }
+        } else {
+            panic!("expected MetricAggregateBatch");
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_full_six_stats() {
+        let mask = METRIC_STAT_MIN | METRIC_STAT_MAX | METRIC_STAT_MEAN
+            | METRIC_STAT_SUM | crate::diagnostics::METRIC_STAT_COUNT | METRIC_STAT_STDDEV;
+        let mut frame = agg_header_with_mask(0, 6, 48, 1, 0, 0, mask, 0, 0, 0, 0, 0, 0);
+        for v in [10.0_f64, 20.0, 15.0, 75.0, 5.0, 3.5] {
+            frame.extend_from_slice(&v.to_le_bytes());
+        }
+        let ev = decode_metric_aggregate(&frame).unwrap();
+        if let DiagEvent::MetricAggregateBatch { samples, .. } = ev {
+            match &samples[0] {
+                MetricAggregateSample::NumericAggregated { values, .. } => {
+                    assert_eq!(values, &vec![10.0, 20.0, 15.0, 75.0, 5.0, 3.5]);
+                }
+                _ => panic!("expected NumericAggregated"),
+            }
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_mismatched_sample_size_for_mask() {
+        // Mask = min|max (popcount 2 → expected sample_size 16) but header
+        // claims 8. Decoder must reject.
+        let mask = METRIC_STAT_MIN | METRIC_STAT_MAX;
+        let frame = agg_header_with_mask(0, 6, 8, 1, 0, 0, mask, 0, 0, 0, 0, 0, 0);
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_aggregated_with_zero_mask() {
+        // body_schema=6 with stat_mask=0 is degenerate (popcount=0 ⇒
+        // sample_size 0). Decoder must reject.
+        let frame = agg_header_with_mask(0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assert!(decode_metric_aggregate(&frame).is_none());
     }
 }

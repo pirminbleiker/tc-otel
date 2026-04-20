@@ -69,8 +69,96 @@
     },
     {
       "type": "row",
-      "title": "Toggle — eBool",
+      "title": "Sine — Welford aggregation envelope (min/max/mean per 50 ms)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "id": 150,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "demo_sineAgg — min/max envelope + mean",
+      "description": "Same source signal as demo_sine_unit, but the PLC FB_Metrics instance ran with SetAggregation(cMetricStandard). Every cycle's value is folded into a Welford online aggregator; on each 50 ms sample tick the (min, max, mean) triple is shipped instead of one raw value. The receiver now sees the true envelope — peaks that would alias away in raw sampling stay visible, and mean traces the central tendency cleanly.",
+      "datasource": "VictoriaMetrics",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 11 },
+      "id": 5,
+      "interval": "50ms",
+      "maxDataPoints": 10000,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": -1.1,
+          "max": 1.1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 3,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "min" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } },
+              { "id": "custom.fillOpacity", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "max" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+              { "id": "custom.fillBelowTo", "value": "min" },
+              { "id": "custom.fillOpacity", "value": 15 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "mean" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } },
+              { "id": "custom.lineWidth", "value": 2 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "expr": "demo_sineAgg_unit_min",
+          "legendFormat": "min",
+          "refId": "A",
+          "interval": "50ms",
+          "exemplar": false,
+          "datasource": "VictoriaMetrics"
+        },
+        {
+          "expr": "demo_sineAgg_unit_max",
+          "legendFormat": "max",
+          "refId": "B",
+          "interval": "50ms",
+          "exemplar": false,
+          "datasource": "VictoriaMetrics"
+        },
+        {
+          "expr": "demo_sineAgg_unit_mean",
+          "legendFormat": "mean",
+          "refId": "C",
+          "interval": "50ms",
+          "exemplar": false,
+          "datasource": "VictoriaMetrics"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Toggle — eBool",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
       "id": 200,
       "collapsed": false,
       "panels": []
@@ -80,7 +168,7 @@
       "title": "demo_toggle — every sample (step-before)",
       "description": "BOOL captured on every change (default change-detect). Step-before interpolation + visible points so the square wave is never smoothed away. Last() reducer per render bucket so a sample is kept whole.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 11 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 22 },
       "id": 2,
       "interval": "100ms",
       "maxDataPoints": 10000,
@@ -119,7 +207,7 @@
     {
       "type": "row",
       "title": "Pipeline diagnostics",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "id": 300,
       "collapsed": false,
       "panels": []
@@ -129,7 +217,7 @@
       "title": "Sample arrival rate (Hz) — per metric",
       "description": "rate() of the sample stream. Use this to verify the configured push interval and sample interval per FB_Metrics instance. demo_sine_unit ≈ 20 Hz (sample every 50 ms), demo_toggle ≈ 4 Hz (toggle every 250 ms).",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
       "id": 3,
       "interval": "1s",
       "maxDataPoints": 1000,
@@ -166,7 +254,7 @@
       "title": "Total samples / metric (1 m)",
       "description": "Sample count over the last minute. Confirms the PLC keeps pushing — 0 means a flush stalled or change-detect suppressed everything.",
       "datasource": "VictoriaMetrics",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "id": 4,
       "interval": "",
       "maxDataPoints": 100,

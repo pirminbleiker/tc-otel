@@ -46,7 +46,8 @@ fn build_agg_header(
     buf.extend_from_slice(&sample_count.to_le_bytes());
     buf.extend_from_slice(&metric_id.to_le_bytes());
     buf.push(task_index);
-    buf.extend_from_slice(&[0_u8; 3]); // pad to 0x14
+    buf.push(0); // stat_mask = 0 for non-aggregated frames
+    buf.extend_from_slice(&[0_u8; 2]); // pad to 0x14
     buf.extend_from_slice(&cycle_count_start.to_le_bytes());
     buf.extend_from_slice(&cycle_count_end.to_le_bytes());
     buf.extend_from_slice(&0_u32.to_le_bytes()); // pad to 0x20
@@ -139,6 +140,7 @@ async fn numeric_aggregate_dispatches_with_lreal_samples() {
             trace_id,
             span_id,
             samples,
+            ..
         } => {
             assert_eq!(metric_id, 0xCAFEBABE);
             assert_eq!(task_index, 4);

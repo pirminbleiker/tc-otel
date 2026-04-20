@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use tc_otel_ads::ams::AmsNetId;
 use tc_otel_ads::diagnostics::{
     DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor,
-    MetricSample, METRIC_FLAG_RING_OVERFLOWED, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
-    SAMPLE_FLAG_RT_VIOLATION,
+    MetricSample, METRIC_FLAG_RING_OVERFLOWED, METRIC_STAT_ORDER, SAMPLE_FLAG_CYCLE_EXCEED,
+    SAMPLE_FLAG_OVERFLOW, SAMPLE_FLAG_RT_VIOLATION,
 };
 use tc_otel_core::MetricEntry;
 
@@ -173,6 +173,7 @@ pub fn diag_event_to_metrics(
             flags,
             body_schema,
             sample_size,
+            stat_mask: _,
             cycle_count_start: _,
             cycle_count_end: _,
             dc_time_start,
@@ -242,6 +243,39 @@ fn metric_aggregate_to_entries(
     let overflow_flag = flags & METRIC_FLAG_RING_OVERFLOWED != 0;
 
     for (i, sample) in samples.iter().enumerate() {
+        let ts_ns = if samples.len() == 1 {
+            dc_time_start
+        } else {
+            dc_time_start + (i as i64) * span_ns / denom
+        };
+
+        // NumericAggregated samples expand into one MetricEntry per set
+        // stat bit (Min, Max, Mean, Sum, Count, StdDev) with the stat name
+        // suffixed onto the metric name. Doing that here means the rest of
+        // the pipeline doesn't need to know about aggregation at all.
+        if let MetricAggregateSample::NumericAggregated { stat_mask, values } = sample {
+            let mut k = 0;
+            for (bit, suffix) in METRIC_STAT_ORDER {
+                if stat_mask & bit == 0 {
+                    continue;
+                }
+                if k >= values.len() {
+                    // Defensive: decoder should have validated, but skip
+                    // rather than panic if a malformed sample slips through.
+                    break;
+                }
+                let v = values[k];
+                k += 1;
+                let metric_name = format!("{}.{}", name, suffix);
+                out.push(build_aggregate_entry(
+                    metric_name, v, ts_ns, unit, net_id, task_index, metric_id,
+                    body_schema, sample_size, overflow_flag,
+                    trace_id_hex.as_deref(), span_id_hex.as_deref(),
+                ));
+            }
+            continue;
+        }
+
         let value: f64 = match sample {
             MetricAggregateSample::Bool(b) => {
                 if *b {
@@ -257,12 +291,7 @@ fn metric_aggregate_to_entries(
                 // events pipeline (not yet implemented). Skip silently.
                 continue;
             }
-        };
-
-        let ts_ns = if samples.len() == 1 {
-            dc_time_start
-        } else {
-            dc_time_start + (i as i64) * span_ns / denom
+            MetricAggregateSample::NumericAggregated { .. } => unreachable!(),
         };
 
         let mut entry = MetricEntry::gauge(name.to_string(), value);
@@ -303,6 +332,62 @@ fn metric_aggregate_to_entries(
     }
 
     out
+}
+
+/// Construct the per-stat MetricEntry for an aggregated sample. Mirrors the
+/// attribute set we attach to the raw-numeric path in
+/// ``metric_aggregate_to_entries`` so dashboards can group both kinds the
+/// same way (metric_id, body_schema, sample_size, ring_overflowed,
+/// optional trace_id / span_id).
+#[allow(clippy::too_many_arguments)]
+fn build_aggregate_entry(
+    name: String,
+    value: f64,
+    ts_ns: i64,
+    unit: &str,
+    net_id: &str,
+    task_index: u8,
+    metric_id: u32,
+    body_schema: MetricBodySchema,
+    sample_size: u32,
+    overflow_flag: bool,
+    trace_id_hex: Option<&str>,
+    span_id_hex: Option<&str>,
+) -> MetricEntry {
+    let mut entry = MetricEntry::gauge(name, value);
+    entry.unit = unit.to_string();
+    entry.timestamp = dc_time_to_datetime(ts_ns);
+    entry.ams_net_id = net_id.to_string();
+    entry.task_index = task_index as i32;
+
+    entry.attributes.insert(
+        "metric_id".into(),
+        serde_json::Value::Number(metric_id.into()),
+    );
+    entry.attributes.insert(
+        "body_schema".into(),
+        serde_json::Value::String(format!("{:?}", body_schema).to_lowercase()),
+    );
+    entry.attributes.insert(
+        "sample_size".into(),
+        serde_json::Value::Number(sample_size.into()),
+    );
+    if overflow_flag {
+        entry
+            .attributes
+            .insert("ring_overflowed".into(), serde_json::Value::Bool(true));
+    }
+    if let Some(t) = trace_id_hex {
+        entry
+            .attributes
+            .insert("trace_id".into(), serde_json::Value::String(t.to_string()));
+    }
+    if let Some(s) = span_id_hex {
+        entry
+            .attributes
+            .insert("span_id".into(), serde_json::Value::String(s.to_string()));
+    }
+    entry
 }
 
 /// Interpret a discrete-byte sample as a little-endian unsigned integer.

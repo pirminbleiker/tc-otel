@@ -50,6 +50,7 @@ attributes.
 | `SetChangeDetect(b)` | Toggle byte-wise change suppression. Default `TRUE`. |
 | `BindTracer(t)` | Attach an `FB_TcOtelTracer` — its innermost open span is snapshotted into every flushed frame. |
 | `WithSpan(span)` | One-shot trace-context override for the next flush. |
+| `SetAggregation(nMask)` | Enable Welford online aggregation (numeric metrics only). Bitmask of `E_MetricStat` values, or `0` for raw single-value sampling. See "Aggregation" below. |
 
 ### Properties
 
@@ -92,6 +93,53 @@ emitted as OTel metrics (which are numeric). They're reserved for the
 events pipeline. `BOOL` / `Discrete` map to `0.0` / `1.0` / unsigned-int
 gauges.
 
+## Aggregation (Phase 7)
+
+Raw sampling at `SetSampleIntervalMs(N>1ms)` drops every value between
+ticks — a 10 ms peak in a 50 ms-sampled signal can vanish entirely.
+`SetAggregation(nMask)` solves this by folding **every** `Observe` call
+into a Welford online aggregator (~6 LREAL ops per call). At each
+sample tick the aggregator's snapshot is written to the body buffer
+and the aggregator resets, so no observation is ever dropped — only
+its detail is summarized into the selected stats.
+
+Bitmask values from `E_MetricStat`:
+
+| Bit     | Stat       | Use case                                              |
+| ------- | ---------- | ----------------------------------------------------- |
+| `eMin`  | min        | trough / under-spec detection                         |
+| `eMax`  | max        | peak / over-spec detection                            |
+| `eMean` | mean       | central tendency, typical level                       |
+| `eSum`  | sum        | totalizer (energy, parts produced, distance)          |
+| `eCount`| count      | observations folded — gap / drop detection            |
+| `eStdDev`| stddev    | jitter / stability (controller tuning, vibration)    |
+
+Convenience constants in `GVL_MetricAggregation`:
+
+```pascal
+fbEnergy.SetAggregation(E_MetricStat.eSum);                        // counter — 8 B/sample
+fbTemp.SetAggregation(GVL_MetricAggregation.cMetricEnvelope);      // min+max  — 16 B
+fbProcess.SetAggregation(GVL_MetricAggregation.cMetricStandard);   // min+max+mean — 24 B  ← recommended
+fbCritical.SetAggregation(GVL_MetricAggregation.cMetricFull);      // all six — 48 B
+```
+
+Wire impact: `body_schema = eNumericAggregated (6)`, `sample_size =
+popcount(mask) * 8`, body holds the chosen stats per sample in
+**bit-index order** (Min first if set, then Max, then Mean, Sum, Count,
+StdDev). The receiver expands each aggregated sample into N separate
+OTel gauge metrics with `.min` / `.max` / `.mean` / `.sum` / `.count` /
+`.stddev` suffixes — dashboards plot them independently.
+
+Aggregation is **numeric-only**. On BOOL / STRING / WSTRING / discrete
+metrics the mask is held but ignored, with a warn-log on `SetAggregation`.
+Switching aggregation on/off mid-stream is supported but the in-flight
+body is not retroactively converted; call `SetAggregation` once at
+startup before the first `Observe`.
+
+Welford online formula (B. P. Welford, *Technometrics 4(3), 1962*) keeps
+mean and sum-of-squared-deltas exact in single pass; stddev derives
+from `sqrt(SumSq / (n-1))` only at flush time, never per `Observe`.
+
 ## Wire format
 
 Frames go via `ADSWRITE` to:
@@ -111,7 +159,8 @@ Layout (LE, `pack_mode := 1`):
 +0x08  sample_count      u32
 +0x0C  metric_id         u32  = FNV-1a(name)
 +0x10  task_index        u8
-+0x11  reserved          [3]
++0x11  stat_mask         u8   E_MetricStat bitmask (0 = raw / non-aggregated)
++0x12  reserved          [2]
 +0x14  cycle_count_start u32
 +0x18  cycle_count_end   u32
 +0x1C  reserved          u32

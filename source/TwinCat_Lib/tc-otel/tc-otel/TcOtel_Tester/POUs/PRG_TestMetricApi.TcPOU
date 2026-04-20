@@ -7,6 +7,10 @@ VAR
 	fbSineLreal     : FB_Metrics;
 	fbToggleBool    : FB_Metrics;
 	fbStateString   : FB_Metrics;
+	(* Phase 7: same sine fed into an aggregating instance — the receiver
+	   sees min/max/mean per sample tick instead of an under-sampled raw
+	   value, so the envelope stays sharp even at 50 ms / 5 s cadence. *)
+	fbSineAgg       : FB_Metrics;
 
 	(* Driver state. *)
 	rPhase          : LREAL;
@@ -30,6 +34,15 @@ END_VAR
 	// STRING state → eString (fixed 32 B per sample), push every 10 s.
 	fbStateString.Init('demo.state', '', 32);
 	fbStateString.SetPushIntervalMs(10000);
+
+	// Aggregated sine: same source, same 50 ms / 5 s cadence — but
+	// SetAggregation(cMetricStandard) folds every Observe into Welford
+	// online (min/max/mean), so each sample tick captures the real envelope
+	// of the underlying signal instead of a stochastic point on it.
+	fbSineAgg.Init('demo.sineAgg', 'unit');
+	fbSineAgg.SetSampleIntervalMs(50);
+	fbSineAgg.SetPushIntervalMs(5000);
+	fbSineAgg.SetAggregation(GVL_MetricAggregation.cMetricStandard);
 END_IF
 
 // Drive the sine: phase advances 0.005 rad per 1 ms task cycle ≈ 0.8 Hz.
@@ -38,6 +51,7 @@ END_IF
 rPhase     := rPhase + 0.005;
 rSineValue := SIN(rPhase);
 fbSineLreal.Observe(rSineValue);
+fbSineAgg.Observe(rSineValue);
 
 // BOOL toggles every 250 cycles for an obvious square wave on the wire.
 IF (TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleCount MOD 250) = 0 THEN

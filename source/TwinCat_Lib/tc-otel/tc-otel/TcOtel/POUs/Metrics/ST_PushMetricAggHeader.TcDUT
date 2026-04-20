@@ -24,7 +24,10 @@ Wire layout (LE, ``pack_mode := 1``):
 * +0x08 ``sample_count``  — number of samples in body
 * +0x0C ``metric_id``     — FNV-1a hash of metric name (stable per name)
 * +0x10 ``task_index``    — owning PLC task index (1..n)
-* +0x11 reserved (3 B)    — pad to 4-byte alignment
+* +0x11 ``stat_mask``     — bitmask of stats packed in body samples when
+                            ``body_schema = eNumericAggregated`` (see
+                            ``E_MetricStat``); 0 for raw / non-aggregated frames
+* +0x12 reserved (2 B)    — pad to 4-byte alignment
 * +0x14 ``cycle_count_start`` — task cycle counter at first sample in window
 * +0x18 ``cycle_count_end``   — task cycle counter at last sample in window
 * +0x1C reserved (4 B)        — pad to 8-byte alignment for ``dc_time_start``
@@ -58,7 +61,8 @@ STRUCT
     nSampleCount       : UDINT;                     // +0x08, samples in body
     nMetricId          : UDINT;                     // +0x0C, FNV-1a(name)
     nTaskIndex         : USINT;                     // +0x10, owning task index
-    aReserved0         : ARRAY [0..2] OF BYTE;      // +0x11, pad to 0x14
+    nStatMask          : BYTE;                      // +0x11, E_MetricStat bitmask (0 = raw/non-aggregated)
+    aReserved0         : ARRAY [0..1] OF BYTE;      // +0x12, pad to 0x14
     nCycleCountStart   : UDINT;                     // +0x14
     nCycleCountEnd     : UDINT;                     // +0x18
     nReserved1         : UDINT;                     // +0x1C, pad to 0x20

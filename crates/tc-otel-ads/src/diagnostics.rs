@@ -100,6 +100,31 @@ pub const METRIC_FLAG_HAS_TRACE_CTX: u8 = 1 << 0;
 /// the per-instance body buffer filled up. Surfaced for ops dashboards.
 pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 
+/// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum and
+/// ``GVL_MetricAggregation`` constants encode the same values; ``stat_mask``
+/// in the wire header is the OR of zero or more of these.
+///
+/// When ``body_schema = NumericAggregated`` (6) the body holds
+/// ``sample_count * popcount(stat_mask)`` LREALs in **bit-index order**
+/// (Min first if set, then Max, then Mean, Sum, Count, StdDev).
+pub const METRIC_STAT_MIN: u8 = 1 << 0;
+pub const METRIC_STAT_MAX: u8 = 1 << 1;
+pub const METRIC_STAT_MEAN: u8 = 1 << 2;
+pub const METRIC_STAT_SUM: u8 = 1 << 3;
+pub const METRIC_STAT_COUNT: u8 = 1 << 4;
+pub const METRIC_STAT_STDDEV: u8 = 1 << 5;
+
+/// All stat bits in canonical (bit-index) order — used by the decoder to
+/// walk the mask and by the bridge to derive metric-name suffixes.
+pub const METRIC_STAT_ORDER: [(u8, &str); 6] = [
+    (METRIC_STAT_MIN, "min"),
+    (METRIC_STAT_MAX, "max"),
+    (METRIC_STAT_MEAN, "mean"),
+    (METRIC_STAT_SUM, "sum"),
+    (METRIC_STAT_COUNT, "count"),
+    (METRIC_STAT_STDDEV, "stddev"),
+];
+
 /// Fixed batch-header size in bytes.
 pub const PUSH_BATCH_HEADER_SIZE: usize = 80;
 
@@ -280,8 +305,12 @@ pub enum DiagEvent {
         body_schema: MetricBodySchema,
         /// Bytes per body sample as carried on the wire (8 for Numeric, 1
         /// for Bool, native size for Discrete, configured length for
-        /// String/Wstring).
+        /// String/Wstring, ``popcount(stat_mask) * 8`` for NumericAggregated).
         sample_size: u32,
+        /// Aggregation stat bitmask from header offset +0x11. Zero for raw
+        /// non-aggregated frames; non-zero only meaningful when ``body_schema
+        /// = NumericAggregated``. See ``METRIC_STAT_*`` constants.
+        stat_mask: u8,
         /// Task cycle counter at the first sample in the window.
         cycle_count_start: u32,
         /// Task cycle counter at the last sample in the window.
@@ -318,6 +347,8 @@ pub enum MetricBodySchema {
     String,
     /// `sample_size` bytes per sample, UTF-16LE zero-padded fixed-size strings.
     Wstring,
+    /// `popcount(stat_mask)` LREALs per sample in `METRIC_STAT_ORDER`.
+    NumericAggregated,
 }
 
 impl MetricBodySchema {
@@ -330,6 +361,7 @@ impl MetricBodySchema {
             3 => Some(MetricBodySchema::Discrete),
             4 => Some(MetricBodySchema::String),
             5 => Some(MetricBodySchema::Wstring),
+            6 => Some(MetricBodySchema::NumericAggregated),
             _ => None,
         }
     }
@@ -344,6 +376,11 @@ pub enum MetricAggregateSample {
     Discrete(Vec<u8>),
     String(String),
     Wstring(String),
+    /// One Welford-aggregated sample. `values` are stored in
+    /// `METRIC_STAT_ORDER` (Min, Max, Mean, Sum, Count, StdDev) and only
+    /// include the stats whose bit is set in `stat_mask`. Both fields are
+    /// surfaced so the bridge can attach the right suffix per emitted metric.
+    NumericAggregated { stat_mask: u8, values: Vec<f64> },
 }
 
 /// Metric descriptor — static metadata for a metric announced in a batch.
