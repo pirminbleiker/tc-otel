@@ -174,8 +174,8 @@ pub fn diag_event_to_metrics(
             body_schema,
             sample_size,
             stat_mask: _,
-            cycle_count_start: _,
-            cycle_count_end: _,
+            cycle_count_start,
+            cycle_count_end,
             dc_time_start,
             dc_time_end,
             name,
@@ -183,6 +183,7 @@ pub fn diag_event_to_metrics(
             trace_id,
             span_id,
             samples,
+            sample_cycle_offsets,
         } => metric_aggregate_to_entries(
             &net_id_str,
             metric_id,
@@ -190,6 +191,8 @@ pub fn diag_event_to_metrics(
             flags,
             body_schema,
             sample_size,
+            cycle_count_start,
+            cycle_count_end,
             dc_time_start,
             dc_time_end,
             &name,
@@ -197,6 +200,7 @@ pub fn diag_event_to_metrics(
             trace_id,
             span_id,
             &samples,
+            sample_cycle_offsets.as_deref(),
         ),
     }
 }
@@ -208,9 +212,12 @@ pub fn diag_event_to_metrics(
 ///   * Discrete (BYTE/WORD/DWORD/LWORD/ENUM) → little-endian unsigned int → f64
 ///   * String / Wstring → silently dropped (OTel metrics are numeric)
 ///
-/// Per-sample timestamps aren't on the wire — the receiver linearly
-/// interpolates between `dc_time_start` and `dc_time_end`. Single-sample
-/// batches use `dc_time_start` directly.
+/// Per-sample timestamps: when `sample_cycle_offsets` is `Some(v)` (the PLC
+/// emitted the frame with `METRIC_FLAG_HAS_SAMPLE_TS`), each sample gets its
+/// true DC time reconstructed from `dc_time_start + v[i] * cycle_time_ns`,
+/// where `cycle_time_ns` is derived from the header span. Otherwise the
+/// receiver linearly interpolates between `dc_time_start` and `dc_time_end`.
+/// Single-sample batches always use `dc_time_start` directly.
 ///
 /// trace_id / span_id are stored on each ``MetricEntry`` as raw bytes and
 /// promoted to a proper OTel Exemplar on the OTLP NumberDataPoint later in
@@ -225,6 +232,8 @@ fn metric_aggregate_to_entries(
     flags: u8,
     body_schema: MetricBodySchema,
     sample_size: u32,
+    cycle_count_start: u32,
+    cycle_count_end: u32,
     dc_time_start: i64,
     dc_time_end: i64,
     name: &str,
@@ -232,6 +241,7 @@ fn metric_aggregate_to_entries(
     trace_id: Option<[u8; 16]>,
     span_id: Option<[u8; 8]>,
     samples: &[MetricAggregateSample],
+    sample_cycle_offsets: Option<&[u16]>,
 ) -> Vec<MetricEntry> {
     let mut out: Vec<MetricEntry> = Vec::with_capacity(samples.len());
     if samples.is_empty() {
@@ -242,11 +252,27 @@ fn metric_aggregate_to_entries(
     let denom = (samples.len() as i64 - 1).max(1);
     let overflow_flag = flags & METRIC_FLAG_RING_OVERFLOWED != 0;
 
+    // Cycle-to-ns conversion for the per-sample offset path. `wrapping_sub`
+    // is defensive — PLC-side `_CheckFlush` guards against u32 wrap inside a
+    // window, but a malformed frame could still report cycle_end < start.
+    // When the math degenerates we silently fall back to linear interpolation.
+    let cycles_in_window = cycle_count_end.wrapping_sub(cycle_count_start) as i64;
+    let cycle_time_ns: Option<i64> = if cycles_in_window > 0 && span_ns > 0 {
+        Some(span_ns / cycles_in_window)
+    } else {
+        None
+    };
+
     for (i, sample) in samples.iter().enumerate() {
-        let ts_ns = if samples.len() == 1 {
-            dc_time_start
-        } else {
-            dc_time_start + (i as i64) * span_ns / denom
+        let ts_ns = match (sample_cycle_offsets, cycle_time_ns) {
+            (Some(offs), Some(cns)) if i < offs.len() => dc_time_start + (offs[i] as i64) * cns,
+            _ => {
+                if samples.len() == 1 {
+                    dc_time_start
+                } else {
+                    dc_time_start + (i as i64) * span_ns / denom
+                }
+            }
         };
 
         // NumericAggregated samples expand into one MetricEntry per set
@@ -1194,6 +1220,7 @@ mod tests {
                 stat_mask,
                 values: vec![-1.0, 1.0, 0.0], // min, max, mean
             }],
+            sample_cycle_offsets: None,
         };
 
         let out = diag_event_to_metrics(net(), ev, &HashMap::new());
@@ -1214,6 +1241,141 @@ mod tests {
                 "span_id must not leak into plain attributes anymore"
             );
             assert!(entry.has_trace_context());
+        }
+    }
+
+    /// Nanoseconds between `entry.timestamp` and the datetime corresponding
+    /// to `dc_time_start`. Lets us assert per-sample offsets without
+    /// depending on the DC → Unix epoch conversion constants.
+    fn delta_ns_from(entry: &MetricEntry, dc_time_start: i64) -> i64 {
+        let base = dc_time_to_datetime(dc_time_start);
+        entry
+            .timestamp
+            .signed_duration_since(base)
+            .num_nanoseconds()
+            .expect("duration fits i64")
+    }
+
+    #[test]
+    fn metric_aggregate_uses_per_sample_offsets_for_timestamps() {
+        use tc_otel_ads::diagnostics::{
+            MetricAggregateSample, MetricBodySchema, METRIC_FLAG_HAS_SAMPLE_TS,
+        };
+
+        // 3 samples at cycle offsets 0, 100, 250 across a 250-cycle / 250_000 ns
+        // window → cycle_time_ns = 1000. Per-sample deltas from dc_time_start
+        // should be 0, 100_000, 250_000.
+        let dc_start: i64 = 1_000_000_000;
+        let dc_end: i64 = dc_start + 250_000;
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 42,
+            task_index: 1,
+            flags: METRIC_FLAG_HAS_SAMPLE_TS,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            cycle_count_start: 1000,
+            cycle_count_end: 1250,
+            dc_time_start: dc_start,
+            dc_time_end: dc_end,
+            name: "temp".to_string(),
+            unit: "celsius".to_string(),
+            trace_id: None,
+            span_id: None,
+            samples: vec![
+                MetricAggregateSample::Numeric(21.0),
+                MetricAggregateSample::Numeric(22.5),
+                MetricAggregateSample::Numeric(23.1),
+            ],
+            sample_cycle_offsets: Some(vec![0, 100, 250]),
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 3);
+
+        let expected = [0_i64, 100_000, 250_000];
+        for (entry, exp) in out.iter().zip(expected.iter()) {
+            assert_eq!(delta_ns_from(entry, dc_start), *exp);
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_degenerate_cycle_span_falls_back_to_interpolation() {
+        use tc_otel_ads::diagnostics::{
+            MetricAggregateSample, MetricBodySchema, METRIC_FLAG_HAS_SAMPLE_TS,
+        };
+
+        // cycle_count_end == cycle_count_start → cycles_in_window == 0.
+        // Even with sample_cycle_offsets set, bridge must fall back to linear
+        // interpolation rather than divide-by-zero or produce garbage.
+        let dc_start: i64 = 1_000_000;
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 42,
+            task_index: 1,
+            flags: METRIC_FLAG_HAS_SAMPLE_TS,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            cycle_count_start: 500,
+            cycle_count_end: 500, // degenerate
+            dc_time_start: dc_start,
+            dc_time_end: dc_start + 200,
+            name: "x".to_string(),
+            unit: "".to_string(),
+            trace_id: None,
+            span_id: None,
+            samples: vec![
+                MetricAggregateSample::Numeric(1.0),
+                MetricAggregateSample::Numeric(2.0),
+                MetricAggregateSample::Numeric(3.0),
+            ],
+            sample_cycle_offsets: Some(vec![0, 50, 100]),
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 3);
+
+        // Linear fallback: i * span / (n-1) = i * 200 / 2 → 0, 100, 200.
+        let expected = [0_i64, 100, 200];
+        for (entry, exp) in out.iter().zip(expected.iter()) {
+            assert_eq!(delta_ns_from(entry, dc_start), *exp);
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_without_offsets_uses_linear_interpolation() {
+        use tc_otel_ads::diagnostics::{MetricAggregateSample, MetricBodySchema};
+
+        // Flag clear / offsets None — behavior unchanged from pre-feature.
+        let dc_start: i64 = 1_000_000;
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 42,
+            task_index: 1,
+            flags: 0,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            cycle_count_start: 1000,
+            cycle_count_end: 1250,
+            dc_time_start: dc_start,
+            dc_time_end: dc_start + 200,
+            name: "x".to_string(),
+            unit: "".to_string(),
+            trace_id: None,
+            span_id: None,
+            samples: vec![
+                MetricAggregateSample::Numeric(1.0),
+                MetricAggregateSample::Numeric(2.0),
+                MetricAggregateSample::Numeric(3.0),
+            ],
+            sample_cycle_offsets: None,
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 3);
+        let expected = [0_i64, 100, 200];
+        for (entry, exp) in out.iter().zip(expected.iter()) {
+            assert_eq!(delta_ns_from(entry, dc_start), *exp);
         }
     }
 }

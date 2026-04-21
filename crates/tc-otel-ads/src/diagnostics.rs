@@ -100,6 +100,16 @@ pub const METRIC_FLAG_HAS_TRACE_CTX: u8 = 1 << 0;
 /// the per-instance body buffer filled up. Surfaced for ops dashboards.
 pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 
+/// FB_Metrics flag: each body slot is preceded by a 2-byte little-endian
+/// `u16` cycle offset (relative to `cycle_count_start`). Body slot stride
+/// becomes `sample_size + 2`. Used by the receiver to reconstruct accurate
+/// per-sample DC timestamps instead of linearly interpolating across the
+/// window. Emitted when the PLC calls `FB_Metrics.SetRecordSampleTimes(TRUE)`.
+pub const METRIC_FLAG_HAS_SAMPLE_TS: u8 = 1 << 2;
+
+/// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS` is set.
+pub const METRIC_SAMPLE_TS_SIZE: usize = 2;
+
 /// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum
 /// encodes the same values; ``stat_mask`` in the wire header is the OR
 /// of zero or more of these.
@@ -330,6 +340,12 @@ pub enum DiagEvent {
         span_id: Option<[u8; 8]>,
         /// Decoded samples in capture order.
         samples: Vec<MetricAggregateSample>,
+        /// Optional per-sample cycle offsets (relative to `cycle_count_start`).
+        /// `Some(v)` when `flags & METRIC_FLAG_HAS_SAMPLE_TS != 0`, with
+        /// `v.len() == samples.len()`. `None` when the flag is clear — in
+        /// which case the receiver falls back to linear interpolation across
+        /// `[dc_time_start, dc_time_end]`.
+        sample_cycle_offsets: Option<Vec<u16>>,
     },
 }
 

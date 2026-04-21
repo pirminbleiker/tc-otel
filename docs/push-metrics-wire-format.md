@@ -144,6 +144,41 @@ name + unit + description ≈ 40 bytes; attribute table ≈ 20 bytes → ~70 byt
 
 Well under the ADS write payload limit of 64 KiB.
 
+## Aggregate batch: optional per-sample timestamps
+
+The compact FB_Metrics aggregate frame (`event_type = 21`, wire version 2 —
+see `ST_PushMetricAggHeader`) by default carries per-sample timestamps only
+implicitly via `dc_time_start`/`dc_time_end`. The receiver interpolates
+linearly across the window. When the PLC owns irregular sampling (change-
+detect bursts, sporadic `Observe` calls, heterogeneous `SetSampleIntervalMs`
+changes), a per-sample cycle offset can be opt-in emitted.
+
+**Header flag**: `flags.bit2 = METRIC_FLAG_HAS_SAMPLE_TS = 0x04`.
+
+**Body layout when set**: each sample slot is preceded by a `u16`
+little-endian `cycle_offset`, expressed as cycles since `cycle_count_start`.
+Slot stride becomes `sample_size + 2`. `sample_size` itself remains the
+value size (unchanged semantics — decoders can still dispatch on it).
+
+**Reconstructing DC time**:
+```
+cycle_time_ns = (dc_time_end - dc_time_start) / (cycle_count_end - cycle_count_start)
+ts_sample_i   = dc_time_start + cycle_offset[i] * cycle_time_ns
+```
+
+**Why `u16`**: at the minimum TwinCAT tick of 250 µs, u16 covers 16.38 s —
+well beyond any realistic metric push window. The PLC-side `_CheckFlush`
+caps the window at `0xFFFF` cycles when the flag is active, so offsets never
+overflow; the only observable effect is an earlier autoflush for extreme
+configs.
+
+**Cost**: `+2 B` per sample when active. Noticeable on Bool bodies (1 B →
+3 B, +200 %), negligible on NumericAggregated (48 B → 50 B, +4 %). Zero when
+the flag is not set.
+
+**Enabling from PLC**: `FB_Metrics.SetRecordSampleTimes(TRUE)`. Opt-in only —
+default behavior is unchanged.
+
 ## Versioning and Compatibility
 
 - **Wire version = 1**: Stable metric batch format. Future breaking changes will

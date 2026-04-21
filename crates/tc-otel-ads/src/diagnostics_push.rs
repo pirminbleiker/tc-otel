@@ -19,9 +19,10 @@
 
 use crate::diagnostics::{
     DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor, MetricSample,
-    METRIC_FLAG_HAS_TRACE_CTX, PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE,
-    PUSH_BATCH_MAX_SAMPLES, PUSH_METRIC_AGG_EVENT_TYPE, PUSH_METRIC_AGG_HEADER_SIZE,
-    PUSH_METRIC_AGG_TRACE_SIZE, PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
+    METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_TRACE_CTX, METRIC_SAMPLE_TS_SIZE,
+    PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES,
+    PUSH_METRIC_AGG_EVENT_TYPE, PUSH_METRIC_AGG_HEADER_SIZE, PUSH_METRIC_AGG_TRACE_SIZE,
+    PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
 };
 
 /// Decode a task-diagnostic batch frame (80 + 24 × sample_count bytes).
@@ -404,8 +405,17 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     let unit = String::from_utf8(bytes[offset..offset + unit_len].to_vec()).ok()?;
     offset += unit_len;
 
-    // Body — sample_count * sample_size bytes.
-    let body_len = (sample_count as usize).checked_mul(sample_size as usize)?;
+    // Body — sample_count * slot_stride bytes. When METRIC_FLAG_HAS_SAMPLE_TS
+    // is set each slot is prefixed with a 2-byte little-endian u16 cycle
+    // offset; the value bytes still span sample_size.
+    let has_sample_ts = flags & METRIC_FLAG_HAS_SAMPLE_TS != 0;
+    let ts_prefix = if has_sample_ts {
+        METRIC_SAMPLE_TS_SIZE
+    } else {
+        0
+    };
+    let slot_stride = (sample_size as usize).checked_add(ts_prefix)?;
+    let body_len = (sample_count as usize).checked_mul(slot_stride)?;
     if bytes.len() < offset + body_len {
         return None;
     }
@@ -418,9 +428,21 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     }
 
     let mut samples: Vec<MetricAggregateSample> = Vec::with_capacity(sample_count as usize);
+    let mut sample_cycle_offsets: Option<Vec<u16>> = if has_sample_ts {
+        Some(Vec::with_capacity(sample_count as usize))
+    } else {
+        None
+    };
     for i in 0..sample_count as usize {
-        let off = i * sample_size as usize;
-        let slot = &body[off..off + sample_size as usize];
+        let slot_base = i * slot_stride;
+        if has_sample_ts {
+            let cycle_offset = u16::from_le_bytes([body[slot_base], body[slot_base + 1]]);
+            if let Some(v) = sample_cycle_offsets.as_mut() {
+                v.push(cycle_offset);
+            }
+        }
+        let value_off = slot_base + ts_prefix;
+        let slot = &body[value_off..value_off + sample_size as usize];
         let sample = match body_schema {
             MetricBodySchema::Bool => MetricAggregateSample::Bool(slot[0] != 0),
             MetricBodySchema::Numeric => MetricAggregateSample::Numeric(read_f64(slot, 0)),
@@ -476,6 +498,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
         trace_id,
         span_id,
         samples,
+        sample_cycle_offsets,
     })
 }
 
@@ -1485,5 +1508,133 @@ mod tests {
         // sample_size 0). Decoder must reject.
         let frame = agg_header_with_mask(0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_round_trip() {
+        // METRIC_FLAG_HAS_SAMPLE_TS set → each body slot is [u16 offset | 8 B value].
+        // Window covers cycles 1000..1250 mapped to dc_times in ns via header;
+        // here we only verify decoder emits the correct Vec<u16> in capture order.
+        let mut frame = agg_header(
+            METRIC_FLAG_HAS_SAMPLE_TS,
+            2, // Numeric
+            8, // value size (unchanged — offset is a prefix)
+            3, // sample_count
+            0,
+            0, // metric_id / task_index
+            1000,
+            1250, // cycle_count_start / _end
+            10_000,
+            35_000,
+            4,
+            0,
+        );
+        frame.extend_from_slice(b"temp");
+
+        // Three samples: (offset, value).
+        for (off, val) in [(0_u16, 21.0_f64), (100, 22.5), (250, 23.1)] {
+            frame.extend_from_slice(&off.to_le_bytes());
+            frame.extend_from_slice(&val.to_le_bytes());
+        }
+
+        let ev = decode_metric_aggregate(&frame).expect("sample-ts frame decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                flags,
+                samples,
+                sample_cycle_offsets,
+                ..
+            } => {
+                assert_eq!(flags & METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_SAMPLE_TS);
+                assert_eq!(samples.len(), 3);
+                assert_eq!(samples[0], MetricAggregateSample::Numeric(21.0));
+                assert_eq!(samples[1], MetricAggregateSample::Numeric(22.5));
+                assert_eq!(samples[2], MetricAggregateSample::Numeric(23.1));
+                assert_eq!(sample_cycle_offsets, Some(vec![0, 100, 250]));
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_without_sample_ts_leaves_offsets_none() {
+        // Flag clear — decoder must emit None for sample_cycle_offsets and
+        // parse the body with the plain sample_size stride (no prefix).
+        let mut frame = agg_header(0, 2, 8, 2, 0, 0, 0, 0, 0, 0, 4, 0);
+        frame.extend_from_slice(b"temp");
+        frame.extend_from_slice(&21.5_f64.to_le_bytes());
+        frame.extend_from_slice(&22.7_f64.to_le_bytes());
+
+        let ev = decode_metric_aggregate(&frame).expect("legacy frame decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                samples,
+                sample_cycle_offsets,
+                ..
+            } => {
+                assert_eq!(samples.len(), 2);
+                assert!(sample_cycle_offsets.is_none());
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_truncated_body_rejected() {
+        // Header claims 3 samples × (2 + 8) = 30 B of body, but we only
+        // ship 20 B. Decoder must reject.
+        let mut frame = agg_header(METRIC_FLAG_HAS_SAMPLE_TS, 2, 8, 3, 0, 0, 0, 0, 0, 0, 0, 0);
+        frame.extend_from_slice(&[0_u8; 20]);
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_with_numeric_aggregated() {
+        // NumericAggregated + sample-ts: body slot = [u16 offset | N LREAL].
+        // With mask = Min|Max|Mean the slot is 2 + 24 = 26 B. Two snapshots.
+        let mask = METRIC_STAT_MIN | METRIC_STAT_MAX | METRIC_STAT_MEAN;
+        let mut frame = agg_header_with_mask(
+            METRIC_FLAG_HAS_SAMPLE_TS,
+            6,  // NumericAggregated
+            24, // popcount(mask) * 8
+            2,  // sample_count
+            0,
+            0,
+            mask,
+            0,
+            200, // cycles
+            0,
+            0,
+            0,
+            0,
+        );
+        for (off, min, max, mean) in [
+            (0_u16, -1.0_f64, 1.0_f64, 0.0_f64),
+            (150_u16, -2.0, 3.0, 0.5),
+        ] {
+            frame.extend_from_slice(&off.to_le_bytes());
+            frame.extend_from_slice(&min.to_le_bytes());
+            frame.extend_from_slice(&max.to_le_bytes());
+            frame.extend_from_slice(&mean.to_le_bytes());
+        }
+
+        let ev = decode_metric_aggregate(&frame).expect("agg + sample-ts decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                samples,
+                sample_cycle_offsets,
+                ..
+            } => {
+                assert_eq!(sample_cycle_offsets, Some(vec![0, 150]));
+                assert_eq!(samples.len(), 2);
+                match &samples[1] {
+                    MetricAggregateSample::NumericAggregated { values, .. } => {
+                        assert_eq!(values, &vec![-2.0_f64, 3.0, 0.5]);
+                    }
+                    _ => panic!("expected NumericAggregated"),
+                }
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
     }
 }
