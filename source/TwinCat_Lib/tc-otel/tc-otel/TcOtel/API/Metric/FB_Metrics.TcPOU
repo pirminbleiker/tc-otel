@@ -157,6 +157,13 @@ VAR
        what they want. *)
     _pTracer            : REFERENCE TO FB_Trace;
     _pSpanOverride      : REFERENCE TO FB_Span;
+
+    (* Per-sample timestamps (opt-in). When TRUE each body slot is prefixed
+       with a 2-byte little-endian u16 cycle offset (relative to
+       _nCycleStart). _CheckFlush caps the push window at 0xFFFF cycles to
+       keep u16 safe; receiver-side decoders gate on the matching header flag
+       METRIC_FLAG_HAS_SAMPLE_TS (0x04). *)
+    _bRecordSampleTimes : BOOL;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -362,20 +369,35 @@ produce a sample slot — all zeros — so ``sample_count`` keeps matching the
 expected wall-clock cadence on the receiver side.
 *)
 METHOD PRIVATE _AppendAggregated : BOOL
+VAR_INPUT
+    (* Cycle offset for this sample relative to _nCycleStart. Only written
+       when _bRecordSampleTimes is TRUE; ignored otherwise. Callers pass 0
+       when they don't care. *)
+    nCycleOff : UINT;
+END_VAR
 VAR
     pDst    : POINTER TO BYTE;
     nOffset : UDINT;
+    nStride : UDINT;
     fStdDev : LREAL;
     fCount  : LREAL;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > BODY_CAPACITY THEN
+        <ST><![CDATA[nStride := _nSampleSize;
+IF _bRecordSampleTimes THEN
+    nStride := nStride + 2;
+END_IF
+IF (_nBodyOffset + nStride) > BODY_CAPACITY THEN
     _AppendAggregated := FALSE;
     RETURN;
 END_IF
 
 pDst    := _ActiveBodyPtr() + _nBodyOffset;
+IF _bRecordSampleTimes THEN
+    Tc2_System.MEMCPY(pDst, ADR(nCycleOff), 2);
+    pDst := pDst + 2;
+END_IF
 nOffset := 0;
 
 IF (_nStatMask AND E_MetricStat.eMin) <> 0 THEN
@@ -409,7 +431,7 @@ IF (_nStatMask AND E_MetricStat.eStdDev) <> 0 THEN
     nOffset := nOffset + 8;
 END_IF
 
-_nBodyOffset      := _nBodyOffset + _nSampleSize;
+_nBodyOffset      := _nBodyOffset + nStride;
 _nSampleCount     := _nSampleCount + 1;
 _AppendAggregated := TRUE;
 ]]></ST>
@@ -423,23 +445,36 @@ Returns FALSE when the body is full — caller sets ``_bOverflow``.
 *)
 METHOD PRIVATE _AppendSample : BOOL
 VAR_INPUT
-    stArg : ANY;
+    stArg     : ANY;
+    (* Cycle offset for this sample relative to _nCycleStart. Only written
+       when _bRecordSampleTimes is TRUE; ignored otherwise. Callers pass 0
+       when they don't care. *)
+    nCycleOff : UINT;
 END_VAR
 VAR
     fLreal     : LREAL;
     nStrLen    : UDINT;
     nCopyLen   : UDINT;
+    nStride    : UDINT;
     pDst       : POINTER TO BYTE;
     pWstr      : POINTER TO WSTRING(255);
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF (_nBodyOffset + _nSampleSize) > BODY_CAPACITY THEN
+        <ST><![CDATA[nStride := _nSampleSize;
+IF _bRecordSampleTimes THEN
+    nStride := nStride + 2;
+END_IF
+IF (_nBodyOffset + nStride) > BODY_CAPACITY THEN
     _AppendSample := FALSE;
     RETURN;
 END_IF
 
 pDst := _ActiveBodyPtr() + _nBodyOffset;
+IF _bRecordSampleTimes THEN
+    Tc2_System.MEMCPY(pDst, ADR(nCycleOff), 2);
+    pDst := pDst + 2;
+END_IF
 
 CASE _eBodySchema OF
     E_MetricBodySchema.eBool:
@@ -492,7 +527,7 @@ CASE _eBodySchema OF
         RETURN;
 END_CASE
 
-_nBodyOffset  := _nBodyOffset + _nSampleSize;
+_nBodyOffset  := _nBodyOffset + nStride;
 _nSampleCount := _nSampleCount + 1;
 
 _AppendSample := TRUE;
@@ -531,6 +566,15 @@ END_IF
 nTargetCycles := (_nPushIntervalMs * 1000) / nCycleTimeUs;
 IF nTargetCycles = 0 THEN
     nTargetCycles := 1;
+END_IF
+
+(* When per-sample timestamps are active, cap the window at the u16 ceiling
+   so the per-sample cycle-offset never overflows. Observable effect: an
+   earlier autoflush for extreme configs (e.g. 20 s push window on a 250 µs
+   task). WithSpan pins may be consumed by the autoflush rather than the
+   natural flush — use BindTracer for spans that outlive one window. *)
+IF _bRecordSampleTimes AND nTargetCycles > 16#FFFF THEN
+    nTargetCycles := 16#FFFF;
 END_IF
 
 nNowCycle := pTi^.CycleCount;
@@ -620,6 +664,9 @@ IF _bOverflow THEN
 END_IF
 IF __ISVALIDREF(refSpan) THEN
     stHeader.nFlags := stHeader.nFlags OR 16#01;    (* bit0 = has_trace_ctx *)
+END_IF
+IF _bRecordSampleTimes THEN
+    stHeader.nFlags := stHeader.nFlags OR 16#04;    (* bit2 = has_sample_ts *)
 END_IF
 stHeader.eBodySchema      := _eBodySchema;
 stHeader.nSampleSize      := _nSampleSize;
@@ -1129,6 +1176,7 @@ VAR
     nDcNow         : LINT;
     fLrealForAgg   : LREAL;     // widened sample for the online aggregator
     bAggMode       : BOOL;      // shorthand for "stat-mask aggregation active"
+    nCycleOff      : UINT;      // per-sample offset for optional sample-TS
 END_VAR
 ]]></Declaration>
       <Implementation>
@@ -1212,19 +1260,42 @@ IF NOT bAggMode AND _bChangeDetect AND _bLastValueValid THEN
     END_IF
 END_IF
 
+(* Window timing must be established BEFORE the append so the per-sample
+   cycle offset is well-defined on the very first sample. Moving this block
+   up changes no observable semantics in the default path — _nCycleStart /
+   _nDcTimeStart were overwritten by this sample anyway — but guarantees
+   that _bRecordSampleTimes sees a valid reference point. *)
+nDcNow := _NowDcTime();
+IF NOT _bWindowHasSample THEN
+    _nCycleStart      := nNowCycle;
+    _nDcTimeStart     := nDcNow;
+    _bWindowHasSample := TRUE;
+END_IF
+_nCycleEnd   := nNowCycle;
+_nDcTimeEnd  := nDcNow;
+
+(* u16 offset: safe because _CheckFlush caps the window at 0xFFFF cycles
+   whenever _bRecordSampleTimes is active. When the flag is off, the value
+   is unused but we still clamp defensively. *)
+IF (nNowCycle - _nCycleStart) > 16#FFFF THEN
+    nCycleOff := 16#FFFF;
+ELSE
+    nCycleOff := TO_UINT(nNowCycle - _nCycleStart);
+END_IF
+
 IF bAggMode THEN
     (* Snapshot the aggregator into the body, then reset for the next window.
        _AppendAggregated falls through to FALSE only on body overflow — bail
        early in that case, the old aggregator state would be wrong to keep
        around for the next snapshot anyway. *)
-    IF NOT _AppendAggregated() THEN
+    IF NOT _AppendAggregated(nCycleOff) THEN
         _bOverflow   := TRUE;
         _nDropAppend := _nDropAppend + 1;
     END_IF
     _AggReset();
 ELSE
     (* Raw append (single value per sample tick). *)
-    IF NOT _AppendSample(stArg) THEN
+    IF NOT _AppendSample(stArg, nCycleOff) THEN
         _bOverflow   := TRUE;
         _nDropAppend := _nDropAppend + 1;
     END_IF
@@ -1241,16 +1312,6 @@ END_IF
 
 _nLastSampleCycle := nNowCycle;
 _bLastSampleSet   := TRUE;
-
-(* Window timing snapshot. *)
-nDcNow := _NowDcTime();
-IF NOT _bWindowHasSample THEN
-    _nCycleStart      := nNowCycle;
-    _nDcTimeStart     := nDcNow;
-    _bWindowHasSample := TRUE;
-END_IF
-_nCycleEnd   := nNowCycle;
-_nDcTimeEnd  := nDcNow;
 
 _CheckFlush();
 
@@ -1403,6 +1464,50 @@ IF _nPushIntervalMs = 0 THEN
     _nPushIntervalMs := 1000;
 END_IF
 SetPushIntervalMs := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetRecordSampleTimes" Id="{b1c2d3e4-f506-7890-a1b2-c3d4e5f60718}">
+      <Declaration><![CDATA[(*
+:Description: Enable / disable per-sample timestamp emission (default FALSE).
+
+When TRUE every body slot is prefixed with a 2-byte little-endian u16 cycle
+offset relative to ``cycle_count_start``, and the wire header carries
+``flags.bit2 = METRIC_FLAG_HAS_SAMPLE_TS``. Receivers use the offset to
+reconstruct accurate per-sample DC times instead of linearly interpolating
+across the window.
+
+Use this when sampling is irregular — change-detect bursts, sporadic
+``Observe`` calls, or `SetSampleIntervalMs` rate-limiting in combination with
+bursty input. When ``Observe`` runs every task cycle, default linear
+interpolation is already exact and this opt-in costs 2 B per sample for
+nothing.
+
+Side effects:
+
+* ``_CheckFlush`` caps the push window at ``0xFFFF`` task cycles whenever
+  this flag is active. On a 250 µs task that is ~16 s; on a 1 ms task
+  ~65 s — well beyond any realistic metric interval. Configurations that
+  would exceed the cap are silently autoflushed earlier.
+* ``WithSpan`` overrides are one-shot and get consumed by the *next* flush,
+  which may now be an autoflush rather than the natural window end. For
+  spans that outlive one window, prefer ``BindTracer``.
+* ``SetAggregation`` splits the Welford state across autoflushes, which
+  produces finer-grained stat windows downstream. Acceptable for most
+  dashboards; note if you rely on exact per-window moments.
+
+Cost per sample when active: 2 B prefix. Bool (1 B) body grows to 3 B,
+Numeric (8 B) to 10 B, NumericAggregated with full stat mask (48 B) to
+50 B. Zero overhead when disabled.
+*)
+METHOD PUBLIC SetRecordSampleTimes : BOOL
+VAR_INPUT
+    bEnable : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_bRecordSampleTimes := bEnable;
+SetRecordSampleTimes := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

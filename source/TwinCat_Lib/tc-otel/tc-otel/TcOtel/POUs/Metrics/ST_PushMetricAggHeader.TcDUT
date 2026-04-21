@@ -18,7 +18,8 @@ Wire layout (LE, ``pack_mode := 1``):
 
 * +0x00 ``version``       — wire version = 2
 * +0x01 ``event_type``    — = 21 (PUSH_METRIC_AGG)
-* +0x02 ``flags``         — bit0=has_trace_ctx, bit1=ring_overflowed
+* +0x02 ``flags``         — bit0=has_trace_ctx, bit1=ring_overflowed,
+                             bit2=has_sample_ts
 * +0x03 ``body_schema``   — see ``E_MetricBodySchema``
 * +0x04 ``sample_size``   — bytes per sample in body
 * +0x08 ``sample_count``  — number of samples in body
@@ -45,10 +46,24 @@ After this fixed header the frame contains, in order:
 1. *Optional* — when ``flags.bit0 = 1`` — 24 B: trace_id (16 B) + span_id (8 B).
 2. ``name_len`` bytes of metric name (UTF-8, no NUL).
 3. ``unit_len`` bytes of metric unit (UTF-8, no NUL).
-4. Body: ``sample_count * sample_size`` bytes interpreted per ``body_schema``.
+4. Body: ``sample_count`` sample slots. Slot layout depends on
+   ``flags.bit2`` (has_sample_ts):
+
+   * ``bit2 = 0`` (default): slot = ``sample_size`` value bytes. Total body
+     = ``sample_count * sample_size``. Per-sample timestamps are reconstructed
+     on the receiver side by linear interpolation between ``dc_time_start``
+     and ``dc_time_end``.
+   * ``bit2 = 1``: slot = 2 B ``cycle_offset`` (little-endian ``u16``,
+     relative to ``cycle_count_start``) followed by ``sample_size`` value
+     bytes. Total body = ``sample_count * (2 + sample_size)``. The receiver
+     reconstructs per-sample DC time as
+     ``dc_time_start + cycle_offset * cycle_time_ns`` where
+     ``cycle_time_ns`` is derived from the header span. u16 covers up to
+     65 535 cycles per window — the PLC emits an early autoflush if the
+     configured push interval would exceed this.
 
 Total frame size = 52 + (24 if has_trace_ctx else 0) + name_len + unit_len
-                 + sample_count * sample_size.
+                 + sample_count * (sample_size + (2 if has_sample_ts else 0)).
 *)
 {attribute 'pack_mode' := '1'}
 TYPE ST_PushMetricAggHeader :
