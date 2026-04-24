@@ -19,7 +19,7 @@ repository = "https://github.com/pirminbleiker/tc-otel"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 async-trait = "0.1"
 
