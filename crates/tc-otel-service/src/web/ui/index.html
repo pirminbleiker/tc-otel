@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tc-otel Dashboard</title>
+<link rel="stylesheet" href="/assets/vendor/uplot.min.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <h1>tc-otel</h1>
+    <span id="status-pill" class="pill pill-ok">connecting…</span>
+  </div>
+  <nav class="topnav" id="topnav">
+    <a href="#/" data-route="" class="nav-link">Overview</a>
+    <a href="#/config" data-route="config" class="nav-link">Config</a>
+    <a href="#/symbols" data-route="symbols" class="nav-link">Symbols</a>
+  </nav>
+  <div class="topmeta">
+    <span id="last-update" class="muted">—</span>
+  </div>
+</header>
+
+<main class="container">
+  <div id="error" class="banner banner-err" hidden></div>
+
+  <section id="dashboard-view" class="view">
+    <div class="kpi-row" id="kpis"></div>
+    <div class="section-head"><h2>PLC Domains</h2><span class="muted" id="domain-count">—</span></div>
+    <div id="domain-grid" class="domain-grid"></div>
+    <details class="collapsible">
+      <summary><h2>Active Connections</h2></summary>
+      <table class="data"><thead><tr><th>IP Address</th><th>Connections</th></tr></thead><tbody id="conn-body"></tbody></table>
+    </details>
+  </section>
+
+  <section id="config-view" class="view" hidden>
+    <div class="section-head"><h2>Configuration</h2><button id="config-save-btn" class="btn btn-primary">Speichern</button></div>
+    <div id="config-form-root"></div>
+    <div id="config-toast" class="banner" hidden></div>
+  </section>
+
+  <section id="symbols-view" class="view" hidden>
+    <div class="section-head"><h2>PLC Symbol Browser</h2></div>
+    <div id="sym-banner" class="banner" hidden></div>
+    <div class="card">
+      <h3 class="card-title">Configured Targets</h3>
+      <table class="data"><thead><tr><th>Domain</th><th>Cached</th><th>Symbols</th><th>Fetched</th><th></th></tr></thead><tbody id="sym-targets"></tbody></table>
+    </div>
+    <div class="card">
+      <h3 class="card-title">Symbols for <span id="sym-selected-target" class="accent">—</span></h3>
+      <div class="filter-bar">
+        <input id="sym-filter" type="text" placeholder="filter by prefix (e.g. MAIN.)" class="input">
+        <button class="btn" id="sym-refresh-btn">Refresh</button>
+      </div>
+      <div id="sym-stats" class="muted small"></div>
+      <div class="scroll">
+        <table class="data"><thead><tr><th>Symbol</th><th>Type</th><th>Size</th><th>IG</th><th>IO</th><th></th></tr></thead><tbody id="sym-rows"></tbody></table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast-root" class="toast-root"></div>
+
+<script src="/assets/vendor/uplot.min.js"></script>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>
