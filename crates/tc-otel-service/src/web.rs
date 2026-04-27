@@ -273,6 +273,182 @@ async fn dashboard() -> impl IntoResponse {
     )
 }
 
+/// Serve a static UI asset bundled into the binary at compile time.
+///
+/// Allow-listed against a static map so an arbitrary path cannot be served.
+async fn serve_asset(Path(rest): Path<String>) -> Result<impl IntoResponse, StatusCode> {
+    let (body, ct): (&'static [u8], &'static str) = match rest.as_str() {
+        "app.js" => (
+            include_bytes!("web/ui/app.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "styles.css" => (
+            include_bytes!("web/ui/styles.css"),
+            "text/css; charset=utf-8",
+        ),
+        "lib/util.js" => (
+            include_bytes!("web/ui/lib/util.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "lib/domains.js" => (
+            include_bytes!("web/ui/lib/domains.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "lib/charts.js" => (
+            include_bytes!("web/ui/lib/charts.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "views/dashboard.js" => (
+            include_bytes!("web/ui/views/dashboard.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "views/config.js" => (
+            include_bytes!("web/ui/views/config.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "views/symbols.js" => (
+            include_bytes!("web/ui/views/symbols.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "vendor/uplot.min.js" => (
+            include_bytes!("web/ui/vendor/uplot.min.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        "vendor/uplot.min.css" => (
+            include_bytes!("web/ui/vendor/uplot.min.css"),
+            "text/css; charset=utf-8",
+        ),
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+    Ok((
+        [
+            (header::CONTENT_TYPE, ct),
+            (header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        body,
+    ))
+}
+
+// --- Domains aggregation ---
+
+#[derive(Serialize)]
+struct DomainInfo {
+    ams_net_id: String,
+    friendly_name: String,
+    sources: Vec<&'static str>,
+    task_count: usize,
+    metric_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    router_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbols_cached: Option<bool>,
+}
+
+async fn get_domains(State(state): State<WebState>) -> Json<Vec<DomainInfo>> {
+    use std::collections::BTreeMap;
+
+    // First pass: collect every AMS Net ID seen across config + registry.
+    let mut acc: BTreeMap<String, DomainAcc> = BTreeMap::new();
+
+    {
+        let settings = state.current_settings.read().unwrap();
+        for t in &settings.diagnostics.targets {
+            let entry = acc.entry(t.ams_net_id.clone()).or_default();
+            entry.diagnostics = true;
+            // Manual task names act as a friendly hint when no router_host
+            // is configured for any custom_metric on this domain.
+            if entry.task_name_hint.is_none() {
+                if let Some(name) = t.task_names.values().next() {
+                    entry.task_name_hint = Some(name.clone());
+                }
+            }
+        }
+        for m in &settings.metrics.custom_metrics {
+            let Some(id) = m.ams_net_id.as_deref() else {
+                continue;
+            };
+            let entry = acc.entry(id.to_string()).or_default();
+            entry.metric_count += 1;
+            if entry.router_host.is_none() {
+                if let Some(host) = m.ams_router_host.as_deref() {
+                    entry.router_host = Some(host.to_string());
+                }
+            }
+        }
+    }
+
+    for (key, _) in state.task_registry.all_tasks() {
+        let entry = acc.entry(key.ams_net_id.clone()).or_default();
+        entry.registered = true;
+        entry.task_count += 1;
+    }
+
+    // Second pass: optional symbol-cache info from the client bridge.
+    #[cfg(feature = "client-bridge")]
+    if let Some(bridge) = state.client_bridge.as_ref() {
+        let cache = bridge.cache();
+        for (id, entry) in acc.iter_mut() {
+            if let Some(netid) = parse_net_id(id) {
+                let key = tc_otel_client::cache::TargetKey(netid);
+                if let Some(tree) = cache.get(key) {
+                    entry.symbols_cached = Some(true);
+                    entry.symbol_count = Some(tree.len());
+                } else {
+                    entry.symbols_cached = Some(false);
+                    entry.symbol_count = Some(0);
+                }
+            }
+        }
+    }
+
+    let out: Vec<DomainInfo> = acc
+        .into_iter()
+        .map(|(ams_net_id, a)| {
+            let mut sources = Vec::new();
+            if a.diagnostics {
+                sources.push("diagnostics");
+            }
+            if a.metric_count > 0 {
+                sources.push("metrics");
+            }
+            if a.registered {
+                sources.push("registered");
+            }
+            let friendly_name = a
+                .router_host
+                .clone()
+                .or(a.task_name_hint.clone())
+                .unwrap_or_else(|| ams_net_id.clone());
+            DomainInfo {
+                ams_net_id,
+                friendly_name,
+                sources,
+                task_count: a.task_count,
+                metric_count: a.metric_count,
+                router_host: a.router_host,
+                symbol_count: a.symbol_count,
+                symbols_cached: a.symbols_cached,
+            }
+        })
+        .collect();
+
+    Json(out)
+}
+
+#[derive(Default)]
+struct DomainAcc {
+    diagnostics: bool,
+    registered: bool,
+    metric_count: usize,
+    task_count: usize,
+    router_host: Option<String>,
+    task_name_hint: Option<String>,
+    symbol_count: Option<usize>,
+    symbols_cached: Option<bool>,
+}
+
 #[derive(Serialize)]
 struct GetConfigResponse {
     config: serde_json::Value,
@@ -445,10 +621,12 @@ async fn get_config_schema() -> Json<serde_json::Value> {
 pub fn router(state: WebState) -> Router {
     let router = Router::new()
         .route("/", get(dashboard))
+        .route("/assets/*path", get(serve_asset))
         .route("/health", get(health))
         .route("/api/status", get(status))
         .route("/api/connections", get(connections))
         .route("/api/tasks", get(tasks))
+        .route("/api/domains", get(get_domains))
         .route("/api/symbols", get(get_symbols))
         .route("/api/symbols/:name", get(get_symbol_by_name))
         .route("/api/cycle-metrics", get(cycle_metrics))
@@ -707,555 +885,7 @@ pub async fn start_web_server(
 
 // --- Embedded SPA Dashboard ---
 
-const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tc-otel Dashboard</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6}
-.container{max-width:1200px;margin:0 auto;padding:1rem}
-h1{font-size:1.5rem;font-weight:600;margin-bottom:1rem;color:#38bdf8}
-h2{font-size:1.1rem;font-weight:500;margin-bottom:.75rem;color:#94a3b8}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin-bottom:1.5rem}
-.card{background:#1e293b;border-radius:.5rem;padding:1rem;border:1px solid #334155}
-.card .label{font-size:.75rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em}
-.card .value{font-size:1.75rem;font-weight:700;color:#f1f5f9}
-.card .value.ok{color:#4ade80}
-.card .value.warn{color:#fbbf24}
-table{width:100%;border-collapse:collapse;margin-bottom:1rem}
-th,td{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #334155}
-th{color:#94a3b8;font-weight:500;font-size:.8rem;text-transform:uppercase}
-td{font-size:.9rem}
-.section{margin-bottom:2rem}
-.btn{padding:.5rem 1rem;background:#2563eb;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.9rem}
-.btn:hover{background:#1d4ed8}
-.status-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;color:#64748b;font-size:.8rem}
-#error{color:#ef4444;margin-bottom:1rem;display:none}
-</style>
-</head>
-<body>
-<div class="container">
-<h1>tc-otel Dashboard</h1>
-<nav id="topnav" style="display:flex;gap:.5rem;margin-bottom:1rem"><a href="#/" class="btn" id="nav-dash">Dashboard</a><a href="#/config" class="btn" id="nav-cfg">Config</a><a href="#/symbols" class="btn" id="nav-sym">Symbols</a></nav>
-<div id="error"></div>
-
-<div id="dashboard-view">
-<div class="status-bar"><span id="last-update">Loading...</span><span id="uptime"></span></div>
-
-<div class="grid" id="stats"></div>
-
-<div class="section">
-<h2>Active Connections</h2>
-<table><thead><tr><th>IP Address</th><th>Connections</th></tr></thead><tbody id="conn-body"></tbody></table>
-</div>
-
-<div class="section">
-<h2>Registered PLC Tasks</h2>
-<table><thead><tr><th>AMS Net ID</th><th>Port</th><th>Task</th><th>Application</th><th>Project</th><th>Changes</th></tr></thead><tbody id="task-body"></tbody></table>
-</div>
-
-<div class="section">
-<h2>Task Cycle Time</h2>
-<table><thead><tr><th>AMS Net ID</th><th>Task</th><th>Avg (&mu;s)</th><th>Min (&mu;s)</th><th>Max (&mu;s)</th><th>Jitter (&mu;s)</th><th>Samples</th><th>Total Cycles</th></tr></thead><tbody id="cycle-body"></tbody></table>
-</div>
-</div>
-
-<section id="config-view" style="display:none">
-<h2>Configuration</h2>
-<div id="config-form-root"></div>
-<button id="config-save-btn" class="btn" onclick="saveConfig()">Speichern</button>
-<div id="config-toast" class="toast" style="display:none;background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:1rem;margin-top:1rem"></div>
-</section>
-
-<section id="symbols-view" style="display:none">
-<h2>PLC Symbol Browser</h2>
-<div id="sym-banner" style="color:#fbbf24;background:#422006;border:1px solid #ca8a04;border-radius:.25rem;padding:.5rem;margin-bottom:1rem;display:none"></div>
-<div class="section">
-  <h2 style="font-size:.9rem">Configured Targets</h2>
-  <table style="margin-bottom:1rem"><thead><tr><th>AMS Net ID</th><th>Cached</th><th>Symbols</th><th>Fetched At</th><th></th></tr></thead><tbody id="sym-targets"></tbody></table>
-</div>
-<div class="section">
-  <h2 style="font-size:.9rem">Symbols for <span id="sym-selected-target" style="color:#38bdf8">—</span></h2>
-  <div style="display:flex;gap:.5rem;margin-bottom:.5rem;align-items:center">
-    <input id="sym-filter" type="text" placeholder="filter by prefix (e.g. MAIN.)" style="flex:1;padding:.4rem .6rem;background:#0f172a;border:1px solid #475569;border-radius:.25rem;color:#e2e8f0">
-    <button class="btn" onclick="symRefreshCurrent()">Refresh</button>
-  </div>
-  <div id="sym-stats" style="font-size:.8rem;color:#64748b;margin-bottom:.5rem"></div>
-  <div style="max-height:60vh;overflow-y:auto">
-    <table><thead><tr><th>Symbol</th><th>Type</th><th>Size</th><th>IG</th><th>IO</th><th></th></tr></thead><tbody id="sym-rows"></tbody></table>
-  </div>
-</div>
-</section>
-
-</div>
-<style id="cfg-style">
-.cfg-section{background:#1e293b;border:1px solid #334155;border-radius:.5rem;margin-bottom:1rem;overflow:hidden}
-.cfg-section>summary{padding:.75rem 1rem;cursor:pointer;font-weight:600;color:#38bdf8;user-select:none;background:#0f172a}
-.cfg-section>summary:hover{background:#1e293b}
-.cfg-section[open]>summary{border-bottom:1px solid #334155}
-.cfg-body{padding:1rem}
-.cfg-field{margin-bottom:.75rem}
-.cfg-field>label{display:block;font-size:.85rem;color:#cbd5e1;margin-bottom:.25rem}
-.cfg-field>.hint{font-size:.75rem;color:#64748b;margin-bottom:.25rem}
-.cfg-field input[type=text],.cfg-field input[type=number],.cfg-field input[type=password],.cfg-field select{width:100%;padding:.4rem .6rem;background:#0f172a;border:1px solid #475569;border-radius:.25rem;color:#e2e8f0;font-size:.9rem;font-family:inherit}
-.cfg-field input:focus,.cfg-field select:focus{outline:none;border-color:#38bdf8}
-.cfg-field input[type=checkbox]{width:auto;margin-right:.5rem}
-.cfg-array{border-left:2px solid #334155;padding-left:.75rem}
-.cfg-array-item{background:#0f172a;border:1px solid #334155;border-radius:.25rem;padding:.5rem;margin-bottom:.5rem;position:relative}
-.cfg-rm{position:absolute;top:.25rem;right:.25rem;padding:.1rem .5rem;background:#dc2626;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.75rem}
-.cfg-add{padding:.3rem .8rem;background:#16a34a;color:#fff;border:none;border-radius:.25rem;cursor:pointer;font-size:.8rem;margin-top:.25rem}
-.cfg-union-tabs{display:flex;gap:.25rem;margin-bottom:.5rem;border-bottom:1px solid #334155}
-.cfg-union-tab{padding:.3rem .7rem;background:transparent;border:none;border-bottom:2px solid transparent;color:#94a3b8;cursor:pointer;font-size:.85rem}
-.cfg-union-tab.active{color:#38bdf8;border-bottom-color:#38bdf8}
-.cfg-union-panel{display:none}.cfg-union-panel.active{display:block}
-.toast.ok{background:#052e16;border-color:#16a34a;color:#bbf7d0}
-.toast.warn{background:#422006;border-color:#ca8a04;color:#fde68a}
-.toast.err{background:#450a0a;border-color:#dc2626;color:#fecaca}
-</style>
-<script>
-(function(){
-  const root=document.getElementById('config-form-root');
-  const toast=document.getElementById('config-toast');
-  const saveBtn=document.getElementById('config-save-btn');
-  let rootSchema=null, currentData=null;
-  const MASKED='***MASKED***';
-
-  function resolveRef(ref){if(!ref||!ref.startsWith('#/'))return null;const parts=ref.slice(2).split('/');let c=rootSchema;for(const p of parts){if(!c||typeof c!=='object')return null;c=c[p]}return c}
-  function resolve(s){
-    if(!s||typeof s!=='object')return s;
-    // Direct $ref
-    if(s.$ref){const r=resolveRef(s.$ref);return r?resolve(Object.assign({},r,Object.fromEntries(Object.entries(s).filter(([k])=>k!=='$ref')))):s}
-    // allOf wrapper (schemars emits this when a field has a default)
-    if(Array.isArray(s.allOf)&&s.allOf.length>0){
-      let merged=Object.fromEntries(Object.entries(s).filter(([k])=>k!=='allOf'));
-      for(const part of s.allOf){const r=resolve(part);if(r&&typeof r==='object')merged=Object.assign({},r,merged)}
-      return merged;
-    }
-    return s;
-  }
-
-  function titleOf(schema,key){return schema.title||(key?key.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()):'')}
-
-  function renderField(schema,value,path,key){
-    schema=resolve(schema);
-    const desc=schema.description?`<div class="hint">${escape(schema.description)}</div>`:'';
-    const lbl=key!=null?`<label>${escape(titleOf(schema,key))}</label>`:'';
-
-    if(schema.enum){
-      const opts=schema.enum.map(e=>`<option value="${escape(e)}"${e===value?' selected':''}>${escape(e)}</option>`).join('');
-      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<select data-kind="enum">${opts}</select></div>`;
-    }
-    if(schema.type==='boolean'){
-      return `<div class="cfg-field" data-path="${path}">${desc}<label><input type="checkbox" data-kind="bool"${value?' checked':''}> ${escape(titleOf(schema,key))}</label></div>`;
-    }
-    if(schema.type==='integer'||schema.type==='number'){
-      const min=schema.minimum!=null?` min="${schema.minimum}"`:'';
-      const max=schema.maximum!=null?` max="${schema.maximum}"`:'';
-      const step=schema.type==='integer'?' step="1"':'';
-      const v=value!=null?value:'';
-      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="number" data-kind="num"${min}${max}${step} value="${escape(String(v))}"></div>`;
-    }
-    if(schema.type==='string'&&schema.format==='password'){
-      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="password" data-kind="pw" placeholder="${value===MASKED?'unchanged':''}" data-orig="${value===MASKED?'1':'0'}"></div>`;
-    }
-    if(schema.type==='string'){
-      const v=value!=null?value:'';
-      return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="text" data-kind="str" value="${escape(String(v))}"></div>`;
-    }
-    if(schema.type==='array'){
-      return renderArray(schema,value||[],path,key);
-    }
-    if(schema.type==='object'||schema.properties){
-      return renderObject(schema,value||{},path,key);
-    }
-    if(schema.oneOf||schema.anyOf){
-      return renderUnion(schema,value,path,key);
-    }
-    return `<div class="cfg-field" data-path="${path}">${lbl}${desc}<input type="text" data-kind="json" value="${escape(JSON.stringify(value||null))}"></div>`;
-  }
-
-  function renderObject(schema,value,path,key){
-    const props=schema.properties||{};
-    let body='';
-    for(const [pk,ps] of Object.entries(props)){
-      body+=renderField(ps,value?value[pk]:undefined,path?`${path}.${pk}`:pk,pk);
-    }
-    if(!path){return body}
-    if(key==null){return `<div data-obj="${path}">${body}</div>`}
-    return `<div class="cfg-field" data-path="${path}" data-obj="1"><details class="cfg-section" open><summary>${escape(titleOf(schema,key))}</summary><div class="cfg-body">${body}</div></details></div>`;
-  }
-
-  function renderArray(schema,items,path,key){
-    const itemSchema=resolve(schema.items||{});
-    const id='arr-'+path.replace(/[^a-z0-9]/gi,'_');
-    const inner=items.map((it,i)=>`<div class="cfg-array-item" data-idx="${i}"><button type="button" class="cfg-rm">×</button>${renderField(itemSchema,it,`${path}[${i}]`,null)}</div>`).join('');
-    return `<div class="cfg-field" data-path="${path}" data-arr="1"><label>${escape(titleOf(schema,key))}</label><div class="cfg-array" id="${id}" data-item-schema='${escape(JSON.stringify(itemSchema))}'>${inner}</div><button type="button" class="cfg-add" data-target="${id}" data-path="${path}">+ Add</button></div>`;
-  }
-
-  function renderUnion(schema,value,path,key){
-    const variants=(schema.oneOf||schema.anyOf).map(resolve);
-    // Plain-string-enum union (e.g. schemars emits #[serde(rename_all)] enums
-    // as oneOf of {enum:[lit], type:"string"}). Render as a <select>.
-    const allStringLit=variants.every(v=>v&&v.type==='string'&&Array.isArray(v.enum)&&v.enum.length===1&&!v.properties);
-    if(allStringLit){
-      const lits=variants.map(v=>v.enum[0]);
-      const opts=lits.map(lit=>`<option value="${escape(lit)}"${lit===value?' selected':''}>${escape(lit)}</option>`).join('');
-      const desc=schema.description?`<div class="hint">${escape(schema.description)}</div>`:'';
-      return `<div class="cfg-field" data-path="${path}">${key!=null?`<label>${escape(titleOf(schema,key))}</label>`:''}${desc}<select data-kind="enum">${opts}</select></div>`;
-    }
-    // Determine active variant: match by 'type' discriminator if present
-    let active=0;
-    if(value&&typeof value==='object'&&value.type){
-      variants.forEach((v,i)=>{const t=v.properties&&v.properties.type;if(t&&(t.const===value.type||(t.enum&&t.enum.includes(value.type))))active=i});
-    }
-    const tabs=variants.map((v,i)=>{
-      const t=v.properties&&v.properties.type;
-      const name=(t&&(t.const||(t.enum&&t.enum[0])))||v.title||`Variant ${i+1}`;
-      return `<button type="button" class="cfg-union-tab${i===active?' active':''}" data-tab="${i}">${escape(name)}</button>`;
-    }).join('');
-    const panels=variants.map((v,i)=>`<div class="cfg-union-panel${i===active?' active':''}" data-panel="${i}">${renderObject(v,i===active?(value||{}):{},path,null)}</div>`).join('');
-    return `<div class="cfg-field" data-path="${path}" data-union="1"><label>${escape(titleOf(schema,key))}</label><div class="cfg-union-tabs">${tabs}</div>${panels}</div>`;
-  }
-
-  function escape(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])}
-
-  function collect(el,path){
-    // Walk DOM, build nested object matching original paths
-    const out={};
-    const fields=el.querySelectorAll('[data-path]');
-    fields.forEach(f=>{
-      // Only innermost leaves; skip object/array/union wrappers
-      if(f.dataset.obj||f.dataset.arr||f.dataset.union)return;
-      // Check we're not inside an inactive union panel
-      let p=f.parentElement;
-      while(p&&p!==el){
-        if(p.classList&&p.classList.contains('cfg-union-panel')&&!p.classList.contains('active'))return;
-        p=p.parentElement;
-      }
-      const fp=f.dataset.path;
-      const input=f.querySelector('input,select');
-      if(!input)return;
-      let val;
-      const k=input.dataset.kind;
-      if(k==='bool')val=input.checked;
-      else if(k==='num'){val=input.value===''?null:Number(input.value)}
-      else if(k==='pw'){if(input.value==='')val=input.dataset.orig==='1'?MASKED:null;else val=input.value}
-      else if(k==='json'){try{val=JSON.parse(input.value)}catch{val=input.value}}
-      else val=input.value===''?null:input.value;
-      setPath(out,fp,val);
-    });
-    // Arrays: reconstruct order from DOM
-    const arrs=el.querySelectorAll('[data-arr="1"]');
-    arrs.forEach(a=>{
-      const fp=a.dataset.path;
-      const items=[];
-      a.querySelectorAll(':scope > .cfg-array > .cfg-array-item').forEach((it,i)=>{
-        const sub=collect(it,`${fp}[${i}]`);
-        // If item's root was a single leaf (not object), pick the leaf value
-        const leafKey=`${fp}[${i}]`;
-        if(sub&&typeof sub==='object'&&Object.keys(sub).length===1&&sub[fp]!==undefined){items.push(sub[fp][`[${i}]`]||sub[fp])}
-        else items.push(getPath(sub,leafKey)||sub);
-      });
-      setPath(out,fp,items);
-    });
-    return out;
-  }
-
-  function setPath(obj,path,val){
-    const tokens=tokenize(path);
-    let c=obj;
-    for(let i=0;i<tokens.length-1;i++){
-      const t=tokens[i], nxt=tokens[i+1], isArr=typeof nxt==='number';
-      if(c[t]==null)c[t]=isArr?[]:{};
-      c=c[t];
-    }
-    c[tokens[tokens.length-1]]=val;
-  }
-  function getPath(obj,path){const tokens=tokenize(path);let c=obj;for(const t of tokens){if(c==null)return undefined;c=c[t]}return c}
-  function tokenize(path){
-    const out=[];
-    path.replace(/([^.\[\]]+)|\[(\d+)\]/g,(_,name,idx)=>{if(name!=null)out.push(name);else out.push(Number(idx))});
-    return out;
-  }
-
-  function showToast(msg,cls){toast.style.display='block';toast.className='toast '+cls;toast.textContent=msg;if(cls==='ok')setTimeout(()=>{toast.style.display='none'},6000)}
-
-  async function loadAndRender(){
-    try{
-      const[cfgResp,schemaResp]=await Promise.all([fetch('/api/config'),fetch('/api/config/schema')]);
-      if(!cfgResp.ok||!schemaResp.ok)throw new Error('Load failed: '+cfgResp.status+'/'+schemaResp.status);
-      const cfg=await cfgResp.json();
-      rootSchema=await schemaResp.json();
-      currentData=cfg.config||{};
-      root.innerHTML=renderObject(rootSchema,currentData,'',null);
-      bindEvents();
-      if(cfg.restart_pending)showToast('Restart pending — Änderungen warten auf Prozess-Neustart.','warn');
-    }catch(e){showToast('Config laden fehlgeschlagen: '+e.message,'err')}
-  }
-
-  function bindEvents(){
-    root.addEventListener('click',ev=>{
-      const rm=ev.target.closest('.cfg-rm');
-      if(rm){const item=rm.closest('.cfg-array-item');if(item)item.remove();ev.preventDefault();return}
-      const add=ev.target.closest('.cfg-add');
-      if(add){
-        const arr=document.getElementById(add.dataset.target);
-        const itemSchema=JSON.parse(arr.dataset.itemSchema.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'"));
-        const i=arr.children.length;
-        const wrap=document.createElement('div');
-        wrap.className='cfg-array-item';wrap.dataset.idx=i;
-        wrap.innerHTML=`<button type="button" class="cfg-rm">×</button>`+renderField(itemSchema,null,`${add.dataset.path}[${i}]`,null);
-        arr.appendChild(wrap);
-        ev.preventDefault();return;
-      }
-      const tab=ev.target.closest('.cfg-union-tab');
-      if(tab){
-        const union=tab.closest('[data-union="1"]');
-        union.querySelectorAll('.cfg-union-tab').forEach(t=>t.classList.remove('active'));
-        union.querySelectorAll('.cfg-union-panel').forEach(p=>p.classList.remove('active'));
-        tab.classList.add('active');
-        union.querySelector(`.cfg-union-panel[data-panel="${tab.dataset.tab}"]`).classList.add('active');
-        ev.preventDefault();return;
-      }
-    });
-  }
-
-  // Normalize `custom_metrics` entries before save. The form always renders
-  // all fields (poll + notification blocks regardless of source), but the
-  // backend expects at most one of `poll` / `notification` to be populated
-  // and rejects null numeric sub-fields. We therefore:
-  //   1. Drop the inapplicable variant entirely based on `source`.
-  //   2. Strip keys with null values *inside the entry* so serde's
-  //      `#[serde(default)]` can fill them in.
-  // The rest of the payload is left as-is — other parts of the form were
-  // written to emit nulls only in spots where the Rust struct already
-  // handles them.
-  function stripNullsFromItem(obj){
-    if(Array.isArray(obj))return obj.map(stripNullsFromItem);
-    if(obj&&typeof obj==='object'){
-      const out={};
-      for(const [k,v] of Object.entries(obj)){
-        if(v==null)continue;
-        out[k]=stripNullsFromItem(v);
-      }
-      return out;
-    }
-    return obj;
-  }
-  // Drop or collapse null-valued sub-objects that the backend requires to be
-  // absent rather than null. Covers `transport.tls` (contains non-Option
-  // `ca_cert_path`) and other Option<Struct> fields the form always renders.
-  function normalizeOptionalStructs(payload){
-    const r=payload?.receiver;
-    if(r){
-      // Top-level TLS block: if disabled and paths all null, strip to null.
-      const tls=r.tls;
-      if(tls&&tls.enabled===false){
-        // All path fields are Option<PathBuf>; nulls are fine individually,
-        // but the struct itself is also Option<ReceiverTls> — cleaner to null
-        // the whole thing when off. Keep enabled=false only.
-      }
-      // Transport TLS: the Mqtt variant carries a *non-Option* ca_cert_path.
-      // If the form emits null there, the whole transport.tls must be dropped
-      // (it is Option<MqttTlsConfig> / Option<NatsTlsConfig> on the backend).
-      const t=r.transport;
-      if(t&&t.tls&&typeof t.tls==='object'){
-        const hasAnyPath=['ca_cert_path','client_cert_path','client_key_path']
-          .some(k=>t.tls[k]!=null);
-        if(!hasAnyPath)t.tls=null;
-      }
-    }
-    return payload;
-  }
-  function normalizeCustomMetrics(payload){
-    const items=payload&&payload.metrics&&Array.isArray(payload.metrics.custom_metrics)
-      ?payload.metrics.custom_metrics:null;
-    if(!items)return payload;
-    payload.metrics.custom_metrics=items.map(item=>{
-      if(!item||typeof item!=='object')return item;
-      if(item.source==='poll'||item.source==='push')item.notification=null;
-      if(item.source==='notification'||item.source==='push')item.poll=null;
-      const allNull=o=>o&&typeof o==='object'&&Object.values(o).every(v=>v==null);
-      if(allNull(item.poll))item.poll=null;
-      if(allNull(item.notification))item.notification=null;
-      // Drop leftover nulls inside the item itself (e.g. unset description).
-      return stripNullsFromItem(item);
-    });
-    return payload;
-  }
-
-  window.saveConfig=async function(){
-    if(!rootSchema){showToast('Schema noch nicht geladen.','err');return}
-    saveBtn.disabled=true;
-    try{
-      const payload=normalizeOptionalStructs(normalizeCustomMetrics(collect(root,'')));
-      const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      const res=await r.json();
-      if(r.ok){
-        const hot=(res.hot_reloaded||[]).join(', ')||'–';
-        const rr=(res.restart_required||[]).join(', ');
-        const msg=`✓ Gespeichert. Hot-reloaded: ${hot}.`+(rr?` Restart erforderlich: ${rr}.`:'');
-        showToast(msg,rr?'warn':'ok');
-        currentData=payload;
-      }else if(res.errors){showToast('Validierung: '+res.errors.join('; '),'err')}
-      else{showToast('Fehler: '+(res.detail||res.error||r.statusText),'err')}
-    }catch(e){showToast('Save fehlgeschlagen: '+e.message,'err')}
-    finally{saveBtn.disabled=false}
-  };
-
-  function route(){
-    const h=location.hash;
-    const isCfg=h==='#/config';
-    const isSym=h==='#/symbols';
-    document.getElementById('dashboard-view').style.display=(isCfg||isSym)?'none':'';
-    document.getElementById('config-view').style.display=isCfg?'':'none';
-    document.getElementById('symbols-view').style.display=isSym?'':'none';
-    document.getElementById('nav-cfg').style.background=isCfg?'#1d4ed8':'';
-    document.getElementById('nav-sym').style.background=isSym?'#1d4ed8':'';
-    document.getElementById('nav-dash').style.background=(isCfg||isSym)?'':'#1d4ed8';
-    if(isCfg&&!rootSchema)loadAndRender();
-    if(isSym)window.symLoadTargets&&window.symLoadTargets();
-  }
-  window.addEventListener('hashchange',route);
-  route();
-})();
-</script>
-
-<!-- T8: Symbol browser -->
-<script>
-(function(){
-  let currentTarget=null;
-  let lastSymbols=[];
-
-  async function fetchJson(url,opts){
-    const r=await fetch(url,opts);
-    if(r.status===503){throw new Error('client-bridge is not enabled (HTTP 503)')}
-    if(!r.ok){let t='';try{t=await r.text()}catch(_){}throw new Error(t||r.statusText)}
-    return r.json();
-  }
-
-  function banner(msg,kind){
-    const el=document.getElementById('sym-banner');
-    if(!msg){el.style.display='none';return}
-    el.textContent=msg;
-    el.style.display='block';
-    el.style.color=kind==='err'?'#fecaca':'#fbbf24';
-    el.style.background=kind==='err'?'#450a0a':'#422006';
-    el.style.borderColor=kind==='err'?'#dc2626':'#ca8a04';
-  }
-
-  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])}
-
-  async function loadTargets(){
-    banner('','');
-    try{
-      const list=await fetchJson('/api/client/targets');
-      const tb=document.getElementById('sym-targets');
-      if(!list.length){tb.innerHTML='<tr><td colspan="5" style="color:#64748b">No custom_metrics with poll/notification source configured.</td></tr>';return}
-      tb.innerHTML=list.map(t=>{
-        const cachedCell=t.cached?`<span style="color:#4ade80">✓</span>`:`<span style="color:#64748b">—</span>`;
-        const when=t.fetched_at||'never';
-        const pickLabel=currentTarget===t.ams_net_id?'Selected':'Browse';
-        return `<tr><td><code>${esc(t.ams_net_id)}</code></td><td>${cachedCell}</td><td>${t.symbol_count}</td><td style="color:#94a3b8;font-size:.8rem">${esc(when)}</td><td><button class="btn" onclick="symPick('${esc(t.ams_net_id)}')">${pickLabel}</button></td></tr>`;
-      }).join('');
-    }catch(e){banner('Failed to load targets: '+e.message,'err')}
-  }
-
-  window.symLoadTargets=loadTargets;
-
-  window.symPick=async function(target){
-    currentTarget=target;
-    document.getElementById('sym-selected-target').textContent=target;
-    await loadSymbols();
-    loadTargets();
-  };
-
-  async function loadSymbols(){
-    if(!currentTarget){return}
-    const filter=document.getElementById('sym-filter').value.trim();
-    const url='/api/client/symbols?target='+encodeURIComponent(currentTarget)+(filter?('&filter='+encodeURIComponent(filter)):'');
-    try{
-      const res=await fetchJson(url);
-      lastSymbols=res.symbols;
-      document.getElementById('sym-stats').textContent=`${res.count} symbol(s) — fetched ${res.fetched_at||'—'}`;
-      renderSymbols();
-    }catch(e){
-      document.getElementById('sym-rows').innerHTML=`<tr><td colspan="6" style="color:#fecaca">Error: ${esc(e.message)}</td></tr>`;
-      document.getElementById('sym-stats').textContent='';
-    }
-  }
-
-  function renderSymbols(){
-    const body=document.getElementById('sym-rows');
-    if(!lastSymbols.length){body.innerHTML='<tr><td colspan="6" style="color:#64748b">No symbols match.</td></tr>';return}
-    const limit=500;
-    const shown=lastSymbols.slice(0,limit);
-    body.innerHTML=shown.map(s=>
-      `<tr><td><code>${esc(s.name)}</code></td><td>${esc(s.type_name)}</td><td>${s.size}</td><td>0x${s.igroup.toString(16)}</td><td>${s.ioffset}</td><td><button class="btn" style="padding:.2rem .5rem;font-size:.75rem" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(s.name)}')">copy</button></td></tr>`
-    ).join('') + (lastSymbols.length>limit?`<tr><td colspan="6" style="color:#64748b">… ${lastSymbols.length-limit} more, narrow the filter.</td></tr>`:'');
-  }
-
-  window.symRefreshCurrent=async function(){
-    if(!currentTarget){return}
-    try{
-      await fetchJson('/api/client/symbols/refresh?target='+encodeURIComponent(currentTarget),{method:'POST'});
-      banner('Cache invalidated — waiting for next reconcile to repopulate.','');
-      await loadTargets();
-    }catch(e){banner('Refresh failed: '+e.message,'err')}
-  };
-
-  document.getElementById('sym-filter').addEventListener('input',()=>{
-    clearTimeout(window._symFilterTimer);
-    window._symFilterTimer=setTimeout(loadSymbols,200);
-  });
-})();
-</script>
-<!-- CONFIG-FORM-JS-INJECTION-POINT -->
-
-<script>
-const API='';
-let refreshTimer;
-
-async function fetchJson(url,opts){
-  const r=await fetch(API+url,opts);
-  if(!r.ok)throw new Error(await r.text());
-  return r.json();
-}
-
-function showError(msg){const e=document.getElementById('error');e.textContent=msg;e.style.display='block';setTimeout(()=>e.style.display='none',5000)}
-
-function fmtUptime(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return`${h}h ${m}m ${sec}s`}
-
-async function refresh(){
-  try{
-    const[st,cn,tk,cy]=await Promise.all([
-      fetchJson('/api/status'),fetchJson('/api/connections'),
-      fetchJson('/api/tasks'),fetchJson('/api/cycle-metrics')
-    ]);
-    document.getElementById('stats').innerHTML=`
-      <div class="card"><div class="label">Status</div><div class="value ok">${st.status}</div></div>
-      <div class="card"><div class="label">Uptime</div><div class="value">${fmtUptime(st.uptime_secs)}</div></div>
-      <div class="card"><div class="label">Logs Received</div><div class="value">${st.logs_received.toLocaleString()}</div></div>
-      <div class="card"><div class="label">Logs Dispatched</div><div class="value">${st.logs_dispatched.toLocaleString()}</div></div>
-      <div class="card"><div class="label">Logs Failed</div><div class="value ${st.logs_failed>0?'warn':''}">${st.logs_failed.toLocaleString()}</div></div>
-      <div class="card"><div class="label">Active Connections</div><div class="value">${st.connections_active}</div></div>
-      <div class="card"><div class="label">Registered Tasks</div><div class="value">${st.registered_tasks}</div></div>`;
-    document.getElementById('uptime').textContent='Uptime: '+fmtUptime(st.uptime_secs);
-    document.getElementById('conn-body').innerHTML=cn.length?cn.map(c=>`<tr><td>${c.ip}</td><td>${c.count}</td></tr>`).join(''):'<tr><td colspan="2" style="color:#64748b">No active connections</td></tr>';
-    document.getElementById('task-body').innerHTML=tk.length?tk.map(t=>`<tr><td>${t.ams_net_id}</td><td>${t.ams_source_port}</td><td>${t.task_name}</td><td>${t.app_name}</td><td>${t.project_name}</td><td>${t.online_change_count}</td></tr>`).join(''):'<tr><td colspan="6" style="color:#64748b">No registered tasks</td></tr>';
-    document.getElementById('cycle-body').innerHTML=cy.length?cy.map(c=>`<tr><td>${c.ams_net_id}</td><td>${c.task_name} [${c.task_index}]</td><td>${c.avg_us.toFixed(1)}</td><td>${c.min_us.toFixed(1)}</td><td>${c.max_us.toFixed(1)}</td><td>${c.jitter_us.toFixed(1)}</td><td>${c.sample_count}</td><td>${c.total_cycles.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="8" style="color:#64748b">No cycle data yet</td></tr>';
-    document.getElementById('last-update').textContent='Last update: '+new Date().toLocaleTimeString();
-  }catch(e){showError('Refresh failed: '+e.message)}
-}
-
-refresh();
-refreshTimer=setInterval(refresh,5000);
-</script>
-</body>
-</html>"##;
+const DASHBOARD_HTML: &str = include_str!("web/ui/index.html");
 
 #[cfg(test)]
 mod tests {
@@ -1672,6 +1302,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_domains_endpoint_aggregates_sources() {
+        let state = test_state();
+
+        // Seed the config with a diagnostics target and a custom metric so
+        // the handler has both `diagnostics` and `metrics` sources to merge.
+        {
+            let mut s = state.current_settings.write().unwrap();
+            s.diagnostics.targets.push(tc_otel_core::config::DiagnosticsTargetConfig {
+                ams_net_id: "10.20.30.40.1.1".to_string(),
+                poll_interval_ms: 200,
+                exceed_counter: true,
+                rt_usage: true,
+                task_ports: vec![350],
+                rt_port: 200,
+                task_names: std::collections::HashMap::from([("350".into(), "PlcTask".into())]),
+            });
+            s.metrics.custom_metrics.push(tc_otel_core::config::CustomMetricDef {
+                symbol: "MAIN.x".into(),
+                metric_name: "test.x".into(),
+                ams_net_id: Some("10.20.30.40.1.1".into()),
+                ams_router_host: Some("plc-a".into()),
+                source: tc_otel_core::config::CustomMetricSource::Poll,
+                ..Default::default()
+            });
+            // A second metric on a different domain that has no diagnostics.
+            s.metrics.custom_metrics.push(tc_otel_core::config::CustomMetricDef {
+                symbol: "MAIN.y".into(),
+                metric_name: "test.y".into(),
+                ams_net_id: Some("99.99.99.99.1.1".into()),
+                ams_router_host: Some("plc-b".into()),
+                source: tc_otel_core::config::CustomMetricSource::Notification,
+                ..Default::default()
+            });
+        }
+
+        // Register a task on the first domain so `registered` source flips on.
+        state.task_registry.register(
+            RegistrationKey {
+                ams_net_id: "10.20.30.40.1.1".to_string(),
+                ams_source_port: 851,
+                task_index: 0,
+            },
+            TaskMetadata {
+                task_name: "PlcTask".into(),
+                app_name: "App".into(),
+                project_name: "Proj".into(),
+                online_change_count: 0,
+            },
+        );
+
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/domains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.len(), 2);
+
+        // BTreeMap orders by AMS Net ID lexicographically.
+        let first = &json[0];
+        assert_eq!(first["ams_net_id"], "10.20.30.40.1.1");
+        assert_eq!(first["friendly_name"], "plc-a");
+        assert_eq!(first["task_count"], 1);
+        assert_eq!(first["metric_count"], 1);
+        let sources: Vec<&str> = first["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(sources.contains(&"diagnostics"));
+        assert!(sources.contains(&"metrics"));
+        assert!(sources.contains(&"registered"));
+
+        let second = &json[1];
+        assert_eq!(second["ams_net_id"], "99.99.99.99.1.1");
+        assert_eq!(second["friendly_name"], "plc-b");
+        assert_eq!(second["task_count"], 0);
+        assert_eq!(second["metric_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_domains_endpoint_empty() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(Request::get("/api/domains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_assets_serves_known_file() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(Request::get("/assets/styles.css").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("text/css"));
+    }
+
+    #[tokio::test]
+    async fn test_assets_rejects_unknown_file() {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(Request::get("/assets/../Cargo.toml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // Either NOT_FOUND from our allow-list, or a normalising redirect that
+        // ultimately can't match `/assets/...`. Anything other than 200 is OK.
+        assert_ne!(resp.status(), StatusCode::OK);
     }
 
     // --- T7: client-bridge routes ----------------------------------------
