@@ -394,6 +394,68 @@ impl LogsService for LogsServiceImpl {
     }
 }
 
+// ─── Manual ProstCodec (tonic 0.12+ removed ProstCodec from public API) ───
+
+struct ProstEncoder<T>(std::marker::PhantomData<T>);
+struct ProstDecoder<T>(std::marker::PhantomData<T>);
+
+#[derive(Clone)]
+struct ProstCodec<Req, Resp>(std::marker::PhantomData<(Req, Resp)>);
+
+impl<Req, Resp> Default for ProstCodec<Req, Resp> {
+    fn default() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl<T: prost::Message + Send + 'static> tonic::codec::Encoder for ProstEncoder<T> {
+    type Item = T;
+    type Error = tonic::Status;
+
+    fn encode(
+        &mut self,
+        item: T,
+        dst: &mut tonic::codec::EncodeBuf<'_>,
+    ) -> Result<(), Self::Error> {
+        item.encode(dst)
+            .map_err(|e| tonic::Status::internal(e.to_string()))
+    }
+}
+
+impl<T: prost::Message + Default + Send + 'static> tonic::codec::Decoder for ProstDecoder<T> {
+    type Item = T;
+    type Error = tonic::Status;
+
+    fn decode(
+        &mut self,
+        src: &mut tonic::codec::DecodeBuf<'_>,
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        let msg = T::decode(src).map_err(|e| tonic::Status::internal(e.to_string()))?;
+        Ok(Some(msg))
+    }
+}
+
+impl<Req, Resp> tonic::codec::Codec for ProstCodec<Req, Resp>
+where
+    Req: prost::Message + Default + Send + 'static,
+    Resp: prost::Message + Send + 'static,
+{
+    type Encode = Resp;
+    type Decode = Req;
+    type Encoder = ProstEncoder<Resp>;
+    type Decoder = ProstDecoder<Req>;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        ProstEncoder(std::marker::PhantomData)
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        ProstDecoder(std::marker::PhantomData)
+    }
+}
+
+type ExportCodec = ProstCodec<ExportLogsServiceRequest, ExportLogsServiceResponse>;
+
 // ─── Tonic Service Server (manual, equivalent to tonic-build generated code) ───
 
 /// Wrapper that implements tower::Service for the LogsService trait, enabling
@@ -421,7 +483,7 @@ where
     B: http_body::Body + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
 {
-    type Response = http::Response<tonic::body::BoxBody>;
+    type Response = http::Response<tonic::body::Body>;
     type Error = std::convert::Infallible;
     type Future = std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>,
@@ -462,7 +524,7 @@ where
                 }
 
                 let fut = async move {
-                    let mut grpc = tonic::server::Grpc::new(tonic::codec::ProstCodec::default());
+                    let mut grpc = tonic::server::Grpc::new(ExportCodec::default());
                     Ok(grpc.unary(ExportSvc(inner), req).await)
                 };
 
@@ -473,7 +535,7 @@ where
                     .status(200)
                     .header("grpc-status", "12")
                     .header("content-type", "application/grpc")
-                    .body(tonic::body::empty_body())
+                    .body(tonic::body::Body::empty())
                     .unwrap())
             }),
         }
