@@ -210,9 +210,9 @@ async function loadAndRender() {
     rootSchema = schema;
     currentData = cfg.config || {};
     root.innerHTML = renderObject(rootSchema, currentData, '', null);
-    if (cfg.restart_pending) showToast('Restart pending — Änderungen warten auf Prozess-Neustart.', 'warn');
+    if (cfg.restart_pending) showToast('Restart pending — changes awaiting process restart.', 'warn');
   } catch (e) {
-    showToast('Config laden fehlgeschlagen: ' + e.message, 'err');
+    showToast('Failed to load config: ' + e.message, 'err');
   }
 }
 
@@ -292,7 +292,7 @@ function normalizeCustomMetrics(payload) {
 }
 
 async function save() {
-  if (!rootSchema) { showToast('Schema noch nicht geladen.', 'err'); return; }
+  if (!rootSchema) { showToast('Schema not yet loaded.', 'err'); return; }
   const root = document.getElementById('config-form-root');
   const saveBtn = document.getElementById('config-save-btn');
   if (saveBtn) saveBtn.disabled = true;
@@ -307,16 +307,16 @@ async function save() {
     if (r.ok) {
       const hot = (res.hot_reloaded || []).join(', ') || '–';
       const rr = (res.restart_required || []).join(', ');
-      const msg = `✓ Gespeichert. Hot-reloaded: ${hot}.` + (rr ? ` Restart erforderlich: ${rr}.` : '');
+      const msg = `✓ Saved. Hot-reloaded: ${hot}.` + (rr ? ` Restart required: ${rr}.` : '');
       showToast(msg, rr ? 'warn' : 'ok');
       currentData = payload;
     } else if (res.errors) {
       showToast('Validierung: ' + res.errors.join('; '), 'err');
     } else {
-      showToast('Fehler: ' + (res.detail || res.error || r.statusText), 'err');
+      showToast('Error: ' + (res.detail || res.error || r.statusText), 'err');
     }
   } catch (e) {
-    showToast('Save fehlgeschlagen: ' + e.message, 'err');
+    showToast('Save failed: ' + e.message, 'err');
   } finally {
     if (saveBtn) saveBtn.disabled = false;
   }
