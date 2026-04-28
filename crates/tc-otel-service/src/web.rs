@@ -1312,32 +1312,38 @@ mod tests {
         // the handler has both `diagnostics` and `metrics` sources to merge.
         {
             let mut s = state.current_settings.write().unwrap();
-            s.diagnostics.targets.push(tc_otel_core::config::DiagnosticsTargetConfig {
-                ams_net_id: "10.20.30.40.1.1".to_string(),
-                poll_interval_ms: 200,
-                exceed_counter: true,
-                rt_usage: true,
-                task_ports: vec![350],
-                rt_port: 200,
-                task_names: std::collections::HashMap::from([("350".into(), "PlcTask".into())]),
-            });
-            s.metrics.custom_metrics.push(tc_otel_core::config::CustomMetricDef {
-                symbol: "MAIN.x".into(),
-                metric_name: "test.x".into(),
-                ams_net_id: Some("10.20.30.40.1.1".into()),
-                ams_router_host: Some("plc-a".into()),
-                source: tc_otel_core::config::CustomMetricSource::Poll,
-                ..Default::default()
-            });
+            s.diagnostics
+                .targets
+                .push(tc_otel_core::config::DiagnosticsTargetConfig {
+                    ams_net_id: "10.20.30.40.1.1".to_string(),
+                    poll_interval_ms: 200,
+                    exceed_counter: true,
+                    rt_usage: true,
+                    task_ports: vec![350],
+                    rt_port: 200,
+                    task_names: std::collections::HashMap::from([("350".into(), "PlcTask".into())]),
+                });
+            s.metrics
+                .custom_metrics
+                .push(tc_otel_core::config::CustomMetricDef {
+                    symbol: "MAIN.x".into(),
+                    metric_name: "test.x".into(),
+                    ams_net_id: Some("10.20.30.40.1.1".into()),
+                    ams_router_host: Some("plc-a".into()),
+                    source: tc_otel_core::config::CustomMetricSource::Poll,
+                    ..Default::default()
+                });
             // A second metric on a different domain that has no diagnostics.
-            s.metrics.custom_metrics.push(tc_otel_core::config::CustomMetricDef {
-                symbol: "MAIN.y".into(),
-                metric_name: "test.y".into(),
-                ams_net_id: Some("99.99.99.99.1.1".into()),
-                ams_router_host: Some("plc-b".into()),
-                source: tc_otel_core::config::CustomMetricSource::Notification,
-                ..Default::default()
-            });
+            s.metrics
+                .custom_metrics
+                .push(tc_otel_core::config::CustomMetricDef {
+                    symbol: "MAIN.y".into(),
+                    metric_name: "test.y".into(),
+                    ams_net_id: Some("99.99.99.99.1.1".into()),
+                    ams_router_host: Some("plc-b".into()),
+                    source: tc_otel_core::config::CustomMetricSource::Notification,
+                    ..Default::default()
+                });
         }
 
         // Register a task on the first domain so `registered` source flips on.
@@ -1409,11 +1415,20 @@ mod tests {
     async fn test_assets_serves_known_file() {
         let app = router(test_state());
         let resp = app
-            .oneshot(Request::get("/assets/styles.css").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/assets/styles.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/css"));
     }
 
@@ -1421,7 +1436,11 @@ mod tests {
     async fn test_assets_rejects_unknown_file() {
         let app = router(test_state());
         let resp = app
-            .oneshot(Request::get("/assets/../Cargo.toml").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/assets/../Cargo.toml")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         // Either NOT_FOUND from our allow-list, or a normalising redirect that
