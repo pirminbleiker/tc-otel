@@ -406,6 +406,150 @@ h3.card-title { font-size: .9rem; font-weight: 600; color: var(--text); margin-b
 .cfg-union-panel { display: none; }
 .cfg-union-panel.active { display: block; }
 
+/* ── Config view: domain-centric layout ───────────────────────────────── */
+
+/* Size / flex utilities */
+.input-sm  { padding: .28rem .55rem !important; font-size: .82rem !important; }
+.input-xs  { padding: .18rem .38rem !important; font-size: .78rem !important; width: 5.5rem; }
+.input-mono { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+.btn-sm { padding: .22rem .55rem; font-size: .8rem; }
+.btn-xs { padding: .15rem .45rem; font-size: .75rem; }
+.small  { font-size: .8rem; }
+
+/* Domains section */
+.cfg-domains-section { margin-bottom: 1.75rem; }
+.cfg-section-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: .85rem;
+}
+.cfg-section-hd h3,
+.cfg-global-hd h3 {
+  font-size: .95rem; font-weight: 600; color: var(--text-2); text-transform: uppercase;
+  letter-spacing: .05em; font-size: .72rem;
+}
+.cfg-empty-hint {
+  color: var(--muted); padding: 1.25rem 1rem;
+  border: 1px dashed var(--border); border-radius: var(--r-md);
+  font-size: .85rem; text-align: center;
+}
+
+/* Domain card */
+.domain-cfg-card {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); margin-bottom: .85rem; overflow: hidden;
+}
+.domain-cfg-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .65rem 1rem; background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+}
+.domain-cfg-id-row { display: flex; align-items: center; gap: .75rem; flex: 1; }
+.domain-cfg-body { }
+
+/* Subsections inside a domain card */
+.cfg-subsection {
+  padding: .75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.cfg-subsec-last { border-bottom: none; }
+.cfg-subsec-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; margin-bottom: .5rem; flex-wrap: wrap;
+}
+.cfg-subsec-title { font-weight: 600; font-size: .87rem; }
+.cfg-toggle-label {
+  display: flex; align-items: center; gap: .5rem;
+  cursor: pointer; user-select: none;
+}
+.cfg-subsec-body { padding-top: .5rem; }
+
+/* Inline field rows */
+.cfg-inline-row {
+  display: flex; flex-wrap: wrap; align-items: flex-end;
+  gap: .65rem; margin-bottom: .5rem;
+}
+.cfg-labeled {
+  display: flex; flex-direction: column; gap: .2rem;
+}
+.cfg-labeled > label { font-size: .75rem; color: var(--text-2); white-space: nowrap; }
+.cfg-check {
+  display: flex; align-items: center; gap: .35rem;
+  font-size: .84rem; cursor: pointer; padding-bottom: .3rem;
+}
+
+/* Input with unit suffix */
+.input-affixed { display: flex; align-items: center; }
+.input-affixed .input { border-radius: var(--r-md) 0 0 var(--r-md); }
+.input-affix {
+  padding: .28rem .5rem; background: var(--bg-3); border: 1px solid var(--border);
+  border-left: none; border-radius: 0 var(--r-md) var(--r-md) 0;
+  font-size: .78rem; color: var(--muted); white-space: nowrap;
+}
+
+/* Task port chips */
+.cfg-chips {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-top: .2rem;
+}
+.cfg-chip {
+  display: flex; align-items: center; gap: .15rem;
+  background: var(--bg-3); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: .15rem .3rem;
+}
+.cfg-chip-rm {
+  background: none; border: none; cursor: pointer;
+  color: var(--err); padding: 0 .15rem; font-size: .9rem; line-height: 1;
+}
+
+/* Metric list */
+.cfg-metric-list { margin-bottom: .25rem; }
+.cfg-metric-row {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  margin-bottom: .4rem; overflow: hidden;
+  background: var(--bg-1);
+}
+.cfg-metric-sum {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .45rem .65rem; flex-wrap: nowrap; min-width: 0;
+}
+.cfg-chip-row { display: flex; align-items: center; gap: .25rem; flex-shrink: 0; }
+.chip-sm { font-size: .7rem; padding: .08rem .38rem; }
+.chip-src-push         { color: #6ee7b7; background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.25); }
+.chip-src-poll         { color: #93c5fd; background: rgba(59,130,246,.1); border-color: rgba(59,130,246,.25); }
+.chip-src-notification { color: #fcd34d; background: rgba(245,158,11,.1); border-color: rgba(245,158,11,.25); }
+
+.cfg-metric-detail {
+  padding: .65rem .75rem; border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.cfg-mf { display: flex; flex-direction: column; gap: .45rem; }
+.cfg-count-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: #000; border-radius: 999px;
+  min-width: 1.3em; height: 1.3em; font-size: .68rem; padding: 0 .38em;
+  font-weight: 700;
+}
+
+/* Global settings panels */
+.cfg-global-section { margin-top: .25rem; }
+.cfg-global-hd { margin-bottom: .65rem; }
+.cfg-global-panel {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  margin-bottom: .4rem; background: var(--bg-2);
+}
+.cfg-global-panel > summary {
+  padding: .6rem .9rem; cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: .75rem; user-select: none;
+}
+.cfg-global-panel > summary::-webkit-details-marker { display: none; }
+.cfg-global-panel > summary::after {
+  content: "▾"; margin-left: auto; color: var(--muted);
+  transition: transform var(--t-fast);
+}
+.cfg-global-panel[open] > summary::after { transform: rotate(180deg); }
+.cfg-global-panel > summary:hover { background: var(--bg-3); border-radius: var(--r-md); }
+.cfg-global-panel > summary strong { font-size: .87rem; }
+.cfg-global-body { padding: .75rem 1rem; border-top: 1px solid var(--border); }
+
 /* uPlot tweaks */
 .uplot { background: transparent; }
 .u-legend { display: none; }
