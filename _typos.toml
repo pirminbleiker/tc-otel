@@ -38,6 +38,7 @@ extend-exclude = [
     "source/TwinCat_Lib/**",
     # Compiled library binary
     "library/**",
-    # German-language design doc (kept in German intentionally)
+    # German-language design docs (kept in German intentionally)
     "docs/router.md",
+    "docs/sample-timestamps-plan.md",
 ]
