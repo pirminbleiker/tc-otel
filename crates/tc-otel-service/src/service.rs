@@ -205,6 +205,7 @@ impl TcOtelService {
         enum TransportVariant {
             Tcp(Arc<TcpAmsTransport>),
             Mqtt(Arc<MqttAmsTransport>),
+            LocalRouter(Arc<tc_otel_ads::transport::LocalRouterAmsTransport>),
         }
 
         let transport_variant = match &self.settings.receiver.transport {
@@ -216,6 +217,22 @@ impl TcOtelService {
 
                 tracing::info!("Using TCP transport on {}:{}", tcp_cfg.host, tcp_cfg.port);
                 TransportVariant::Tcp(Arc::new(tcp_transport))
+            }
+            TransportConfig::LocalRouter(lr_cfg) => {
+                let lr_transport = tc_otel_ads::transport::LocalRouterAmsTransport::new(
+                    lr_cfg.router_host.clone(),
+                    lr_cfg.router_port,
+                    ads_router.clone(),
+                )
+                .with_register_port(self.settings.receiver.ads_port);
+
+                tracing::info!(
+                    "Using local AMS router client transport: router={}:{}, register_port={}",
+                    lr_cfg.router_host,
+                    lr_cfg.router_port,
+                    self.settings.receiver.ads_port
+                );
+                TransportVariant::LocalRouter(Arc::new(lr_transport))
             }
             TransportConfig::Mqtt(mqtt_cfg) => {
                 let (broker_host, broker_port) = parse_broker_addr(&mqtt_cfg.broker);
@@ -249,6 +266,9 @@ impl TcOtelService {
         let conn_manager = match &transport_variant {
             TransportVariant::Tcp(tcp) => tcp.connection_manager().clone(),
             TransportVariant::Mqtt(_mqtt) => Arc::new(ConnectionManager::new(conn_config.clone())),
+            TransportVariant::LocalRouter(_lr) => {
+                Arc::new(ConnectionManager::new(conn_config.clone()))
+            }
         };
 
         let diagnostic_stats = Arc::new(DiagnosticStats::new());
@@ -284,6 +304,21 @@ impl TcOtelService {
                     } => {
                         if let Err(e) = result {
                             tracing::error!("AMS/MQTT transport error: {}", e);
+                        }
+                    }
+                    _ = shutdown_rx_ams.recv() => {
+                        tracing::info!("AMS transport shutdown");
+                    }
+                }
+            }),
+            TransportVariant::LocalRouter(lr) => tokio::spawn(async move {
+                tokio::select! {
+                    result = {
+                        let transport: Arc<dyn AmsTransport> = lr.clone();
+                        AmsTransport::run(transport.clone())
+                    } => {
+                        if let Err(e) = result {
+                            tracing::error!("AMS local-router transport error: {}", e);
                         }
                     }
                     _ = shutdown_rx_ams.recv() => {

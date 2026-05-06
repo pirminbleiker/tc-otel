@@ -20,7 +20,7 @@ END_VAR
     <Implementation>
       <ST><![CDATA[IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
 	// For Remote TC-OTel Server change the AMS net ID and configure a route
-	PRG_TaskLog.Init('10.10.10.10.1.1');
+	PRG_TaskLog.Init('127.0.0.1.1.1');
 	F_Log(E_LogLevel.eInfo, 'Started').CreateLog();
 END_IF
 

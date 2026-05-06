@@ -74,7 +74,7 @@ tc-otel runs on a different port or diagnostics should be disabled.
 *)
 METHOD PUBLIC Init : BOOL
 VAR_INPUT
-	sAmsNetId	: Tc2_Utilities.T_AmsNetID;	(* The ams net id of the log service. Defaults to localhost (empty string). *)
+	sAmsNetId	: Tc2_Utilities.T_AmsNetID := '127.0.0.1.1.1';	(* The ams net id of the log service. Defaults to localhost (empty string). *)
 END_VAR
 VAR
 	nIdx	: DINT;
