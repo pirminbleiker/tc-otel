@@ -22,8 +22,10 @@ pub trait AmsTransport: Send + Sync + 'static {
     fn local_net_id(&self) -> AmsNetId;
 }
 
+pub mod local_router;
 pub mod mqtt;
 pub mod tcp;
 
+pub use local_router::LocalRouterAmsTransport;
 pub use mqtt::{MqttAmsTransport, MqttTransportConfig};
 pub use tcp::TcpAmsTransport;

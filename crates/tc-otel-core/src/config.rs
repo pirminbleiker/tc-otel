@@ -332,14 +332,52 @@ impl Default for MqttTransportConfig {
     }
 }
 
+/// Local AMS router client configuration.
+///
+/// tc-otel acts as a TCP *client* to the locally-running TwinCAT AMS router
+/// on the same machine. After the TCP connect, it sends an AMS/TCP
+/// `PortConnect` (cmd 0x1000) to register the desired AMS port. The router
+/// then delivers all frames addressed to `<localNetId>:<port>` over the
+/// same socket — no eigene NetID, no port-48898 conflict, no static-route
+/// edits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LocalRouterTransportConfig {
+    /// AMS router host. Almost always `127.0.0.1` (the local TwinCAT
+    /// router on the same machine).
+    #[serde(default = "default_local_router_host")]
+    pub router_host: String,
+    /// Router TCP port (default 48898).
+    #[serde(default = "default_ams_tcp_port")]
+    pub router_port: u16,
+}
+
+fn default_local_router_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+impl Default for LocalRouterTransportConfig {
+    fn default() -> Self {
+        Self {
+            router_host: default_local_router_host(),
+            router_port: default_ams_tcp_port(),
+        }
+    }
+}
+
 /// Transport configuration (tag-based enum for pluggable transports)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum TransportConfig {
-    /// TCP transport (AMS/TCP on port 48898)
+    /// TCP transport (AMS/TCP server on port 48898). Requires that no other
+    /// AMS router (e.g. TwinCAT) is already bound to that port.
     Tcp(TcpTransportConfig),
-    /// MQTT transport (ADS-over-MQTT)
+    /// MQTT transport (ADS-over-MQTT).
     Mqtt(MqttTransportConfig),
+    /// Local TwinCAT AMS router client. Use this when TwinCAT runs on the
+    /// same machine and owns 48898 — tc-otel registers an AMS port at the
+    /// router via `PortConnect` and receives frames over the same socket.
+    #[serde(rename = "local_router")]
+    LocalRouter(LocalRouterTransportConfig),
 }
 
 impl Default for TransportConfig {
@@ -1103,6 +1141,14 @@ impl AppSettings {
                 }
             }
             TransportConfig::Mqtt(_mqtt) => {}
+            TransportConfig::LocalRouter(lr) => {
+                if !valid_ports.contains(&lr.router_port) {
+                    errors.push(format!(
+                        "receiver.transport.local_router.router_port {} out of range [1, 65535]",
+                        lr.router_port
+                    ));
+                }
+            }
         }
 
         if !valid_ports.contains(&self.web.port) {

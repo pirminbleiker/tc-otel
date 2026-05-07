@@ -1,0 +1,85 @@
+{
+  "diagnostics": {
+    "enabled": false,
+    "targets": []
+  },
+  "export": {
+    "batch_size": 2000,
+    "endpoint": "http://127.0.0.1:9428/insert/jsonline",
+    "flush_interval_ms": 1000,
+    "max_retries": 3,
+    "timeout_secs": 10
+  },
+  "logging": {
+    "format": "text",
+    "log_level": "info",
+    "output_path": null
+  },
+  "metrics": {
+    "custom_metrics": [],
+    "cycle_time_enabled": true,
+    "cycle_time_window": 1000,
+    "export_batch_size": 100,
+    "export_enabled": false,
+    "export_endpoint": null,
+    "export_flush_interval_ms": 1000
+  },
+  "outputs": [],
+  "receiver": {
+    "ads_port": 16150,
+    "ams_net_id": "0.0.0.0.1.1",
+    "ams_tcp_port": 48898,
+    "grpc_port": 4317,
+    "host": "0.0.0.0",
+    "http_port": 4318,
+    "https_only": false,
+    "idle_timeout_secs": 300,
+    "keepalive_interval_secs": 60,
+    "max_body_size": 4194304,
+    "max_connections": 100,
+    "max_connections_per_ip": 10,
+    "rate_limit_per_sec_per_ip": 10,
+    "request_timeout_secs": 30,
+    "send_buffer_size": 1048576,
+    "tls": {
+      "ca_cert_path": null,
+      "cert_path": null,
+      "ciphers": [],
+      "client_cert_path": null,
+      "client_key_path": null,
+      "enabled": false,
+      "insecure_skip_verify": false,
+      "key_path": null,
+      "max_version": "TLSv1_3",
+      "min_version": "TLSv1_2",
+      "require_client_cert": false
+    },
+    "transport": {
+      "type": "local_router",
+      "router_host": "127.0.0.1",
+      "router_port": 48898
+    }
+  },
+  "service": {
+    "channel_capacity": 50000,
+    "display_name": "tc-otel - TwinCAT OpenTelemetry Service (local AMS router)",
+    "name": "tc-otel",
+    "shutdown_timeout_secs": 30,
+    "worker_threads": null
+  },
+  "traces": {
+    "enabled": false,
+    "export": {
+      "batch_size": 100,
+      "endpoint": null,
+      "flush_interval_ms": 1000
+    },
+    "max_pending_spans": 1024,
+    "span_ttl_secs": 10
+  },
+  "web": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080
+  }
+}

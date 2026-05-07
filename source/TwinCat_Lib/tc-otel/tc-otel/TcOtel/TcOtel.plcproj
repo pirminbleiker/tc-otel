@@ -239,6 +239,10 @@
   <ItemGroup>
     <Folder Include="API" />
     <Folder Include="API\Context" />
+    <Folder Include="API\Log" />
+    <Folder Include="API\Log\Interface" />
+    <Folder Include="API\Trace" />
+    <Folder Include="API\Metric" />
     <Folder Include="GVLs" />
     <Folder Include="ITFs" />
     <Folder Include="DUTs" />
@@ -261,40 +265,40 @@
     <Compile Include="API\Context\I_ContextBuilder.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\E_LogLevel.TcDUT">
+    <Compile Include="API\Log\E_LogLevel.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\E_MetricStat.TcDUT">
+    <Compile Include="API\Metric\E_MetricStat.TcDUT">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\FB_Log.TcPOU">
+    <Compile Include="API\Log\FB_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\FB_Metrics.TcPOU">
+    <Compile Include="API\Metric\FB_Metrics.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\FB_Trace.TcPOU">
+    <Compile Include="API\Trace\FB_Trace.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\FB_Span.TcPOU">
+    <Compile Include="API\Trace\FB_Span.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\F_Log.TcPOU">
+    <Compile Include="API\Log\F_Log.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\F_TraceParentFromString.TcPOU">
+    <Compile Include="API\Trace\F_TraceParentFromString.TcPOU">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\I_LogBuilder.TcIO">
+    <Compile Include="API\Log\Interface\I_LogBuilder.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\I_WithLogger.TcIO">
+    <Compile Include="API\Log\Interface\I_WithLogger.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\I_WithContext.TcIO">
+    <Compile Include="API\Log\Interface\I_WithContext.TcIO">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="API\I_Logger.TcIO">
+    <Compile Include="API\Log\Interface\I_Logger.TcIO">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="API\PRG_TaskLog.TcPOU">

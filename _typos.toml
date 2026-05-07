@@ -41,4 +41,6 @@ extend-exclude = [
     # German-language design docs (kept in German intentionally)
     "docs/router.md",
     "docs/sample-timestamps-plan.md",
+    # Vendored third-party JS/CSS (minified; variable names trigger false positives)
+    "crates/tc-otel-service/src/web/ui/vendor/**",
 ]
