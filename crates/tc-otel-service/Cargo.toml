@@ -46,7 +46,7 @@ chrono.workspace = true
 uuid.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 reqwest.workspace = true
-schemars = "0.8"
+schemars = "1.2"
 hex = "0.4"
 
 [dev-dependencies]
