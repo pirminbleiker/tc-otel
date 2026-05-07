@@ -22,5 +22,5 @@ rumqttc = { version = "0.25", default-features = false, features = ["use-rustls"
 parking_lot.workspace = true
 
 [dev-dependencies]
-testcontainers = "0.15"
+testcontainers = "0.27"
 proptest.workspace = true
