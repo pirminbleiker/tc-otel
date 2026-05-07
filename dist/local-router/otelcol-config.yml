@@ -1,0 +1,39 @@
+# otel-collector config for the on-IPC Victoria stack.
+# Sole job: translate tc-otel's OTLP-JSON metrics into Prometheus
+# remote_write so VictoriaMetrics accepts them. (VM's /opentelemetry/v1/metrics
+# only takes protobuf; tc-otel currently emits OTLP-JSON.)
+#
+# Logs and traces bypass this collector — tc-otel posts them directly
+# to VictoriaLogs (/insert/jsonline) and VictoriaTraces
+# (/insert/opentelemetry/v1/traces), both of which accept JSON natively.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        # gRPC not needed — tc-otel uses HTTP OTLP for metrics export
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:8428/api/v1/write
+    tls:
+      insecure: true
+    # Keep external labels minimal; tc-otel already attaches host.name etc.
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]

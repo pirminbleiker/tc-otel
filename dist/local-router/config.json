@@ -21,7 +21,7 @@
     "cycle_time_window": 1000,
     "export_batch_size": 100,
     "export_enabled": false,
-    "export_endpoint": null,
+    "export_endpoint": "http://127.0.0.1:8428/opentelemetry/v1/metrics",
     "export_flush_interval_ms": 1000
   },
   "outputs": [],
@@ -68,10 +68,10 @@
     "worker_threads": null
   },
   "traces": {
-    "enabled": false,
+    "enabled": true,
     "export": {
       "batch_size": 100,
-      "endpoint": null,
+      "endpoint": "http://127.0.0.1:10428/insert/opentelemetry/v1/traces",
       "flush_interval_ms": 1000
     },
     "max_pending_spans": 1024,

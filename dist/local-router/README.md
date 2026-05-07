@@ -1,17 +1,32 @@
 # tc-otel local-router deployment
 
-Deployment package for running tc-otel **on the same machine as TwinCAT**.
+Self-contained on-IPC deployment for tc-otel **on the same machine as
+TwinCAT** with the full Victoria stack (logs + metrics + traces) right
+next to it. After install you have:
 
-Instead of binding TCP/48898 (already owned by TwinCAT's `TcAmsRouter`),
-tc-otel acts as a **client** of the local router: outbound TCP to
-`127.0.0.1:48898`, AMS/TCP `PortConnect` (cmd `0x1000`) registers AMS port
-16150 with the router, and ADS frames addressed to `<localNetId>:16150`
-are delivered over the same socket.
+| Pillar  | Backend         | Port  | UI                                              | Status |
+| ------- | --------------- | ----- | ----------------------------------------------- | ------ |
+| Logs    | VictoriaLogs    | 9428  | `http://<target>:9428/select/vmui/`             | ✓ working |
+| Traces  | VictoriaTraces  | 10428 | Jaeger API `http://<target>:10428/select/jaeger/api/...` | ✓ working |
+| Metrics | VictoriaMetrics | 8428  | `http://<target>:8428/vmui/`                    | ⚠ ingest disabled — VM only accepts OTLP-protobuf, tc-otel emits OTLP-JSON. See [`victoria-stack.md`](victoria-stack.md) for workarounds |
 
-No `StaticRoutes.xml` edit. No port conflict. No separate AMS NetId — the
-router hands tc-otel the local NetId during `PortConnect`. PLC code uses
-`PRG_TaskLog.Init('')` (empty = local) and writes via the standard
-`Tc2_System.ADSWRITE`.
+All four binaries (tc-otel + 3× Victoria) run as Windows Scheduled
+Tasks under SYSTEM, auto-start on boot, and survive SSH disconnect.
+
+## How tc-otel reaches TwinCAT (the local-router transport)
+
+Instead of binding TCP/48898 (already owned by `TcAmsRouter`), tc-otel
+acts as a **client** of the local router: outbound TCP to
+`127.0.0.1:48898`, AMS/TCP `PortConnect` (cmd `0x1000`) registers AMS
+port 16150 with the router, and ADS frames addressed to
+`<localNetId>:16150` are delivered over the same socket.
+
+No `StaticRoutes.xml` edit. No port conflict. No separate AMS NetId —
+the router hands tc-otel the local NetId during `PortConnect`. PLC
+code uses `PRG_TaskLog.Init('127.0.0.1.1.1')` and writes via the
+standard `Tc2_System.ADSWRITE`. See [`architecture.md`](architecture.md)
+for the full protocol picture and [`router-reference.md`](router-reference.md)
+for the deep dive (commands, ports, performance).
 
 ## Files in this directory
 
@@ -28,10 +43,13 @@ router hands tc-otel the local NetId during `PortConnect`. PLC code uses
 | `start.ps1` / `stop.ps1` | Manual task control |
 | `run-tc-otel.bat` | Wrapper that the `tc-otel` Scheduled Task runs |
 | `run-victorialogs.bat` | Wrapper that the `VictoriaLogs` Scheduled Task runs |
+| `run-victoriametrics.bat` | Wrapper that the `VictoriaMetrics` Scheduled Task runs |
+| `run-victoriatraces.bat` | Wrapper that the `VictoriaTraces` Scheduled Task runs |
 | `probe_port_connect.py` | Diagnostic — verify the local router accepts PortConnect for port 16150 |
 | `remote_deploy.py` | *Optional* — push this dist to a target over SSH and run `install.ps1` remotely |
-| `grafana-setup.md` | Grafana data source configuration |
+| `victoria-stack.md` | Endpoints, query examples, retention for VL/VM/VT |
 | `architecture.md` | Protocol details + why this approach |
+| `router-reference.md` | Deep dive: full AMS/TCP command set, port table, dispatch flow, performance numbers |
 | `troubleshooting.md` | Common issues and fixes |
 
 ## Install (target machine, run as Administrator)

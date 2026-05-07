@@ -1,30 +1,136 @@
 # Getting Started with tc-otel
 
-Send logs, traces and metrics from your TwinCAT 3 PLC into Grafana (or any
-OTLP backend) in under ten minutes.
+Send logs, traces, and metrics from your TwinCAT 3 PLC into a
+queryable backend.
 
 ## What you get
 
-| Pillar | PLC API | Backend |
-|--------|---------|---------|
-| Logs | `F_Log(level, msg).WithAnyArg(x).CreateLog()` | Loki / Victoria-Logs / OTLP |
-| Traces | `FB_Span.Begin(name) … End()` (W3C `traceparent` propagation) | Tempo / Jaeger / OTLP |
-| Metrics | `FB_Metrics.Observe(value)` (oversampled, optional Welford min/max/mean/…) | Prometheus / VictoriaMetrics / OTLP |
+| Pillar  | PLC API                                                                     | Backend choices                                  |
+| ------- | --------------------------------------------------------------------------- | ------------------------------------------------ |
+| Logs    | `F_Log(level, msg).WithAnyArg(x).CreateLog()`                               | VictoriaLogs / Loki / any OTLP receiver          |
+| Traces  | `FB_Span.Begin(name) … End()` (W3C `traceparent` propagation)               | VictoriaTraces / Tempo / Jaeger / any OTLP       |
+| Metrics | `FB_Metrics.Observe(value)` (oversampled, optional Welford min/max/mean/…) | VictoriaMetrics / Prometheus / any OTLP          |
 
 All three flow through the same per-task ADS pipeline driven by a single
 `PRG_TaskLog.Call()` per cycle.
 
-## Prerequisites
+## Pick a deployment shape
 
-- **TwinCAT 3** XAE 4024 or newer
-- **Docker** for the tc-otel service and (optionally) the bundled
-  Grafana / Tempo / Loki / Prometheus stack
-- Network reachability between the PLC runtime and the host that runs
-  tc-otel
+| Deployment | When to use | Quickstart |
+| ---------- | ----------- | ---------- |
+| **On the IPC alongside TwinCAT** *(recommended for single PLCs)* | tc-otel + the full Victoria stack run on the **same** Windows IPC as the PLC. No network hop, no port conflict, persistent on-box logs/traces/metrics. | [§A below](#a--quickstart-on-the-ipc-local_router-transport) |
+| **Separate Linux/Docker host** | Centralised collection from many remote PLCs. Bundled Grafana/Tempo/Loki/Prometheus stack via Docker Compose. | [§B below](#b--quickstart-on-a-separate-docker-host) |
 
-## 1 · Bring up the stack
+Both paths share the same PLC code. Pick the deployment shape, wire
+the PLC, then jump to the [§ Pick a pillar](#pick-a-pillar) section.
 
-The fastest path is the bundled all-in-one observability stack:
+---
+
+## A · Quickstart on the IPC (local_router transport)
+
+This is the typical industrial setup: tc-otel runs *on the TwinCAT
+IPC itself*. Logs / traces / (metrics) live on the IPC's local disk
+and are queryable from any Grafana box on the LAN — no separate
+collection server, no Docker.
+
+### How it works
+
+tc-otel cannot bind TCP/48898 because TwinCAT's `TcAmsRouter` already
+owns it. Instead it acts as a **client** of the local router: outbound
+TCP to `127.0.0.1:48898`, an AMS/TCP `PortConnect` handshake registers
+AMS port 16150, and the router fans every frame addressed to
+`<localNetId>:16150` back over the same socket. No `StaticRoutes.xml`
+edit, no separate AMS NetId.
+
+The deployment package at [`dist/local-router/`](dist/local-router/)
+provisions tc-otel **and** the full Victoria stack (VictoriaLogs +
+VictoriaMetrics + VictoriaTraces) as Windows Scheduled Tasks under
+SYSTEM, all on the IPC. See its
+[`README.md`](dist/local-router/README.md),
+[`architecture.md`](dist/local-router/architecture.md) and
+[`router-reference.md`](dist/local-router/router-reference.md).
+
+### A.1 Build tc-otel (one-time, on a dev box)
+
+```bash
+cargo build --release -p tc-otel-service
+cp target/release/tc-otel.exe dist/local-router/
+```
+
+### A.2 Copy `dist/local-router/` to the IPC
+
+`scp -r`, network share, USB stick — anything. End up with the
+directory at e.g. `C:\deploy\local-router\` on the IPC.
+
+### A.3 Run the installer (on the IPC, admin PowerShell)
+
+```powershell
+cd C:\deploy\local-router
+.\install.ps1
+```
+
+The installer:
+
+1. Lays out `C:\tc-otel\`, `C:\victoria-logs\`, `C:\victoria-metrics\`,
+   `C:\victoria-traces\`
+2. Downloads VictoriaLogs / VictoriaMetrics / VictoriaTraces from
+   GitHub releases (skip with `-VlExe / -VmExe / -VtExe <path>` if
+   pre-staged)
+3. Registers four Scheduled Tasks (`tc-otel`, `VictoriaLogs`,
+   `VictoriaMetrics`, `VictoriaTraces`), all `RU SYSTEM`
+   `RL HIGHEST` `SC ONSTART` — they survive SSH disconnect and reboot
+4. Opens Windows Firewall for the Victoria UI ports
+5. Starts everything and verifies
+
+After install, tc-otel logs **"registered with local AMS router:
+netId=… port=16150"** — that's the success line.
+
+### A.4 Tell the PLC where to send
+
+In every task that uses TcOtel:
+
+```iecst
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    PRG_TaskLog.Init('127.0.0.1.1.1');   // local NetId — the local router resolves it
+END_IF
+
+PRG_TaskLog.Call();                       // pumps logs / spans / metrics
+```
+
+No `StaticRoutes.xml` change required. tc-otel registered itself as a
+local AMS port, so frames addressed to the PLC's own NetId on
+port 16150 reach it directly through the router.
+
+### A.5 Open the UIs
+
+| | URL |
+|---|---|
+| VictoriaLogs (logs) | `http://<ipc>:9428/select/vmui/` |
+| VictoriaTraces (Jaeger query API) | `http://<ipc>:10428/select/jaeger/api/services` |
+| VictoriaMetrics (metrics) | `http://<ipc>:8428/vmui/` |
+| tc-otel local web UI | `http://127.0.0.1:8080` *(IPC-local only)* |
+
+> **Status note:** logs and traces flow end-to-end. **Metrics ingest
+> into VictoriaMetrics is currently disabled** because VM's
+> `/opentelemetry/v1/metrics` endpoint requires OTLP-protobuf and
+> tc-otel's HTTP exporter emits OTLP-JSON. VM is installed (and the
+> UI works) so the moment that gap is closed — either via an
+> OpenTelemetry Collector sidecar or a future tc-otel update — your
+> existing `metrics.export_enabled = true` flip is all that's needed.
+> See [`dist/local-router/victoria-stack.md`](dist/local-router/victoria-stack.md).
+
+If you want a unified Grafana dashboard layer in front of these,
+add VictoriaLogs / Prometheus / Jaeger data sources pointing at the
+same URLs. See `dist/local-router/victoria-stack.md`.
+
+Skip ahead to [§ Pick a pillar](#pick-a-pillar) for the PLC API.
+
+---
+
+## B · Quickstart on a separate Docker host
+
+For multi-PLC / centralised collection: tc-otel and the dashboards run
+on a separate Linux box, PLCs reach them over the LAN.
 
 ```bash
 git clone https://github.com/pirminbleiker/tc-otel.git
@@ -51,7 +157,7 @@ docker run -d --name tc-otel \
 Other deployment recipes (TCP, MQTT, OTel-Collector-only) live under
 [`examples/`](examples/README.md).
 
-## 2 · Add the ADS route to your PLC
+### B.1 Add the ADS route on the PLC
 
 In TwinCAT XAE → **SYSTEM › Routes › Add…**:
 
@@ -62,7 +168,7 @@ In TwinCAT XAE → **SYSTEM › Routes › Add…**:
 - **Transport**: `TCP_IP` (use MQTT only if you set up a broker — see
   [Traces Setup → MQTT](docs/traces-setup.md#mqtt-transport))
 
-## 3 · Install the PLC library
+### B.2 Install the PLC library
 
 In TwinCAT XAE:
 
@@ -70,13 +176,13 @@ In TwinCAT XAE:
 2. In your PLC project, right-click **References › Add Library…** → search
    for **TcOtel** and add it
 
-## 4 · Wire it up — one task, one Call
+### B.3 Wire it up — one task, one Call
 
 In every task that uses TcOtel, add these two lines:
 
 ```iecst
 IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
-    PRG_TaskLog.Init('127.0.0.1.1.1');   // tc-otel AMS net id
+    PRG_TaskLog.Init('127.0.0.1.1.1');   // local NetId for on-IPC, tc-otel NetId for remote
 END_IF
 
 PRG_TaskLog.Call();                       // pumps logs / spans / metrics
@@ -84,7 +190,9 @@ PRG_TaskLog.Call();                       // pumps logs / spans / metrics
 
 That's the whole transport. Now pick the pillar you need.
 
-## 5 · Pick a pillar
+---
+
+## Pick a pillar
 
 ### Logs
 
@@ -190,6 +298,7 @@ through ADS symbol writes against `PRG_TaskLog.aTaskDiagConfig[n]`.
 
 | Scenario | File | When to use |
 |----------|------|-------------|
+| **On-IPC (local_router)** | [`dist/local-router/config.json`](dist/local-router/config.json) | tc-otel **on the same Windows IPC** as TwinCAT, full Victoria stack alongside |
 | Local TCP dev | `examples/config/tcp.json` | tc-otel on the dev box, TwinCAT in a VM |
 | Docker Compose | `examples/config/tcp-docker.json` | Bundled stack with Grafana + Tempo + Loki + VictoriaMetrics |
 | MQTT | `examples/config/mqtt.json` | Multiple PLCs publishing through a broker |
@@ -197,7 +306,8 @@ through ADS symbol writes against `PRG_TaskLog.aTaskDiagConfig[n]`.
 
 See [examples/README.md](examples/README.md) for details and
 [examples/twincat/StaticRoutes.xml](examples/twincat/StaticRoutes.xml)
-for an ADS static-route template.
+for an ADS static-route template (only needed for the non-IPC
+deployment shapes).
 
 ## Troubleshooting
 
