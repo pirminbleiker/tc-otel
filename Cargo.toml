@@ -35,7 +35,7 @@ prost = "0.12"
 prost-types = "0.12"
 
 # HTTP/Web
-axum = "0.7"
+axum = "0.8"
 hyper = "1.0"
 hyper-util = "0.1"
 http = "1.0"
@@ -49,7 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-appender = "0.2"
 
 # CLI
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Internal crates
 tc-otel-core = { path = "crates/tc-otel-core" }
