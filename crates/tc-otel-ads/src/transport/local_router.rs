@@ -86,7 +86,10 @@ impl LocalRouterAmsTransport {
     }
 
     /// Send `PortConnect` and return `(local_net_id, assigned_port)`.
-    async fn handshake(stream: &mut TcpStream, register_port: u16) -> crate::Result<(AmsNetId, u16)> {
+    async fn handshake(
+        stream: &mut TcpStream,
+        register_port: u16,
+    ) -> crate::Result<(AmsNetId, u16)> {
         let payload = register_port.to_le_bytes();
         let mut req = Vec::with_capacity(8);
         req.extend_from_slice(&Self::make_amstcp_header(
@@ -94,10 +97,16 @@ impl LocalRouterAmsTransport {
             payload.len() as u32,
         ));
         req.extend_from_slice(&payload);
-        stream.write_all(&req).await.map_err(crate::AdsError::IoError)?;
+        stream
+            .write_all(&req)
+            .await
+            .map_err(crate::AdsError::IoError)?;
 
         let mut hdr = [0u8; 6];
-        stream.read_exact(&mut hdr).await.map_err(crate::AdsError::IoError)?;
+        stream
+            .read_exact(&mut hdr)
+            .await
+            .map_err(crate::AdsError::IoError)?;
         let cmd = u16::from_le_bytes([hdr[0], hdr[1]]);
         let len = u32::from_le_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]) as usize;
         if cmd != AMS_TCP_CMD_PORT_CONNECT {
@@ -111,7 +120,10 @@ impl LocalRouterAmsTransport {
             )));
         }
         let mut body = vec![0u8; len];
-        stream.read_exact(&mut body).await.map_err(crate::AdsError::IoError)?;
+        stream
+            .read_exact(&mut body)
+            .await
+            .map_err(crate::AdsError::IoError)?;
 
         let net_id = AmsNetId::from_bytes([body[0], body[1], body[2], body[3], body[4], body[5]]);
         let assigned = u16::from_le_bytes([body[6], body[7]]);
@@ -135,8 +147,7 @@ impl LocalRouterAmsTransport {
             }
 
             let cmd = u16::from_le_bytes([buf[0], buf[1]]);
-            let data_len =
-                u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
+            let data_len = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
 
             // Match the TCP transport's 16 MiB ceiling — batched log writes
             // routinely exceed 1 MB.
@@ -149,7 +160,10 @@ impl LocalRouterAmsTransport {
             }
             // PortConnect/ack control frames carry no body — skip the read.
             if data_len > 0 {
-                stream.read_exact(&mut buf[..data_len]).await.map_err(crate::AdsError::IoError)?;
+                stream
+                    .read_exact(&mut buf[..data_len])
+                    .await
+                    .map_err(crate::AdsError::IoError)?;
             }
 
             match cmd {
