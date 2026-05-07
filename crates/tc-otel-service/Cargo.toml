@@ -44,7 +44,7 @@ hyper-util.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 uuid.workspace = true
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 reqwest.workspace = true
 schemars = "0.8"
 hex = "0.4"
