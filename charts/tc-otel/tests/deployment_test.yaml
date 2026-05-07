@@ -11,7 +11,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: ghcr.io/pirminbleiker/tc-otel:0.1.0
+          value: ghcr.io/pirminbleiker/tc-otel:0.1.1
 
   - it: should respect image tag override
     set:
