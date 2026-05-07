@@ -22,6 +22,8 @@ mosquitto = "mosquitto"
 Mosquitto = "Mosquitto"
 # 2-char hex sequence in span_id literals and git short SHAs
 ba = "ba"
+# schtasks.exe output format flag
+FO = "FO"
 # JS local variable (array of literals) in inline web page source
 lits = "lits"
 
@@ -30,6 +32,8 @@ lits = "lits"
 ba902b7 = "ba902b7"
 fedcba9876543210 = "fedcba9876543210"
 fedcba = "fedcba"
+# AMS source NetId variable name
+snet = "snet"
 
 [files]
 extend-exclude = [

@@ -33,8 +33,8 @@ The local-router transport eliminates all of that. tc-otel becomes a
    on PortConnect: registers tc-otel as              |
    <localNetId>:16150 in the router's                |
    in-process port table; from then on              |
-   any frame with that target is fan-               |
-   ned to tc-otel's open socket --------------------+
+   any frame with that target is fanned             |
+   to tc-otel's open socket ------------------------+
 ```
 
 1. tc-otel opens an outbound TCP connection to `127.0.0.1:48898`.
