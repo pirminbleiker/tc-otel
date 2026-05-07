@@ -35,7 +35,7 @@ prost = "0.12"
 prost-types = "0.12"
 
 # HTTP/Web
-axum = "0.7"
+axum = "0.8"
 hyper = "1.0"
 hyper-util = "0.1"
 http = "1.0"
