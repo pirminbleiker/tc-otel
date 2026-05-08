@@ -119,8 +119,19 @@ impl LogDispatcher {
         Ok(())
     }
 
-    /// True if the endpoint is an OTLP HTTP logs endpoint
-    /// (OTel collector / Tempo / etc., not VictoriaLogs).
+    /// True if the endpoint is an OTLP HTTP logs endpoint (OTel
+    /// Collector, Tempo, VictoriaLogs' `/insert/opentelemetry/v1/logs`
+    /// path, etc.).
+    ///
+    /// The default dist `config.json` ships this OTLP-Logs path so the
+    /// service is spec-conformant out of the box. The legacy
+    /// `/insert/jsonline` endpoint is still supported as a non-default
+    /// VL-only fast path: VictoriaLogs ingests JSONL ~3× faster than
+    /// OTLP-Logs because there's no per-record `ResourceLogs` /
+    /// `ScopeLogs` wrapping overhead. Users who switch the endpoint
+    /// to `/insert/jsonline` opt into that throughput at the cost of
+    /// portability (the same stream cannot be re-pointed at a generic
+    /// OTLP-Logs receiver without re-encoding).
     fn is_otlp_endpoint(endpoint: &str) -> bool {
         endpoint.contains("/v1/logs")
     }

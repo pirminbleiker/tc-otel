@@ -5,11 +5,11 @@
   },
   "export": {
     "batch_size": 2000,
-    "endpoint": "http://127.0.0.1:9428/insert/jsonline",
+    "endpoint": "http://127.0.0.1:9428/insert/opentelemetry/v1/logs",
     "flush_interval_ms": 1000,
     "max_retries": 3,
     "timeout_secs": 10,
-    "format": "json"
+    "format": "protobuf"
   },
   "logging": {
     "format": "text",
