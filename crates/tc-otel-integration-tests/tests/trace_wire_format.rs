@@ -328,17 +328,30 @@ fn test_dispatcher_lifecycle() {
     );
 
     let trace_record = rx.blocking_recv().expect("Should receive trace record");
-    assert_eq!(
-        trace_record
-            .resource_attributes
-            .get("service.name")
-            .and_then(|v| v.as_str()),
-        Some("plc-5.80.201.232.1.1")
+    // PR-A: SpanDispatcher no longer synthesises `service.name = plc-<netid>`.
+    // The value is now threaded in via `with_service_metadata` from
+    // `AppSettings::service.name` at service start; an unconfigured dispatcher
+    // emits no `service.name` resource attribute. `plc.ams_net_id` carries the
+    // PLC identity instead.
+    assert!(
+        !trace_record.resource_attributes.contains_key("service.name"),
+        "service.name must not be auto-synthesised; got: {:?}",
+        trace_record.resource_attributes.get("service.name")
     );
     assert_eq!(
         trace_record
             .resource_attributes
-            .get("plc.task_index")
+            .get("plc.ams_net_id")
+            .and_then(|v| v.as_str()),
+        Some("5.80.201.232.1.1")
+    );
+    // PR-A: `plc.task_index` renamed to `tc.task.index` (custom-namespace
+    // sem-conv key; OTel-reserved `process.*` is for OS processes, not
+    // PLC tasks).
+    assert_eq!(
+        trace_record
+            .resource_attributes
+            .get("tc.task.index")
             .and_then(|v| v.as_i64()),
         Some(2)
     );

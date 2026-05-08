@@ -223,8 +223,10 @@ fn test_zero_timestamp_handling() {
 
     // plc.timestamp log_attribute removed; the toplevel timestamp field
     // carries the (epoch-zero) clock_timestamp for this edge case.
-    use chrono::DateTime;
-    assert_eq!(record.timestamp, DateTime::from(std::time::UNIX_EPOCH));
+    assert_eq!(
+        record.timestamp,
+        DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH)
+    );
     assert!(!record.log_attributes.contains_key("plc.timestamp"));
 }
 

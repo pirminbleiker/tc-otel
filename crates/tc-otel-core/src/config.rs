@@ -1451,12 +1451,14 @@ mod tests {
     }
 
     #[test]
-    fn test_wire_format_default_is_json() {
-        // The default format MUST be Json so that existing configs that
-        // omit the field keep the legacy OTLP-JSON behaviour.
-        assert_eq!(WireFormat::default(), WireFormat::Json);
+    fn test_wire_format_default_is_protobuf() {
+        // OTLP/HTTP spec (PR-A / D1): protobuf is the mandatory wire
+        // format and JSON is optional, so `WireFormat::default()` is
+        // Protobuf. Per-pillar overrides remain `None` (= follow
+        // top-level `export.format`).
+        assert_eq!(WireFormat::default(), WireFormat::Protobuf);
         let cfg = ExportConfig::default();
-        assert_eq!(cfg.format, WireFormat::Json);
+        assert_eq!(cfg.format, WireFormat::Protobuf);
         let metrics = MetricsConfig::default();
         assert!(metrics.export_format.is_none());
         let traces = TracesExportConfig::default();

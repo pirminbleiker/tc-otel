@@ -987,19 +987,26 @@ mod tests {
     }
 
     /// Capture exported request bodies in a shared buffer.
+    ///
+    /// Uses a `Bytes` extractor (not `String`) because the default wire
+    /// format is now OTLP-Protobuf — the body contains binary that is
+    /// not valid UTF-8. Substring assertions still work via
+    /// `String::from_utf8_lossy`: protobuf wire format encodes string
+    /// fields (metric names, units, descriptions) as raw UTF-8 byte
+    /// runs, so ASCII metric names appear verbatim in the byte stream.
     async fn start_capturing_metrics_server(
-    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
-        use axum::{routing::post, Router};
+    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+        use axum::{body::Bytes, routing::post, Router};
 
         let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let b = bodies.clone();
 
         let app = Router::new().route(
             "/v1/metrics",
-            post(move |body: String| {
+            post(move |body: Bytes| {
                 let b = b.clone();
                 async move {
-                    b.lock().unwrap().push(body);
+                    b.lock().unwrap().push(body.to_vec());
                     ""
                 }
             }),
@@ -1037,18 +1044,19 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let captured = bodies.lock().unwrap().join("");
+        let captured_bytes: Vec<u8> = bodies.lock().unwrap().concat();
+        let captured = String::from_utf8_lossy(&captured_bytes);
         assert!(
             captured.contains("plc.motor.temperature"),
-            "exported body should contain mapped metric name; got: {captured}"
+            "exported body should contain mapped metric name; got: {captured:?}"
         );
         assert!(
-            captured.contains("\"Cel\""),
-            "exported body should contain mapped unit; got: {captured}"
+            captured.contains("Cel"),
+            "exported body should contain mapped unit; got: {captured:?}"
         );
         assert!(
             !captured.contains("raw.plc.symbol"),
-            "exported body should not contain the pre-mapping name"
+            "exported body should not contain the pre-mapping name; got: {captured:?}"
         );
     }
 
@@ -1092,14 +1100,15 @@ mod tests {
         dispatcher.dispatch(e2).await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let captured = bodies.lock().unwrap().join("");
+        let captured_bytes: Vec<u8> = bodies.lock().unwrap().concat();
+        let captured = String::from_utf8_lossy(&captured_bytes);
         assert!(
             captured.contains("plc.parts.produced"),
-            "body after hot-reload should contain remapped name; got: {captured}"
+            "body after hot-reload should contain remapped name; got: {captured:?}"
         );
         assert!(
             captured.contains("initial.name"),
-            "body before hot-reload should still contain original (unmapped) name; got: {captured}"
+            "body before hot-reload should still contain original (unmapped) name; got: {captured:?}"
         );
     }
 }
