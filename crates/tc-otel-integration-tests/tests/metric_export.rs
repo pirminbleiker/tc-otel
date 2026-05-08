@@ -204,7 +204,7 @@ fn test_prometheus_gauge_resource_attributes() {
     );
     assert_eq!(
         find_attr("service.instance.id").unwrap()["stringValue"],
-        "MainTask"
+        "MainTask@10.0.1.50.1.1:851"
     );
     assert_eq!(
         find_attr("host.name").unwrap()["stringValue"],

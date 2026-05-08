@@ -6,9 +6,9 @@ next to it. After install you have:
 
 | Pillar  | Backend         | Port  | UI                                              | Status |
 | ------- | --------------- | ----- | ----------------------------------------------- | ------ |
-| Logs    | VictoriaLogs    | 9428  | `http://<target>:9428/select/vmui/`             | ✓ working |
-| Traces  | VictoriaTraces  | 10428 | Jaeger API `http://<target>:10428/select/jaeger/api/...` | ✓ working |
-| Metrics | VictoriaMetrics | 8428  | `http://<target>:8428/vmui/`                    | ⚠ ingest disabled — VM only accepts OTLP-protobuf, tc-otel emits OTLP-JSON. See [`victoria-stack.md`](victoria-stack.md) for workarounds |
+| Logs    | VictoriaLogs    | 9428  | `http://<target>:9428/select/vmui/`             | ✓ working (JSONL fast path) |
+| Metrics | VictoriaMetrics | 8428  | `http://<target>:8428/vmui/`                    | ✓ working (OTLP-Protobuf direct, no sidecar) |
+| Traces  | VictoriaTraces  | 10428 | Jaeger API `http://<target>:10428/select/jaeger/api/...` | ✓ working (OTLP-Protobuf direct) |
 
 All four binaries (tc-otel + 3× Victoria) run as Windows Scheduled
 Tasks under SYSTEM, auto-start on boot, and survive SSH disconnect.

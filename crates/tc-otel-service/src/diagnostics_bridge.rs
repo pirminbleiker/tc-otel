@@ -672,14 +672,14 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
     m.ams_net_id = net_id;
     m.ams_source_port = task_port;
     m.task_name = task_name.to_string();
-    m.attributes.insert(
-        "task_port".into(),
-        serde_json::Value::Number(task_port.into()),
-    );
-    m.attributes.insert(
-        "task_name".into(),
-        serde_json::Value::String(task_name.to_string()),
-    );
+    // Don't duplicate task_name / task_port as snake_case data-point
+    // attributes — `MetricRecord::from_metric_entry` already promotes
+    // `entry.task_name` to the dotted resource attribute `task.name`,
+    // and `entry.ams_source_port` becomes the resource attribute
+    // `plc.ams_source_port`. Carrying both shapes inflates the label
+    // set without adding information and makes VictoriaMetrics treat
+    // otherwise-equivalent samples as separate timeseries when one
+    // emitter omits a duplicate.
     m
 }
 

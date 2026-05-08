@@ -15,42 +15,31 @@ LAN if you query from another box (firewall rules are opened by
 | Pillar  | Backend         | Port  | Ingest path used by tc-otel                              | Built-in UI / query                                          | Status |
 | ------- | --------------- | ----- | -------------------------------------------------------- | ------------------------------------------------------------ | ------ |
 | Logs    | VictoriaLogs    | 9428  | `/insert/jsonline` *(JSONL)*                             | `http://<target>:9428/select/vmui/`                          | ✓ working |
-| Traces  | VictoriaTraces  | 10428 | `/insert/opentelemetry/v1/traces` *(OTLP-JSON)*          | Jaeger Query API at `http://<target>:10428/select/jaeger/api/...` | ✓ working |
-| Metrics | VictoriaMetrics | 8428  | `/opentelemetry/v1/metrics` *(OTLP)*                     | `http://<target>:8428/vmui/`                                 | ⚠ disabled — see below |
+| Metrics | VictoriaMetrics | 8428  | `/opentelemetry/v1/metrics` *(OTLP-Protobuf)*            | `http://<target>:8428/vmui/`                                 | ✓ working |
+| Traces  | VictoriaTraces  | 10428 | `/insert/opentelemetry/v1/traces` *(OTLP-Protobuf)*      | Jaeger Query API at `http://<target>:10428/select/jaeger/api/...` | ✓ working |
 
-`config.json` in this dist is pre-wired to these URLs at `127.0.0.1`.
+`config.json` in this dist is pre-wired to these URLs at `127.0.0.1`
+and uses the `protobuf` wire format on the OTLP endpoints (logs
+still go via VL's JSONL fast path).
 
-### Metrics: OTLP-JSON vs. protobuf gap
+### Wire format (`format` field)
 
-VictoriaMetrics' `/opentelemetry/v1/metrics` endpoint **only accepts
-OTLP-protobuf**, while tc-otel's HTTP exporter currently emits
-OTLP-JSON. Posting JSON returns:
+tc-otel's HTTP exporter speaks both OTLP-JSON and OTLP-Protobuf.
+VictoriaMetrics' OTLP endpoint **only accepts protobuf**; VL and VT
+accept either. The shipped config picks `protobuf` everywhere it
+matters so all three backends ingest natively without an
+OpenTelemetry-Collector sidecar in between.
 
+```json
+"export":  { "format": "json", ... },             // logs (VL JSONL fast path — format ignored)
+"metrics": { "export_format": "protobuf", ... },  // VM requires this
+"traces":  { "export": { "format": "protobuf", ... } }
 ```
-HTTP 400: json encoding isn't supported for opentelemetry format. Use protobuf encoding
-```
 
-(VictoriaLogs and VictoriaTraces accept both encodings, so logs and
-traces work end-to-end as-is. The mismatch is VM-specific.)
-
-`metrics.export_enabled` is therefore **`false`** by default in this
-dist. Workarounds:
-
-1. **Drop in the OpenTelemetry Collector** as a same-machine sidecar:
-   tc-otel → otelcol receiver `:4318` (OTLP-JSON in) →
-   `prometheusremotewrite` exporter → VM `/api/v1/write`. One extra
-   ~30 MB binary, zero tc-otel changes. Quick recipe in
-   [`troubleshooting.md`](troubleshooting.md).
-2. **Use vmagent** if you already run it elsewhere — it can ingest
-   OTLP HTTP and forward to VM via remote_write.
-3. **Wait for the protobuf path in tc-otel-export** —
-   `crates/tc-otel-export/src/grpc.rs` already has the prost-derived
-   OTLP types; switching the HTTP exporter to send
-   `application/x-protobuf` is on the roadmap but not yet shipped.
-
-VM is still installed (and the UI still works) so you can switch on
-metric ingest the moment any of the above lands. PromQL/MetricsQL
-panels via the built-in VMUI work fine for any data already present.
+If you flip a metrics endpoint to `format = "json"`, VictoriaMetrics
+returns `HTTP 400 json encoding isn't supported for opentelemetry format`
+— that's the deliberate VM design choice the protobuf path was added
+to handle.
 
 ## Logs — VictoriaLogs VMUI
 

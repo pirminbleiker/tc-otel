@@ -176,7 +176,9 @@ impl AdsListener {
     /// Convert an ADS log entry to a core LogEntry
     fn ads_to_log_entry(ads_entry: AdsLogEntry, peer_addr: SocketAddr) -> LogEntry {
         let source = peer_addr.ip().to_string();
-        let hostname = format!("plc-{}", peer_addr.port());
+        // hostname is set by the dispatcher from the local IPC's gethostname.
+        // The PLC's identity already lives in plc.ams_net_id (resource).
+        let hostname = String::new();
 
         let mut entry = LogEntry::new(
             source,

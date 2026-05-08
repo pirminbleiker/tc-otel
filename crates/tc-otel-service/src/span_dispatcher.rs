@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent};
-use tc_otel_core::{SpanStatusCode, TraceRecord};
+use tc_otel_core::{build_otel_resource, SpanStatusCode, TraceRecord};
 use tokio::sync::mpsc;
 
 /// Span attributes from the wire
@@ -58,6 +58,12 @@ pub struct SpanDispatcher {
     span_ttl: Duration,
     max_pending: usize,
     orphan_counter: Arc<AtomicU64>,
+    /// `service.name` resource attribute applied to every emitted span.
+    /// Backfilled from `AppSettings::service.name` at service start.
+    service_name: String,
+    /// `host.name` resource attribute — the local IPC's hostname,
+    /// captured once at service start via `gethostname::gethostname()`.
+    host_name: String,
 }
 
 impl SpanDispatcher {
@@ -74,7 +80,18 @@ impl SpanDispatcher {
             span_ttl,
             max_pending,
             orphan_counter: Arc::new(AtomicU64::new(0)),
+            service_name: String::new(),
+            host_name: String::new(),
         }
+    }
+
+    /// Set the `service.name` and `host.name` values applied to every
+    /// emitted span's resource. Empty strings are skipped at encode time
+    /// (see `tc_otel_core::build_otel_resource`).
+    pub fn with_service_metadata(mut self, service_name: String, host_name: String) -> Self {
+        self.service_name = service_name;
+        self.host_name = host_name;
+        self
     }
 
     /// Get the orphan span counter value for testing/observability
@@ -354,20 +371,22 @@ impl SpanDispatcher {
         status_code: SpanStatusCode,
         status_message: String,
     ) {
-        // Populate resource attributes so Grafana/Tempo link the span to a
-        // service. Without service.name the UI labels it "root span not yet
-        // received" and the trace-detail view returns no data.
-        let mut resource_attributes = HashMap::with_capacity(3);
-        resource_attributes.insert(
-            "service.name".to_string(),
-            serde_json::json!(format!("plc-{}", pending.ams_net_id)),
+        // Populate resource attributes via the shared OTel-sem-conv
+        // helper so spans line up with logs/metrics for the same PLC.
+        // service.name + host.name come from the dispatcher's metadata
+        // (set at service start); plc.ams_net_id and (when known)
+        // plc.ams_source_port identify the PLC. PendingSpan does not
+        // carry app_name / project_name, so service.instance.id falls
+        // back to the netid form (`build_service_instance_id`).
+        let mut resource_attributes = build_otel_resource(
+            self.service_name.clone(),
+            String::new(),
+            self.host_name.clone(),
+            pending.ams_net_id.to_string(),
+            0,
         );
         resource_attributes.insert(
-            "plc.ams_net_id".to_string(),
-            serde_json::json!(pending.ams_net_id.to_string()),
-        );
-        resource_attributes.insert(
-            "plc.task_index".to_string(),
+            "tc.task.index".to_string(),
             serde_json::json!(pending.task_index as i64),
         );
 

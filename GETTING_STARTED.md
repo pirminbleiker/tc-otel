@@ -110,14 +110,13 @@ port 16150 reach it directly through the router.
 | VictoriaMetrics (metrics) | `http://<ipc>:8428/vmui/` |
 | tc-otel local web UI | `http://127.0.0.1:8080` *(IPC-local only)* |
 
-> **Status note:** logs and traces flow end-to-end. **Metrics ingest
-> into VictoriaMetrics is currently disabled** because VM's
-> `/opentelemetry/v1/metrics` endpoint requires OTLP-protobuf and
-> tc-otel's HTTP exporter emits OTLP-JSON. VM is installed (and the
-> UI works) so the moment that gap is closed — either via an
-> OpenTelemetry Collector sidecar or a future tc-otel update — your
-> existing `metrics.export_enabled = true` flip is all that's needed.
-> See [`dist/local-router/victoria-stack.md`](dist/local-router/victoria-stack.md).
+> **Wire format:** the shipped config picks `format = "protobuf"` on the
+> metrics + traces OTLP endpoints so VictoriaMetrics / VictoriaTraces
+> ingest natively without an OpenTelemetry-Collector sidecar in
+> between. Logs go to VictoriaLogs via its JSONL fast path. Set
+> `format = "json"` on any pillar to switch back to OTLP-JSON if you
+> point at a different OTLP backend that prefers JSON. See
+> [`dist/local-router/victoria-stack.md`](dist/local-router/victoria-stack.md).
 
 If you want a unified Grafana dashboard layer in front of these,
 add VictoriaLogs / Prometheus / Jaeger data sources pointing at the

@@ -510,11 +510,19 @@ impl TcOtelService {
                 .as_ref()
                 .expect("trace_dispatcher must exist when traces enabled")
                 .sender();
-            let span_disp = Arc::new(tokio::sync::Mutex::new(SpanDispatcher::new(
-                record_tx,
-                Duration::from_secs(self.settings.traces.span_ttl_secs),
-                self.settings.traces.max_pending_spans,
-            )));
+            // Reuse the same hostname the LogDispatcher / MetricDispatcher
+            // already cached at construction time. service.name comes from
+            // settings — falls back to empty when not configured (the
+            // resource builder skips empty attributes).
+            let host_name = log_dispatcher.host_name();
+            let span_disp = Arc::new(tokio::sync::Mutex::new(
+                SpanDispatcher::new(
+                    record_tx,
+                    Duration::from_secs(self.settings.traces.span_ttl_secs),
+                    self.settings.traces.max_pending_spans,
+                )
+                .with_service_metadata(self.settings.service.name.clone(), (*host_name).clone()),
+            ));
 
             let span_disp_events = span_disp.clone();
             let mut shutdown_rx_traces = shutdown_tx.subscribe();

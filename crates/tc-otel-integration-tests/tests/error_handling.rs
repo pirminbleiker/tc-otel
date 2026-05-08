@@ -221,13 +221,11 @@ fn test_zero_timestamp_handling() {
 
     let record = tc_otel_core::LogRecord::from_log_entry(entry);
 
-    // Should still produce valid record
-    assert!(record.log_attributes.contains_key("plc.timestamp"));
-    assert!(!record
-        .log_attributes
-        .get("plc.timestamp")
-        .unwrap()
-        .is_null());
+    // plc.timestamp log_attribute removed; the toplevel timestamp field
+    // carries the (epoch-zero) clock_timestamp for this edge case.
+    use chrono::DateTime;
+    assert_eq!(record.timestamp, DateTime::from(std::time::UNIX_EPOCH));
+    assert!(!record.log_attributes.contains_key("plc.timestamp"));
 }
 
 /// Test: Unicode characters in all fields

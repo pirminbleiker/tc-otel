@@ -159,7 +159,7 @@ fn test_e2e_log_entry_to_otel_record() {
         Some(&serde_json::Value::String("plc-02".to_string()))
     );
     assert_eq!(
-        record.resource_attributes.get("process.pid"),
+        record.log_attributes.get("tc.task.index"),
         Some(&serde_json::Value::Number(3.into()))
     );
 
@@ -176,7 +176,7 @@ fn test_e2e_log_entry_to_otel_record() {
     );
     assert_eq!(record.log_attributes.get("region"), Some(&json!("eu-west")));
     assert_eq!(record.log_attributes.get("arg.0"), Some(&json!("RUNNING")));
-    assert!(record.log_attributes.contains_key("plc.timestamp"));
+    assert!(!record.log_attributes.contains_key("plc.timestamp"));
     assert_eq!(
         record.log_attributes.get("task.cycle"),
         Some(&serde_json::Value::Number(10000.into()))
@@ -268,8 +268,10 @@ fn test_e2e_minimal_log_entry() {
 
     let record = LogRecord::from_log_entry(entry);
 
-    // Should still have standard attributes even with empty context/arguments
-    assert!(record.log_attributes.contains_key("plc.timestamp"));
+    // Standard attributes still emitted; plc.timestamp dropped during
+    // the OTel sem-conv hardening (toplevel `record.timestamp` already
+    // carries the µs-precise DC time).
+    assert!(!record.log_attributes.contains_key("plc.timestamp"));
     assert!(record.log_attributes.contains_key("task.cycle"));
     assert!(record.log_attributes.contains_key("source.address"));
 }

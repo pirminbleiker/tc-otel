@@ -13,10 +13,15 @@ pub mod error;
 pub mod exporter;
 pub mod grpc;
 pub mod mapping;
+pub mod logs_proto;
+pub mod metrics_proto;
+pub mod proto_common;
 pub mod receiver;
+pub mod traces_proto;
 
 pub use error::{OtelError, Result};
 pub use exporter::OtelExporter;
 pub use grpc::{LogsServiceImpl, LogsServiceServer};
 pub use mapping::OtelMapping;
 pub use receiver::{OtelGrpcReceiver, OtelHttpReceiver};
+pub use tc_otel_core::WireFormat;

@@ -100,7 +100,9 @@ mod tests {
         // Check severity
         assert_eq!(record.severity_number, 9);
 
-        // Check resource attributes
+        // Check resource attributes — sem-conv hardening: process.pid /
+        // process.command_line removed (those names belong to OS-level
+        // identifiers, not PLC tasks); tc.task.* lives in log_attributes.
         assert_eq!(
             record.resource_attributes.get("service.name").unwrap(),
             &serde_json::Value::String("MyProject".to_string())
@@ -116,15 +118,16 @@ mod tests {
             record.resource_attributes.get("host.name").unwrap(),
             &serde_json::Value::String("plc-01".to_string())
         );
+        assert!(!record.resource_attributes.contains_key("process.pid"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("process.command_line"));
         assert_eq!(
-            record.resource_attributes.get("process.pid").unwrap(),
+            record.log_attributes.get("tc.task.index").unwrap(),
             &serde_json::Value::Number(42.into())
         );
         assert_eq!(
-            record
-                .resource_attributes
-                .get("process.command_line")
-                .unwrap(),
+            record.log_attributes.get("tc.task.name").unwrap(),
             &serde_json::Value::String("MainTask".to_string())
         );
 
@@ -186,8 +189,10 @@ mod tests {
 
         let record = OtelMapping::log_entry_to_record(entry);
 
-        // Check PLC-specific attributes
-        assert!(record.log_attributes.contains_key("plc.timestamp"));
+        // Check PLC-specific attributes — plc.timestamp removed (the
+        // toplevel `record.timestamp` already carries the µs-precise DC
+        // time; the FILETIME duplicate has lower resolution).
+        assert!(!record.log_attributes.contains_key("plc.timestamp"));
         assert_eq!(
             record.log_attributes.get("task.cycle").unwrap(),
             &serde_json::json!(1234)
@@ -256,8 +261,10 @@ mod tests {
 
         let record = OtelMapping::log_entry_to_record(entry);
 
-        // Should still have the default attributes
-        assert!(record.log_attributes.contains_key("plc.timestamp"));
+        // Default attributes kept; plc.timestamp / level dropped during
+        // the OTel sem-conv hardening.
+        assert!(!record.log_attributes.contains_key("plc.timestamp"));
+        assert!(!record.log_attributes.contains_key("level"));
         assert!(record.log_attributes.contains_key("task.cycle"));
         assert!(record.log_attributes.contains_key("source.address"));
     }
@@ -272,18 +279,16 @@ mod tests {
             LogLevel::Info,
         );
 
-        // Record time mirrors clock_timestamp (DC-time from the PLC) — it
-        // gives cycle-accurate resolution so logs line up with push-diag
-        // exceed dots on the Grafana axis. plc_timestamp is kept around
-        // only as an attribute for debugging.
+        // Record time mirrors clock_timestamp (DC-time from the PLC) —
+        // it gives cycle-accurate resolution so logs line up with
+        // push-diag exceed dots on the Grafana axis. The lower-resolution
+        // `plc_timestamp` (FILETIME, ~100 ms) was previously emitted as a
+        // `plc.timestamp` attribute too; that duplicate has been dropped.
         let expected_ts = entry.clock_timestamp;
         let record = OtelMapping::log_entry_to_record(entry);
 
         assert_eq!(record.timestamp, expected_ts);
-
-        // The plc_timestamp should be in attributes as string
-        let plc_ts_attr = record.log_attributes.get("plc.timestamp").unwrap();
-        assert!(plc_ts_attr.is_string());
+        assert!(!record.log_attributes.contains_key("plc.timestamp"));
     }
 
     #[test]

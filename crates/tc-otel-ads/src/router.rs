@@ -233,9 +233,12 @@ impl AdsRouter {
                         e.online_change_count = m.online_change_count;
                     }
                 }
+                // entry.source is left empty — sem-conv `source.address`
+                // is a network address, not the AMS Net ID. The PLC
+                // identity is already in plc.ams_net_id (resource).
                 let mut le = LogEntry::new(
-                    source_net_id.to_string(),
-                    format!("plc-{}", source_net_id),
+                    String::new(),
+                    String::new(),
                     e.message,
                     e.logger,
                     e.level,
@@ -310,9 +313,11 @@ impl AdsRouter {
                         e.online_change_count = m.online_change_count;
                     }
                 }
+                // entry.source is left empty — sem-conv `source.address`
+                // is a network address, not the AMS Net ID.
                 let mut le = LogEntry::new(
-                    source_net_id.to_string(),
-                    format!("plc-{}", source_net_id),
+                    String::new(),
+                    String::new(),
                     e.message,
                     e.logger,
                     e.level,
@@ -337,7 +342,6 @@ impl AdsRouter {
             }
             if let Some(ref m_tx) = self.metric_tx {
                 for me in pr.metrics {
-                    let hn = format!("plc-{}", source_net_id);
                     let k = RegistrationKey {
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,
@@ -356,8 +360,11 @@ impl AdsRouter {
                         kind: me.kind,
                         value: me.value,
                         timestamp: me.timestamp,
-                        source: source_net_id.to_string(),
-                        hostname: hn,
+                        // entry.source left empty — sem-conv `source.address`
+                        // is a network address, not the AMS Net ID. PLC
+                        // identity is in plc.ams_net_id (resource).
+                        source: String::new(),
+                        hostname: String::new(),
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,
                         task_index: me.task_index,

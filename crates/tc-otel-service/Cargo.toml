@@ -48,6 +48,7 @@ clap = { version = "4.6", features = ["derive"] }
 reqwest.workspace = true
 schemars = "1.2"
 hex = "0.4"
+gethostname.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true
