@@ -21,7 +21,7 @@ use tc_otel_ads::diagnostics::{
     METRIC_FLAG_RING_OVERFLOWED, METRIC_STAT_ORDER, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
     SAMPLE_FLAG_RT_VIOLATION,
 };
-use tc_otel_core::MetricEntry;
+use tc_otel_core::{local_source_address, MetricEntry};
 
 /// Descriptor table per `(ams_net_id, task_port)`. Maps metric_id → MetricDescriptor.
 /// This cache is populated as descriptors are announced and referenced across
@@ -665,6 +665,12 @@ fn metric_batch_to_entries(
 
 fn with_ams(net_id: String, mut m: MetricEntry) -> MetricEntry {
     m.ams_net_id = net_id;
+    // sem-conv `source.address` for diag-bridge metrics: PLC sits on
+    // the same IPC over loopback, so report the IPC's primary IPv4
+    // (same value the router/log path uses for local-router frames).
+    if m.source.is_empty() {
+        m.source = local_source_address().to_string();
+    }
     m
 }
 
@@ -672,6 +678,9 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
     m.ams_net_id = net_id;
     m.ams_source_port = task_port;
     m.task_name = task_name.to_string();
+    if m.source.is_empty() {
+        m.source = local_source_address().to_string();
+    }
     // Don't duplicate task_name / task_port as snake_case data-point
     // attributes — `MetricRecord::from_metric_entry` already promotes
     // `entry.task_name` to the dotted resource attribute `task.name`,
