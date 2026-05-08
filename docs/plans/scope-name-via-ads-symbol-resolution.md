@@ -55,15 +55,21 @@ Resolver flow on every incoming log:
 LogRecord.scope_name (was = entry.logger)
    ↓
 ScopeResolver.resolve(net_id, entry.logger)
-   ├─ cache hit → return cached value (positive or negative)
-   └─ cache miss → schedule async ADS lookup
+   ├─ cache hit (current OCC)  → return cached value
+   └─ cache miss               → schedule async ADS lookup
         ├─ strip last segment (= the FB_Log var, e.g. `.fbLog`)
         ├─ SYM_INFOBYNAMEEX(net_id, parent_path)
         ├─ Some(type_name) → cache (entry.logger → type_name)
         └─ None / not-a-symbol → cache (entry.logger → entry.logger)
-                                  i.e. negative cache, treat as
-                                  custom name, never re-query
+                                  (raw fallback, valid until next
+                                   OnlineChangeCnt bump)
 ```
+
+The cache is wiped for a `net_id` whenever the `OnlineChangeCnt`
+on that PLC's registration changes — see "Cache semantics" below.
+Custom names (e.g. `FB_Log('Drives.Motor')`) hit the negative-cache
+path and stay raw within one app version; after a PLC code change
+they get re-resolved cleanly.
 
 Records arriving before the first cache fill emit with the raw
 `entry.logger` (= the namespace). After ~1 ADS round-trip, all
@@ -75,11 +81,29 @@ subsequent records from that namespace get the resolved type.
 - **Value**: `Either(type_name, namespace_string_unchanged)`. Both
   outcomes cached identically; the consumer doesn't care whether
   the resolver hit or missed in ADS.
-- **Invalidation**: when `RegistrationMessage.online_change_count`
-  bumps for a `net_id`, drop all entries for that net_id —
-  symbol layout may have changed.
-- **TTL**: 1 h on the cache map itself so long-silent net_ids
-  don't keep stale entries forever.
+- **Invalidation**: drop the entire cache for a `net_id` whenever
+  `RegistrationMessage.online_change_count` bumps for that net_id.
+  This covers:
+  - Custom names that became real symbols after a PLC code change
+    (e.g. user added an `FB_Motor` whose instance path matches a
+    string they previously hardcoded).
+  - Symbols renamed or removed by an online change.
+  - New FBs added — they were absent on the previous fetch and
+    would otherwise stay absent forever.
+
+  Both positive (resolved type) and negative (raw fallback) entries
+  are cleared together. Consequence: the first record per namespace
+  after every OCC bump triggers a fresh ADS lookup. The cost is one
+  round-trip per first-record-per-namespace per app version, which
+  is negligible compared to the alternative of stale type names
+  silently surviving across PLC updates.
+- **TTL**: 1 h on the cache map itself as a backstop so long-silent
+  net_ids don't keep stale entries forever even if no OCC bump
+  arrives.
+
+The OCC-driven invalidation is mandatory; the TTL is just a safety
+net for the case where a PLC restarts without bumping OCC (rare,
+but possible).
 
 ### Failure modes
 
