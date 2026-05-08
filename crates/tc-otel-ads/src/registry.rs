@@ -27,6 +27,27 @@ impl TaskRegistry {
         self.metadata.read().unwrap().get(key).cloned()
     }
 
+    /// Partial lookup by `(ams_net_id, task_index)` only — used by
+    /// metric paths that know the task index but not the per-frame
+    /// `ams_source_port` (e.g. `PlcSystemMetricsCollector` derives
+    /// metrics from cycle-time stats, `metric_aggregate_to_entries`
+    /// from FB_Metrics aggregate batches). Returns the first matching
+    /// entry; ambiguity is unlikely because one PLC task =
+    /// one ams_source_port. The matching key is returned so callers
+    /// can also backfill `ams_source_port` on the metric.
+    pub fn lookup_by_task(
+        &self,
+        ams_net_id: &str,
+        task_index: u8,
+    ) -> Option<(RegistrationKey, TaskMetadata)> {
+        self.metadata
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.ams_net_id == ams_net_id && k.task_index == task_index)
+            .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
     /// Get the number of registered tasks
     pub fn len(&self) -> usize {
         self.metadata.read().unwrap().len()

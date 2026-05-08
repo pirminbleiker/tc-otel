@@ -21,6 +21,69 @@ use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
 use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
+/// Backfill metric resource fields from the cross-pillar `TaskRegistry`
+/// so PLC-derived metrics carry the same `service.name` /
+/// `service.instance.id` / `plc.ams_app_port` resource attributes the
+/// log and trace paths emit.
+///
+/// Three metric paths feed the bridge with partial info:
+/// 1. `batch_to_metrics` (`tc.task.*` cycle/exec gauges) — has
+///    `ams_source_port` (task port, e.g. 350) and `task_name`, but no
+///    `task_index`, `app_name`, `project_name`, or `app_port`.
+/// 2. `metric_aggregate_to_entries` (`demo.sine` etc., FB_Metrics
+///    aggregate) — has `task_index`, `ams_net_id`, no `ams_source_port`.
+/// 3. `PlcSystemMetricsCollector` (`plc.cpu.estimated_load`,
+///    `plc.task.cycle_time.*`) — has `task_index`, `ams_net_id`, no
+///    `ams_source_port` either.
+///
+/// All three need the same backfill: find the registry entry for
+/// `(net_id, task_index)` (partial lookup, since `ams_source_port`
+/// may be 0 here) and stamp `app_port`, `app_name`, `project_name`,
+/// and `ams_source_port` if any are still empty / zero. Lookups are
+/// O(n) over registered tasks (small N, microseconds).
+fn backfill_metrics_from_registry(
+    registry: &Arc<tc_otel_ads::registry::TaskRegistry>,
+    metrics: &mut [MetricEntry],
+) {
+    for m in metrics.iter_mut() {
+        if m.ams_net_id.is_empty() {
+            continue;
+        }
+        // Try exact key first (cheaper, hits when ams_source_port known).
+        let exact = if m.ams_source_port != 0 {
+            registry.lookup(&tc_otel_ads::protocol::RegistrationKey {
+                ams_net_id: m.ams_net_id.clone(),
+                ams_source_port: m.ams_source_port,
+                task_index: m.task_index as u8,
+            })
+        } else {
+            None
+        };
+        let (key_port, meta) = if let Some(meta) = exact {
+            (m.ams_source_port, meta)
+        } else if let Some((k, meta)) = registry.lookup_by_task(&m.ams_net_id, m.task_index as u8) {
+            (k.ams_source_port, meta)
+        } else {
+            continue;
+        };
+        if m.ams_app_port == 0 {
+            m.ams_app_port = meta.app_port;
+        }
+        if m.app_name.is_empty() {
+            m.app_name = meta.app_name;
+        }
+        if m.project_name.is_empty() {
+            m.project_name = meta.project_name;
+        }
+        if m.ams_source_port == 0 {
+            m.ams_source_port = key_port;
+        }
+        if m.task_name.is_empty() {
+            m.task_name = meta.task_name;
+        }
+    }
+}
+
 /// Main TC-OTel Service
 pub struct TcOtelService {
     settings: AppSettings,
@@ -343,27 +406,7 @@ impl TcOtelService {
                         let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                             net_id, ev, &empty_names,
                         );
-                        // Stamp `ams_app_port` from the cross-pillar registry
-                        // — the diag-bridge knows `ams_source_port` (task
-                        // port like 350) but `service.instance.id` needs
-                        // the runtime's app port (851). Same key shape the
-                        // log path uses.
-                        for m in &mut metrics {
-                            if m.ams_app_port == 0
-                                && !m.ams_net_id.is_empty()
-                                && m.ams_source_port != 0
-                            {
-                                if let Some(meta) = bridge_registry.lookup(
-                                    &tc_otel_ads::protocol::RegistrationKey {
-                                        ams_net_id: m.ams_net_id.clone(),
-                                        ams_source_port: m.ams_source_port,
-                                        task_index: m.task_index as u8,
-                                    },
-                                ) {
-                                    m.ams_app_port = meta.app_port;
-                                }
-                            }
-                        }
+                        backfill_metrics_from_registry(&bridge_registry, &mut metrics);
                         if let Some(ref tx) = bridge_metric_tx {
                             for m in metrics {
                                 if tx.try_send(m).is_err() {
@@ -433,22 +476,7 @@ impl TcOtelService {
                                 let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                                     net_id, ev, &names,
                                 );
-                                for m in &mut metrics {
-                                    if m.ams_app_port == 0
-                                        && !m.ams_net_id.is_empty()
-                                        && m.ams_source_port != 0
-                                    {
-                                        if let Some(meta) = poller_registry.lookup(
-                                            &tc_otel_ads::protocol::RegistrationKey {
-                                                ams_net_id: m.ams_net_id.clone(),
-                                                ams_source_port: m.ams_source_port,
-                                                task_index: m.task_index as u8,
-                                            },
-                                        ) {
-                                            m.ams_app_port = meta.app_port;
-                                        }
-                                    }
-                                }
+                                backfill_metrics_from_registry(&poller_registry, &mut metrics);
                                 if let Some(ref tx) = bridge_metric_tx {
                                     for m in metrics {
                                         if tx.try_send(m).is_err() {
@@ -685,6 +713,7 @@ impl TcOtelService {
                     self.settings.service.name.clone(),
                 );
                 let m_tx = m_tx.clone();
+                let sys_registry = task_registry.clone();
                 let mut shutdown_rx_sys = shutdown_tx.subscribe();
                 let collection_interval =
                     Duration::from_millis(self.settings.metrics.export_flush_interval_ms);
@@ -693,7 +722,9 @@ impl TcOtelService {
                     loop {
                         tokio::select! {
                             _ = interval.tick() => {
-                                for entry in collector.collect() {
+                                let mut batch: Vec<_> = collector.collect();
+                                backfill_metrics_from_registry(&sys_registry, &mut batch);
+                                for entry in batch {
                                     let _ = m_tx.send(entry).await;
                                 }
                             }
