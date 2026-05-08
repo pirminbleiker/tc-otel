@@ -69,16 +69,22 @@ fn backfill_metrics_from_registry(
         if m.ams_app_port == 0 {
             m.ams_app_port = meta.app_port;
         }
-        if m.app_name.is_empty() {
-            m.app_name = meta.app_name;
-        }
-        if m.project_name.is_empty() {
-            m.project_name = meta.project_name;
-        }
         if m.ams_source_port == 0 {
             m.ams_source_port = key_port;
         }
-        if m.task_name.is_empty() {
+        // Registry values for app_name / project_name / task_name
+        // override any pre-stamped fallback (e.g.
+        // `PlcSystemMetricsCollector::gauge` proactively writes the
+        // configured `AppSettings::service.name` into `project_name`
+        // as a fallback; once we have a real registration that should
+        // win so all three pillars line up on the same `service.name`).
+        if !meta.app_name.is_empty() {
+            m.app_name = meta.app_name;
+        }
+        if !meta.project_name.is_empty() {
+            m.project_name = meta.project_name;
+        }
+        if !meta.task_name.is_empty() {
             m.task_name = meta.task_name;
         }
     }
