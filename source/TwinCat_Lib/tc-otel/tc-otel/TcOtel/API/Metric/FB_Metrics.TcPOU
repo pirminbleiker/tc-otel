@@ -1040,36 +1040,18 @@ METHOD FB_exit : BOOL
 VAR_INPUT
     bInCopyCode : BOOL;
 END_VAR
-VAR
-    refSender : REFERENCE TO FB_TcOtelTaskMetrics;
-END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[IF bInCopyCode THEN
-    FB_exit := TRUE;
-    RETURN;
-END_IF
+        <ST><![CDATA[(* Cold Reset / RT shutdown destroys FB instances in undefined order.
+   PRG_TaskLog.TaskMetrics may be torn down before us; calling
+   Dequeue on a dangling reference segfaults inside the AuxTask
+   (__ISVALIDREF catches NULL only, not dangling-after-free). Buffered
+   samples on shutdown are lost — acceptable, no consumer remains
+   after the Reset.
 
-(* Online change / FB destruction: the sender holds POINTER TO FB_Metrics
-   in its dispatch ring (and maybe pInFlight). If we die before it notifies
-   us back, those become stale pointers. De-register first so the sender
-   can't read our frame after we're gone, then flush any last samples. *)
-IF _bInitialized THEN
-    refSender REF= PRG_TaskLog.TaskMetrics;
-    IF __ISVALIDREF(refSender) THEN
-        refSender.Dequeue(THIS);
-    END_IF
-
-    (* Mark pending cleared so _DoFlush can still produce a final frame —
-       but that frame will immediately bail on ring-full if the sender is
-       already backlogged. Acceptable for teardown. *)
-    _bPending := FALSE;
-
-    IF _nSampleCount > 0 THEN
-        _DoFlush();
-    END_IF
-END_IF
-
+   Online change (bInCopyCode = TRUE) preserves both old and new
+   instances in memory; flushing here would double-emit if the new
+   instance also flushes. *)
 FB_exit := TRUE;
 ]]></ST>
       </Implementation>

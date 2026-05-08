@@ -313,29 +313,23 @@ METHOD FB_exit : BOOL
 VAR_INPUT
     bInCopyCode : BOOL;
 END_VAR
-VAR
-    pCur  : REFERENCE TO FB_Span;
-    pNext : REFERENCE TO FB_Span;
-END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-IF bInCopyCode THEN
-    FB_exit := TRUE;
-    RETURN;
-END_IF;
+(* Cold Reset / RT shutdown destroys all FB instances in undefined
+   order. The _pInnermost chain points at FB_Span instances whose
+   memory may already be freed by the time we run; calling
+   _GetOuterSpan / MarkError / End on dangling references segfaults
+   inside the AuxTask. __ISVALIDREF only checks for NULL, not
+   dangling-after-free, so we cannot guard the walk.
 
-pCur REF= _pInnermost;
-WHILE __ISVALIDREF(pCur) DO
-    (* End() modifies the tracer's stack (pops pCur). Capture the
-       outer reference BEFORE calling End so we can iterate safely. *)
-    pNext REF= pCur._GetOuterSpan();
-    pCur.MarkError('FB_TcOtelTracer destroyed while span open');
-    pCur.End();
-    pCur REF= pNext;
-END_WHILE;
-_pInnermost REF= 0;
+   Skip the safety-net walk on real disposal (bInCopyCode = FALSE):
+   any open spans time out via tc-otel's TTL (10 s default), which is
+   fine because no consumer remains after a Reset anyway.
 
+   Online change (bInCopyCode = TRUE) preserves both FB instances in
+   memory until the new ones are wired in, so flushing here would
+   double-emit; we already returned early. *)
 FB_exit := TRUE;
 ]]></ST>
       </Implementation>
