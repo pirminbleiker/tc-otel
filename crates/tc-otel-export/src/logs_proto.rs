@@ -106,7 +106,6 @@ fn build_log_record(record: &LogRecord) -> ProtoLogRecord {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use prost::Message as _;
     use std::collections::HashMap;
 
     fn ts() -> chrono::DateTime<Utc> {

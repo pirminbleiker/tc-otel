@@ -116,7 +116,6 @@ fn build_span(record: &TraceRecord) -> Span {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use prost::Message as _;
     use std::collections::HashMap;
     use tc_otel_core::TraceEventRecord;
 

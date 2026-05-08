@@ -3,7 +3,7 @@
 //! Hex-decoding for trace/span IDs, mapping from `serde_json::Value`
 //! attributes onto OTLP `AnyValue`s, and resource construction. The
 //! mapping rules mirror what the OTLP-JSON path does in
-//! [`crate::exporter::build_otel_*_payload`] so both wire formats
+//! `crate::exporter::build_otel_*_payload` so both wire formats
 //! emit semantically identical batches.
 
 use opentelemetry_proto::tonic::common::v1::{
@@ -228,9 +228,10 @@ mod tests {
 
     #[test]
     fn json_value_float() {
-        let v = json_to_any_value(&json!(3.14)).unwrap();
+        // 2.5 chosen to avoid clippy::approx_constant (PI/E/etc.)
+        let v = json_to_any_value(&json!(2.5)).unwrap();
         match v.value.unwrap() {
-            AnyValueOneof::DoubleValue(f) => assert!((f - 3.14).abs() < 1e-9),
+            AnyValueOneof::DoubleValue(f) => assert!((f - 2.5).abs() < 1e-9),
             other => panic!("expected DoubleValue, got {other:?}"),
         }
     }

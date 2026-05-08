@@ -161,10 +161,12 @@ impl LogDispatcher {
 
         let build_log_exporter =
             |endpoint: &str, batch_size: usize, format: tc_otel_core::WireFormat| -> OtelExporter {
-                let mut cfg = tc_otel_export::exporter::ExportConfig::default();
-                cfg.endpoint = endpoint.to_string();
-                cfg.batch_size = batch_size;
-                cfg.format = format;
+                let cfg = tc_otel_export::exporter::ExportConfig {
+                    endpoint: endpoint.to_string(),
+                    batch_size,
+                    format,
+                    ..Default::default()
+                };
                 OtelExporter::with_config(cfg)
             };
 
@@ -418,12 +420,6 @@ impl MetricDispatcher {
         })
     }
 
-    /// Read-only accessor used by the service layer to consult the same
-    /// hostname when wiring the SpanDispatcher.
-    pub fn host_name(&self) -> Arc<String> {
-        self.host_name.clone()
-    }
-
     /// Resolve the metrics export endpoint from config.
     /// Uses metrics.export_endpoint if set, otherwise derives from the main
     /// export endpoint by replacing /v1/logs with /v1/metrics.
@@ -452,13 +448,14 @@ impl MetricDispatcher {
     /// Build the runtime `tc_otel_export::ExportConfig` for the metrics
     /// pipeline, picking up endpoint + batch + format from app settings.
     fn build_export_config(settings: &AppSettings) -> tc_otel_export::exporter::ExportConfig {
-        let mut cfg = tc_otel_export::exporter::ExportConfig::default();
-        cfg.endpoint = Self::resolve_endpoint(settings);
-        cfg.batch_size = settings.metrics.export_batch_size;
-        cfg.max_retries = settings.export.max_retries;
-        cfg.timeout_secs = settings.export.timeout_secs;
-        cfg.format = Self::resolve_format(settings);
-        cfg
+        tc_otel_export::exporter::ExportConfig {
+            endpoint: Self::resolve_endpoint(settings),
+            batch_size: settings.metrics.export_batch_size,
+            max_retries: settings.export.max_retries,
+            timeout_secs: settings.export.timeout_secs,
+            format: Self::resolve_format(settings),
+            ..Default::default()
+        }
     }
 
     /// Dispatch a metric entry - applies custom-metric mapping, converts to

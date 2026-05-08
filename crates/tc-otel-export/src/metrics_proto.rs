@@ -189,7 +189,6 @@ fn build_exemplars(record: &MetricRecord, ts_unix_nano: u64) -> Vec<Exemplar> {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use prost::Message as _;
     use std::collections::HashMap;
 
     fn ts() -> chrono::DateTime<Utc> {

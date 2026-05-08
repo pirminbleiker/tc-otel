@@ -30,14 +30,16 @@ impl TraceDispatcher {
             .export
             .format
             .unwrap_or(settings.export.format);
-        let mut export_cfg = tc_otel_export::exporter::ExportConfig::default();
-        export_cfg.batch_size = batch_size;
-        export_cfg.max_retries = settings.export.max_retries;
-        export_cfg.timeout_secs = settings.export.timeout_secs;
-        export_cfg.format = format;
-        export_cfg.endpoint = endpoint
-            .clone()
-            .unwrap_or_else(|| "http://localhost:4318/v1/traces".to_string());
+        let export_cfg = tc_otel_export::exporter::ExportConfig {
+            batch_size,
+            max_retries: settings.export.max_retries,
+            timeout_secs: settings.export.timeout_secs,
+            format,
+            endpoint: endpoint
+                .clone()
+                .unwrap_or_else(|| "http://localhost:4318/v1/traces".to_string()),
+            ..Default::default()
+        };
         let exporter = OtelExporter::with_config(export_cfg);
 
         tokio::spawn(async move {
