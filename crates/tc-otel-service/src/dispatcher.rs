@@ -13,6 +13,8 @@ use tc_otel_core::{
 use tc_otel_export::OtelExporter;
 use tokio::sync::{mpsc, watch};
 
+use crate::scope_resolver::ScopeResolver;
+
 /// Log dispatcher - converts LogEntries and sends them to a batched export worker
 #[derive(Clone)]
 pub struct LogDispatcher {
@@ -26,12 +28,37 @@ pub struct LogDispatcher {
     /// when an inbound LogEntry has no project_name set (early frames
     /// before the registration message arrives).
     default_service_name: Arc<String>,
+    /// Resolves `entry.logger` → `LogRecord.scope_name` via the
+    /// PLC's symbol table (Phase 1B will plug in the real ADS
+    /// lookup; Phase 1A ships a no-op resolver that just passes the
+    /// raw namespace through, so behaviour is unchanged until the
+    /// lookup is wired). Service.rs invalidates per-net_id cache on
+    /// every fresh registration.
+    scope_resolver: ScopeResolver,
 }
 
 impl LogDispatcher {
+    /// Convenience constructor that defaults the scope resolver to a
+    /// no-op. Used by the existing dispatcher unit-tests; the
+    /// service-layer wires `with_scope_resolver` instead so it can
+    /// share one resolver across pillars in Phase 1B.
+    #[allow(dead_code)]
     pub async fn new(
         settings: &AppSettings,
         config_rx: Option<watch::Receiver<AppSettings>>,
+    ) -> Result<Self> {
+        Self::with_scope_resolver(settings, config_rx, ScopeResolver::noop()).await
+    }
+
+    /// Build a dispatcher with an explicit `ScopeResolver`. Service.rs
+    /// uses this overload to share one resolver instance with the
+    /// span / metric paths and to invalidate the cache on each
+    /// registration message — the default `LogDispatcher::new`
+    /// constructs a no-op resolver suitable for tests.
+    pub async fn with_scope_resolver(
+        settings: &AppSettings,
+        config_rx: Option<watch::Receiver<AppSettings>>,
+        scope_resolver: ScopeResolver,
     ) -> Result<Self> {
         // ENV override for endpoint, otherwise use config
         let endpoint = std::env::var("TCOTEL_EXPORT_ENDPOINT")
@@ -70,6 +97,7 @@ impl LogDispatcher {
             export_tx,
             host_name,
             default_service_name,
+            scope_resolver,
         })
     }
 
@@ -98,7 +126,24 @@ impl LogDispatcher {
             entry.message.clone()
         };
 
+        // Resolve `scope.name` from the PLC's symbol table. Cache-first;
+        // only the first record per `(net_id, namespace)` per app
+        // version touches ADS. The OCC observation drops the cache
+        // for this net_id whenever the PLC's `OnlineChangeCnt` bumps,
+        // so post-update records re-resolve cleanly. Net_id and OCC
+        // captured before `entry` moves into `from_log_entry`.
+        let net_id = entry.ams_net_id.clone();
+        let occ = entry.online_change_count;
+        if !net_id.is_empty() {
+            self.scope_resolver.observe_occ(&net_id, occ).await;
+        }
         let mut record = LogRecord::from_log_entry(entry);
+        if !net_id.is_empty() && !record.scope_name.is_empty() {
+            record.scope_name = self
+                .scope_resolver
+                .resolve(&net_id, &record.scope_name)
+                .await;
+        }
         // Preserve the trace suffix that from_log_entry appended, if any,
         // so Grafana's derivedFields regex still finds trace_id in the body.
         let body = if !record.trace_id.is_empty() {

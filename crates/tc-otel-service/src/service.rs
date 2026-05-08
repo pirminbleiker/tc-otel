@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
+use crate::scope_resolver::ScopeResolver;
 use crate::span_dispatcher::SpanDispatcher;
 use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
@@ -157,8 +158,18 @@ impl TcOtelService {
             (None, None)
         };
 
+        // Build a process-wide ScopeResolver. Phase 1A wires only the
+        // log-side; Phase 1B will swap the no-op lookup for an ADS-
+        // backed implementation, no signature changes required.
+        let scope_resolver = ScopeResolver::noop();
+
         // Create log dispatcher with config watch receiver for hot-reload
-        let log_dispatcher = LogDispatcher::new(&self.settings, config_rx.clone()).await?;
+        let log_dispatcher = LogDispatcher::with_scope_resolver(
+            &self.settings,
+            config_rx.clone(),
+            scope_resolver.clone(),
+        )
+        .await?;
 
         // Create metric dispatcher and channel (if metrics export is enabled)
         let metrics_export_enabled = self.settings.metrics.export_enabled;

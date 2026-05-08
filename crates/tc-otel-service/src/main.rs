@@ -14,6 +14,7 @@ mod config_watcher;
 pub mod cycle_time;
 mod diagnostics_bridge;
 mod dispatcher;
+mod scope_resolver;
 mod service;
 mod span_dispatcher;
 pub mod system_metrics;
