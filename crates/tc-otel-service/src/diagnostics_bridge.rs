@@ -334,6 +334,7 @@ fn metric_aggregate_to_entries(
         entry.timestamp = dc_time_to_datetime(ts_ns);
         entry.ams_net_id = net_id.to_string();
         entry.task_index = task_index as i32;
+        entry.source = local_source_address().to_string();
 
         entry.attributes.insert(
             "metric_id".into(),
@@ -391,6 +392,7 @@ fn build_aggregate_entry(
     entry.timestamp = dc_time_to_datetime(ts_ns);
     entry.ams_net_id = net_id.to_string();
     entry.task_index = task_index as i32;
+    entry.source = local_source_address().to_string();
 
     entry.attributes.insert(
         "metric_id".into(),
