@@ -649,6 +649,9 @@ fn metric_batch_to_entries(
         entry.unit = desc.unit.clone();
         entry.timestamp = sample_ts;
         entry.ams_net_id = net_id.to_string();
+        // PLC-published custom metrics (FB_Metrics aggregate) — same
+        // local-router origin as the diag-bridge wrappers.
+        entry.source = local_source_address().to_string();
 
         // Add attributes from descriptor.
         for (key, val) in &desc.attributes {
