@@ -481,7 +481,7 @@ Rename mismapped keys in `crates/tc-otel-core/src/models.rs`:
   (currently `plc-<netid>`) to a process-wide cached
   `gethostname::gethostname()`. Wire that hostname through at
   `TcOtelService::new`; pass into the dispatchers; never let the
-  per-record `entry.hostname` ovverride it. Drop the
+  per-record `entry.hostname` override it. Drop the
   `format!("plc-{}", net_id)` synthesis in
   `crates/tc-otel-ads/src/listener.rs:179` and
   `crates/tc-otel-ads/src/router.rs:238` — leave `entry.hostname`

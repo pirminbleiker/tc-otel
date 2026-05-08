@@ -212,7 +212,7 @@ outbound TCP socket):
    - all other cmds: append to `queue[port - PORT_BASE]`, matched by
      `invokeId` via `GetPending()` for request/response correlation.
 4. Unknown `cmdId` → `ReceiveJunk()` drains the bytes and logs
-   *"Unkown AMS command id"*.
+   *"Unknown AMS command id"*.
 
 **Loopback is not in-process.** Even when PLC and tc-otel run on the
 same physical box, every frame still travels:
