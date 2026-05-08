@@ -16,7 +16,7 @@
 
 use crate::proto_common::{
     build_attributes, build_resource, datetime_to_unix_nano, decode_span_id_hex,
-    decode_trace_id_hex,
+    decode_trace_id_hex, group_records_by_resource,
 };
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
@@ -36,6 +36,13 @@ pub fn build(records: &[LogRecord]) -> Vec<u8> {
 }
 
 /// Build the OTLP request without serialising.
+///
+/// Records are bucketed by resource attribute set, producing one
+/// `ResourceLogs` block per distinct resource. The scope attributes
+/// (e.g. `logger.name`) of the first record in each bucket are attached
+/// to that bucket's `InstrumentationScope`; if logs in a batch span
+/// multiple loggers, downstream backends still disambiguate via the
+/// per-record `attributes`.
 pub fn build_request(records: &[LogRecord]) -> ExportLogsServiceRequest {
     if records.is_empty() {
         return ExportLogsServiceRequest {
@@ -43,31 +50,29 @@ pub fn build_request(records: &[LogRecord]) -> ExportLogsServiceRequest {
         };
     }
 
-    let resource = build_resource(&records[0].resource_attributes);
-    // tc-otel populates scope_attributes (e.g. logger.name) per record;
-    // we attach the first record's scope to the single ScopeLogs block.
-    // If logs in a batch span multiple loggers, downstream backends
-    // already disambiguate via the per-record `attributes`.
-    let scope = InstrumentationScope {
-        name: SCOPE_NAME.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        attributes: build_attributes(&records[0].scope_attributes),
-        dropped_attributes_count: 0,
-    };
-
-    let log_records = records.iter().map(build_log_record).collect();
-
-    ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            resource: Some(resource),
-            scope_logs: vec![ScopeLogs {
-                scope: Some(scope),
-                log_records,
+    let resource_logs = group_records_by_resource(records, |r| &r.resource_attributes)
+        .into_iter()
+        .map(|(resource_attrs, bucket)| {
+            let scope = InstrumentationScope {
+                name: SCOPE_NAME.to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                attributes: build_attributes(&bucket[0].scope_attributes),
+                dropped_attributes_count: 0,
+            };
+            let log_records = bucket.into_iter().map(build_log_record).collect();
+            ResourceLogs {
+                resource: Some(build_resource(resource_attrs)),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(scope),
+                    log_records,
+                    schema_url: String::new(),
+                }],
                 schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
-    }
+            }
+        })
+        .collect();
+
+    ExportLogsServiceRequest { resource_logs }
 }
 
 fn build_log_record(record: &LogRecord) -> ProtoLogRecord {
@@ -208,5 +213,74 @@ mod tests {
         let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
         let log = &decoded.resource_logs[0].scope_logs[0].log_records[0];
         assert!(log.body.is_none());
+    }
+
+    #[test]
+    fn multi_resource_batch_emits_separate_blocks() {
+        let mut a = log_record();
+        a.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("172.28.41.37.1.1"),
+        );
+        a.body = serde_json::json!("from PLC A");
+        let mut b = log_record();
+        b.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("10.0.0.1.1.1"),
+        );
+        b.body = serde_json::json!("from PLC B");
+
+        let bytes = build(&[a, b]);
+        let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(
+            decoded.resource_logs.len(),
+            2,
+            "expected one ResourceLogs block per distinct resource"
+        );
+
+        let mut by_net_id: HashMap<String, Vec<String>> = HashMap::new();
+        for rl in &decoded.resource_logs {
+            let res = rl.resource.as_ref().unwrap();
+            let net_id = res
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "plc.ams_net_id")
+                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                    AnyValueOneof::StringValue(s) => s.clone(),
+                    _ => panic!("expected StringValue"),
+                })
+                .unwrap();
+            let bodies: Vec<String> = rl.scope_logs[0]
+                .log_records
+                .iter()
+                .map(|lr| match lr.body.as_ref().unwrap().value.as_ref().unwrap() {
+                    AnyValueOneof::StringValue(s) => s.clone(),
+                    _ => panic!("expected StringValue body"),
+                })
+                .collect();
+            by_net_id.insert(net_id, bodies);
+        }
+        assert_eq!(
+            by_net_id.remove("172.28.41.37.1.1").unwrap(),
+            vec!["from PLC A"]
+        );
+        assert_eq!(
+            by_net_id.remove("10.0.0.1.1.1").unwrap(),
+            vec!["from PLC B"]
+        );
+    }
+
+    #[test]
+    fn single_resource_batch_emits_one_block() {
+        let r1 = log_record();
+        let mut r2 = log_record();
+        r2.body = serde_json::json!("second log");
+        let bytes = build(&[r1, r2]);
+        let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(decoded.resource_logs.len(), 1);
+        assert_eq!(
+            decoded.resource_logs[0].scope_logs[0].log_records.len(),
+            2
+        );
     }
 }

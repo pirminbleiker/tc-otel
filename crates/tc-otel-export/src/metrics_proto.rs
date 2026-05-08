@@ -25,7 +25,7 @@
 
 use crate::proto_common::{
     build_attributes, build_resource, datetime_to_unix_nano, decode_span_id_hex,
-    decode_trace_id_hex,
+    decode_trace_id_hex, group_records_by_resource,
 };
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
@@ -51,6 +51,14 @@ pub fn build(records: &[MetricRecord]) -> Vec<u8> {
 
 /// Build the OTLP `ExportMetricsServiceRequest` without serialising it.
 /// Useful for round-trip tests that want to inspect the structure.
+///
+/// Records are bucketed by resource attribute set, producing one
+/// `ResourceMetrics` block per distinct resource. Single-resource
+/// batches (the common case for one PLC over local-router) collapse to
+/// a single block, identical to the pre-grouping behaviour. Multi-PLC
+/// batches (e.g. via MQTT broker aggregation) preserve per-resource
+/// fidelity instead of silently merging into the first record's
+/// resource.
 pub fn build_request(records: &[MetricRecord]) -> ExportMetricsServiceRequest {
     if records.is_empty() {
         return ExportMetricsServiceRequest {
@@ -58,12 +66,6 @@ pub fn build_request(records: &[MetricRecord]) -> ExportMetricsServiceRequest {
         };
     }
 
-    // Group all records under one ResourceMetrics block. Every record
-    // emitted by tc-otel for one process carries identical resource
-    // attributes (service.name, host.name, plc.ams_net_id …), so a
-    // single block is correct and far smaller on the wire than a
-    // per-record block.
-    let resource = build_resource(&records[0].resource_attributes);
     let scope = InstrumentationScope {
         name: SCOPE_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -71,19 +73,23 @@ pub fn build_request(records: &[MetricRecord]) -> ExportMetricsServiceRequest {
         dropped_attributes_count: 0,
     };
 
-    let metrics = records.iter().map(build_metric).collect();
-
-    ExportMetricsServiceRequest {
-        resource_metrics: vec![ResourceMetrics {
-            resource: Some(resource),
-            scope_metrics: vec![ScopeMetrics {
-                scope: Some(scope),
-                metrics,
+    let resource_metrics = group_records_by_resource(records, |r| &r.resource_attributes)
+        .into_iter()
+        .map(|(resource_attrs, bucket)| {
+            let metrics = bucket.into_iter().map(build_metric).collect();
+            ResourceMetrics {
+                resource: Some(build_resource(resource_attrs)),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(scope.clone()),
+                    metrics,
+                    schema_url: String::new(),
+                }],
                 schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
-    }
+            }
+        })
+        .collect();
+
+    ExportMetricsServiceRequest { resource_metrics }
 }
 
 fn build_metric(record: &MetricRecord) -> Metric {
@@ -383,5 +389,84 @@ mod tests {
         // 2026-05-07 12:00:00 UTC in nanos
         let expected = ts().timestamp_nanos_opt().unwrap() as u64;
         assert_eq!(dp.time_unix_nano, expected);
+    }
+
+    #[test]
+    fn multi_resource_batch_emits_separate_blocks() {
+        // Three records: two for PLC A, one for PLC B. The encoder must
+        // emit two ResourceMetrics blocks, each carrying the right
+        // metric.
+        let mut a1 = gauge_record("axis.position", 1.0);
+        a1.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("172.28.41.37.1.1"),
+        );
+        let mut a2 = gauge_record("axis.position", 2.0);
+        a2.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("172.28.41.37.1.1"),
+        );
+        let mut b = gauge_record("axis.position", 3.0);
+        b.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("10.0.0.1.1.1"),
+        );
+
+        let bytes = build(&[a1, a2, b]);
+        let decoded = ExportMetricsServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(
+            decoded.resource_metrics.len(),
+            2,
+            "expected one ResourceMetrics block per distinct resource"
+        );
+
+        // Map net_id -> values; bucket order is fingerprint-sorted but
+        // we don't depend on which sorts first.
+        let mut by_net_id: HashMap<String, Vec<f64>> = HashMap::new();
+        for rm in &decoded.resource_metrics {
+            let res = rm.resource.as_ref().unwrap();
+            let net_id = res
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "plc.ams_net_id")
+                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
+                        s.clone()
+                    }
+                    _ => panic!("expected StringValue"),
+                })
+                .unwrap();
+            let values: Vec<f64> = rm.scope_metrics[0]
+                .metrics
+                .iter()
+                .map(|m| match m.data.as_ref().unwrap() {
+                    metric::Data::Gauge(g) => match g.data_points[0].value.unwrap() {
+                        number_data_point::Value::AsDouble(d) => d,
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                })
+                .collect();
+            by_net_id.insert(net_id, values);
+        }
+
+        let mut a = by_net_id.remove("172.28.41.37.1.1").unwrap();
+        a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert_eq!(a, vec![1.0, 2.0]);
+        assert_eq!(by_net_id.remove("10.0.0.1.1.1").unwrap(), vec![3.0]);
+    }
+
+    #[test]
+    fn single_resource_batch_emits_one_block() {
+        // Same resource across records → one ResourceMetrics block, the
+        // pre-grouping behaviour. This guards against accidental
+        // fragmentation if the fingerprinting drifts.
+        let r1 = gauge_record("a", 1.0);
+        let r2 = gauge_record("b", 2.0);
+        let r3 = gauge_record("c", 3.0);
+        let bytes = build(&[r1, r2, r3]);
+        let decoded = ExportMetricsServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(decoded.resource_metrics.len(), 1);
+        assert_eq!(decoded.resource_metrics[0].scope_metrics[0].metrics.len(), 3);
     }
 }

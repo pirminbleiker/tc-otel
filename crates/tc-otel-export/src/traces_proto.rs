@@ -20,7 +20,7 @@
 
 use crate::proto_common::{
     build_attributes, build_resource, datetime_to_unix_nano, decode_span_id_hex,
-    decode_trace_id_hex,
+    decode_trace_id_hex, group_records_by_resource,
 };
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
@@ -39,6 +39,12 @@ pub fn build(records: &[TraceRecord]) -> Vec<u8> {
 
 /// Build the OTLP request without serialising — used by tests for
 /// roundtrip inspection.
+///
+/// Records are bucketed by resource attribute set, producing one
+/// `ResourceSpans` block per distinct resource. Single-resource
+/// batches collapse to a single block; multi-PLC batches preserve
+/// per-resource fidelity instead of merging into the first record's
+/// resource.
 pub fn build_request(records: &[TraceRecord]) -> ExportTraceServiceRequest {
     if records.is_empty() {
         return ExportTraceServiceRequest {
@@ -46,7 +52,6 @@ pub fn build_request(records: &[TraceRecord]) -> ExportTraceServiceRequest {
         };
     }
 
-    let resource = build_resource(&records[0].resource_attributes);
     let scope = InstrumentationScope {
         name: SCOPE_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -54,19 +59,23 @@ pub fn build_request(records: &[TraceRecord]) -> ExportTraceServiceRequest {
         dropped_attributes_count: 0,
     };
 
-    let spans = records.iter().map(build_span).collect();
-
-    ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: Some(resource),
-            scope_spans: vec![ScopeSpans {
-                scope: Some(scope),
-                spans,
+    let resource_spans = group_records_by_resource(records, |r| &r.resource_attributes)
+        .into_iter()
+        .map(|(resource_attrs, bucket)| {
+            let spans = bucket.into_iter().map(build_span).collect();
+            ResourceSpans {
+                resource: Some(build_resource(resource_attrs)),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(scope.clone()),
+                    spans,
+                    schema_url: String::new(),
+                }],
                 schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
-    }
+            }
+        })
+        .collect();
+
+    ExportTraceServiceRequest { resource_spans }
 }
 
 fn build_span(record: &TraceRecord) -> Span {
@@ -218,5 +227,67 @@ mod tests {
             .unwrap();
         assert_eq!(status.code, 2);
         assert_eq!(status.message, "axis stalled");
+    }
+
+    #[test]
+    fn multi_resource_batch_emits_separate_blocks() {
+        let mut a = span_record();
+        a.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("172.28.41.37.1.1"),
+        );
+        a.name = "axis.move.a".to_string();
+        let mut b = span_record();
+        b.resource_attributes.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::json!("10.0.0.1.1.1"),
+        );
+        b.name = "axis.move.b".to_string();
+
+        let bytes = build(&[a, b]);
+        let decoded = ExportTraceServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(
+            decoded.resource_spans.len(),
+            2,
+            "expected one ResourceSpans block per distinct resource"
+        );
+
+        let mut by_net_id: HashMap<String, Vec<String>> = HashMap::new();
+        for rs in &decoded.resource_spans {
+            let res = rs.resource.as_ref().unwrap();
+            let net_id = res
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "plc.ams_net_id")
+                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
+                        s.clone()
+                    }
+                    _ => panic!("expected StringValue"),
+                })
+                .unwrap();
+            let names: Vec<String> =
+                rs.scope_spans[0].spans.iter().map(|s| s.name.clone()).collect();
+            by_net_id.insert(net_id, names);
+        }
+        assert_eq!(
+            by_net_id.remove("172.28.41.37.1.1").unwrap(),
+            vec!["axis.move.a"]
+        );
+        assert_eq!(
+            by_net_id.remove("10.0.0.1.1.1").unwrap(),
+            vec!["axis.move.b"]
+        );
+    }
+
+    #[test]
+    fn single_resource_batch_emits_one_block() {
+        let r1 = span_record();
+        let mut r2 = span_record();
+        r2.name = "second".to_string();
+        let bytes = build(&[r1, r2]);
+        let decoded = ExportTraceServiceRequest::decode(&bytes[..]).unwrap();
+        assert_eq!(decoded.resource_spans.len(), 1);
+        assert_eq!(decoded.resource_spans[0].scope_spans[0].spans.len(), 2);
     }
 }
