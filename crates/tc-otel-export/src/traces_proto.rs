@@ -174,7 +174,10 @@ mod tests {
         assert_eq!(span.trace_id.len(), 16);
         assert_eq!(span.span_id.len(), 8);
         assert!(span.parent_span_id.is_empty(), "root span has empty parent");
-        assert_eq!(span.start_time_unix_nano, ts(1_700_000_000).timestamp_nanos_opt().unwrap() as u64);
+        assert_eq!(
+            span.start_time_unix_nano,
+            ts(1_700_000_000).timestamp_nanos_opt().unwrap() as u64
+        );
         let status = span.status.as_ref().unwrap();
         assert_eq!(status.code, 1);
         assert!(status.message.is_empty());
@@ -259,15 +262,20 @@ mod tests {
                 .attributes
                 .iter()
                 .find(|kv| kv.key == "plc.ams_net_id")
-                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
-                        s.clone()
-                    }
-                    _ => panic!("expected StringValue"),
-                })
+                .map(
+                    |kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            s,
+                        ) => s.clone(),
+                        _ => panic!("expected StringValue"),
+                    },
+                )
                 .unwrap();
-            let names: Vec<String> =
-                rs.scope_spans[0].spans.iter().map(|s| s.name.clone()).collect();
+            let names: Vec<String> = rs.scope_spans[0]
+                .spans
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
             by_net_id.insert(net_id, names);
         }
         assert_eq!(

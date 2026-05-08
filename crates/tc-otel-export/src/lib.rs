@@ -19,8 +19,8 @@
 pub mod error;
 pub mod exporter;
 pub mod grpc;
-pub mod mapping;
 pub mod logs_proto;
+pub mod mapping;
 pub mod metrics_proto;
 pub mod proto_common;
 pub mod receiver;

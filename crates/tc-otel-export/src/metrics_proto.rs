@@ -429,12 +429,14 @@ mod tests {
                 .attributes
                 .iter()
                 .find(|kv| kv.key == "plc.ams_net_id")
-                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
-                        s.clone()
-                    }
-                    _ => panic!("expected StringValue"),
-                })
+                .map(
+                    |kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            s,
+                        ) => s.clone(),
+                        _ => panic!("expected StringValue"),
+                    },
+                )
                 .unwrap();
             let values: Vec<f64> = rm.scope_metrics[0]
                 .metrics
@@ -467,6 +469,9 @@ mod tests {
         let bytes = build(&[r1, r2, r3]);
         let decoded = ExportMetricsServiceRequest::decode(&bytes[..]).unwrap();
         assert_eq!(decoded.resource_metrics.len(), 1);
-        assert_eq!(decoded.resource_metrics[0].scope_metrics[0].metrics.len(), 3);
+        assert_eq!(
+            decoded.resource_metrics[0].scope_metrics[0].metrics.len(),
+            3
+        );
     }
 }

@@ -68,10 +68,7 @@ pub fn build_otel_resource(
         );
     }
     if !hostname.is_empty() {
-        resource.insert(
-            "host.name".to_string(),
-            serde_json::Value::String(hostname),
-        );
+        resource.insert("host.name".to_string(), serde_json::Value::String(hostname));
     }
     if !ams_net_id.is_empty() {
         resource.insert(

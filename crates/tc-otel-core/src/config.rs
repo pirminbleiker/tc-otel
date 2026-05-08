@@ -585,9 +585,7 @@ pub struct OutputConfig {
 /// OTel-Collector / Datadog) accepts out of the box. Existing
 /// JSON-based setups (Loki, custom collectors) need to opt-in
 /// explicitly with `format = "json"`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WireFormat {
     /// OTLP-JSON over HTTP, `Content-Type: application/json`. Optional
@@ -1479,14 +1477,12 @@ mod tests {
         let metrics: MetricsConfig =
             serde_json::from_str(r#"{"export_format":"protobuf"}"#).unwrap();
         assert_eq!(metrics.export_format, Some(WireFormat::Protobuf));
-        let traces: TracesExportConfig =
-            serde_json::from_str(r#"{"format":"protobuf"}"#).unwrap();
+        let traces: TracesExportConfig = serde_json::from_str(r#"{"format":"protobuf"}"#).unwrap();
         assert_eq!(traces.format, Some(WireFormat::Protobuf));
 
         // Unknown format -> deserialization error.
-        let err = serde_json::from_str::<ExportConfig>(
-            r#"{"endpoint":"http://x","format":"yaml"}"#,
-        );
+        let err =
+            serde_json::from_str::<ExportConfig>(r#"{"endpoint":"http://x","format":"yaml"}"#);
         assert!(err.is_err());
     }
 

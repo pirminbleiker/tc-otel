@@ -334,7 +334,9 @@ fn test_dispatcher_lifecycle() {
     // emits no `service.name` resource attribute. `plc.ams_net_id` carries the
     // PLC identity instead.
     assert!(
-        !trace_record.resource_attributes.contains_key("service.name"),
+        !trace_record
+            .resource_attributes
+            .contains_key("service.name"),
         "service.name must not be auto-synthesised; got: {:?}",
         trace_record.resource_attributes.get("service.name")
     );

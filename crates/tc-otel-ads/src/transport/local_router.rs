@@ -294,12 +294,8 @@ impl AmsTransport for LocalRouterAmsTransport {
             }
 
             // Hand off to the read loop. On clean disconnect we reconnect.
-            if let Err(e) = Self::frame_loop(
-                &mut stream,
-                self.router.clone(),
-                self.local_ip.as_deref(),
-            )
-            .await
+            if let Err(e) =
+                Self::frame_loop(&mut stream, self.router.clone(), self.local_ip.as_deref()).await
             {
                 tracing::warn!("local-router frame loop error: {e}");
             }

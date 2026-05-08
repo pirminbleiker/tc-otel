@@ -159,16 +159,14 @@ impl LogDispatcher {
         let mut format = initial_format;
         let mut config_rx = config_rx;
 
-        let build_log_exporter = |endpoint: &str,
-                                  batch_size: usize,
-                                  format: tc_otel_core::WireFormat|
-         -> OtelExporter {
-            let mut cfg = tc_otel_export::exporter::ExportConfig::default();
-            cfg.endpoint = endpoint.to_string();
-            cfg.batch_size = batch_size;
-            cfg.format = format;
-            OtelExporter::with_config(cfg)
-        };
+        let build_log_exporter =
+            |endpoint: &str, batch_size: usize, format: tc_otel_core::WireFormat| -> OtelExporter {
+                let mut cfg = tc_otel_export::exporter::ExportConfig::default();
+                cfg.endpoint = endpoint.to_string();
+                cfg.batch_size = batch_size;
+                cfg.format = format;
+                OtelExporter::with_config(cfg)
+            };
 
         let mut otlp_exporter: Option<OtelExporter> = if Self::is_otlp_endpoint(&endpoint) {
             Some(build_log_exporter(&endpoint, batch_size, format))
@@ -589,7 +587,6 @@ impl MetricDispatcher {
             }
         }
     }
-
 }
 
 /// Read the local IPC's hostname for the OTel `host.name` resource
@@ -597,9 +594,7 @@ impl MetricDispatcher {
 /// resource builder skips the attribute when empty rather than emitting
 /// `host.name=""`.
 fn local_host_name() -> String {
-    gethostname::gethostname()
-        .into_string()
-        .unwrap_or_default()
+    gethostname::gethostname().into_string().unwrap_or_default()
 }
 
 /// Write a JSON key:value pair directly to buffer

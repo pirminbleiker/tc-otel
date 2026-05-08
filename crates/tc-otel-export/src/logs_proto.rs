@@ -22,9 +22,7 @@ use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     any_value::Value as AnyValueOneof, AnyValue, InstrumentationScope,
 };
-use opentelemetry_proto::tonic::logs::v1::{
-    LogRecord as ProtoLogRecord, ResourceLogs, ScopeLogs,
-};
+use opentelemetry_proto::tonic::logs::v1::{LogRecord as ProtoLogRecord, ResourceLogs, ScopeLogs};
 use prost::Message;
 use tc_otel_core::LogRecord;
 
@@ -122,10 +120,7 @@ mod tests {
             serde_json::json!("tc-otel-test"),
         );
         let mut scope_attrs = HashMap::new();
-        scope_attrs.insert(
-            "logger.name".to_string(),
-            serde_json::json!("MotionAxis"),
-        );
+        scope_attrs.insert("logger.name".to_string(), serde_json::json!("MotionAxis"));
         let mut log_attrs = HashMap::new();
         log_attrs.insert("axis".to_string(), serde_json::json!("x"));
         LogRecord {
@@ -159,9 +154,15 @@ mod tests {
             AnyValueOneof::StringValue(s) => assert_eq!(s, "axis stalled"),
             _ => panic!("expected StringValue body"),
         }
-        assert_eq!(log.time_unix_nano, ts().timestamp_nanos_opt().unwrap() as u64);
+        assert_eq!(
+            log.time_unix_nano,
+            ts().timestamp_nanos_opt().unwrap() as u64
+        );
         assert_eq!(log.observed_time_unix_nano, log.time_unix_nano);
-        assert!(log.trace_id.is_empty(), "no trace context => empty trace_id");
+        assert!(
+            log.trace_id.is_empty(),
+            "no trace context => empty trace_id"
+        );
         assert!(log.span_id.is_empty());
     }
 
@@ -245,18 +246,22 @@ mod tests {
                 .attributes
                 .iter()
                 .find(|kv| kv.key == "plc.ams_net_id")
-                .map(|kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-                    AnyValueOneof::StringValue(s) => s.clone(),
-                    _ => panic!("expected StringValue"),
-                })
+                .map(
+                    |kv| match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+                        AnyValueOneof::StringValue(s) => s.clone(),
+                        _ => panic!("expected StringValue"),
+                    },
+                )
                 .unwrap();
             let bodies: Vec<String> = rl.scope_logs[0]
                 .log_records
                 .iter()
-                .map(|lr| match lr.body.as_ref().unwrap().value.as_ref().unwrap() {
-                    AnyValueOneof::StringValue(s) => s.clone(),
-                    _ => panic!("expected StringValue body"),
-                })
+                .map(
+                    |lr| match lr.body.as_ref().unwrap().value.as_ref().unwrap() {
+                        AnyValueOneof::StringValue(s) => s.clone(),
+                        _ => panic!("expected StringValue body"),
+                    },
+                )
                 .collect();
             by_net_id.insert(net_id, bodies);
         }
@@ -278,9 +283,6 @@ mod tests {
         let bytes = build(&[r1, r2]);
         let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
         assert_eq!(decoded.resource_logs.len(), 1);
-        assert_eq!(
-            decoded.resource_logs[0].scope_logs[0].log_records.len(),
-            2
-        );
+        assert_eq!(decoded.resource_logs[0].scope_logs[0].log_records.len(), 2);
     }
 }
