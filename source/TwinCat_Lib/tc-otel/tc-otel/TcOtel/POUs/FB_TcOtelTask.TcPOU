@@ -104,6 +104,7 @@ _WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._TaskInfo[nTaskIndex].T
 _WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.AppName));				// App name
 _WriteString(pWriteBuffer, ADR(TwinCAT_SystemInfoVarList._AppInfo.ProjectName));			// Project name
 _WriteUDInt(pWriteBuffer, TwinCAT_SystemInfoVarList._AppInfo.OnlineChangeCnt);				// Online change count
+_WriteUInt(pWriteBuffer, TwinCAT_SystemInfoVarList._AppInfo.AdsPort);						// App ADS port (UINT)
 ]]></ST>
       </Implementation>
     </Method>
@@ -140,6 +141,21 @@ VAR_INPUT
 END_VAR
 VAR
 	pBuf			: PVOID;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF pWriteBuffer.BufferFree >= SIZEOF(nValue) THEN
+	Tc2_System.MEMCPY(pWriteBuffer.BufferPtr, ADR(nValue), SIZEOF(nValue));
+	pWriteBuffer.DataAdded(SIZEOF(nValue));
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="_WriteUInt" Id="{c1d2e3f4-a5b6-7c8d-9e0f-1a2b3c4d5e6f}">
+      <Declaration><![CDATA[METHOD PRIVATE _WriteUInt
+VAR_INPUT
+	pWriteBuffer	: REFERENCE TO FB_LogBuffer;
+	nValue			: UINT;
 END_VAR
 ]]></Declaration>
       <Implementation>

@@ -334,14 +334,36 @@ impl TcOtelService {
         // the task name in the wire frame.
         let mut shutdown_rx_push = shutdown_tx.subscribe();
         let bridge_metric_tx = metric_tx.clone();
+        let bridge_registry = task_registry.clone();
         let push_drain_handle = tokio::spawn(async move {
             let empty_names = std::collections::HashMap::new();
             loop {
                 tokio::select! {
                     Some((net_id, ev)) = push_rx.recv() => {
-                        let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                        let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                             net_id, ev, &empty_names,
                         );
+                        // Stamp `ams_app_port` from the cross-pillar registry
+                        // — the diag-bridge knows `ams_source_port` (task
+                        // port like 350) but `service.instance.id` needs
+                        // the runtime's app port (851). Same key shape the
+                        // log path uses.
+                        for m in &mut metrics {
+                            if m.ams_app_port == 0
+                                && !m.ams_net_id.is_empty()
+                                && m.ams_source_port != 0
+                            {
+                                if let Some(meta) = bridge_registry.lookup(
+                                    &tc_otel_ads::protocol::RegistrationKey {
+                                        ams_net_id: m.ams_net_id.clone(),
+                                        ams_source_port: m.ams_source_port,
+                                        task_index: m.task_index as u8,
+                                    },
+                                ) {
+                                    m.ams_app_port = meta.app_port;
+                                }
+                            }
+                        }
                         if let Some(ref tx) = bridge_metric_tx {
                             for m in metrics {
                                 if tx.try_send(m).is_err() {
@@ -400,6 +422,7 @@ impl TcOtelService {
                         // Bridge to the existing metric pipeline — each
                         // DiagEvent fans out to one or more MetricEntry items.
                         let bridge_metric_tx = metric_tx.clone();
+                        let poller_registry = task_registry.clone();
                         tokio::spawn(async move {
                             while let Some((net_id, ev)) = diag_rx.recv().await {
                                 push_seen_map
@@ -407,9 +430,25 @@ impl TcOtelService {
                                     .await
                                     .insert(net_id, std::time::Instant::now());
                                 let names = task_names.read().await.clone();
-                                let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                                let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                                     net_id, ev, &names,
                                 );
+                                for m in &mut metrics {
+                                    if m.ams_app_port == 0
+                                        && !m.ams_net_id.is_empty()
+                                        && m.ams_source_port != 0
+                                    {
+                                        if let Some(meta) = poller_registry.lookup(
+                                            &tc_otel_ads::protocol::RegistrationKey {
+                                                ams_net_id: m.ams_net_id.clone(),
+                                                ams_source_port: m.ams_source_port,
+                                                task_index: m.task_index as u8,
+                                            },
+                                        ) {
+                                            m.ams_app_port = meta.app_port;
+                                        }
+                                    }
+                                }
                                 if let Some(ref tx) = bridge_metric_tx {
                                     for m in metrics {
                                         if tx.try_send(m).is_err() {

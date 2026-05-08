@@ -985,6 +985,7 @@ mod tests {
                 app_name: "MyApp".to_string(),
                 project_name: "MyProject".to_string(),
                 online_change_count: 3,
+                app_port: 851,
             },
         );
 
@@ -1358,6 +1359,7 @@ mod tests {
                 app_name: "App".into(),
                 project_name: "Proj".into(),
                 online_change_count: 0,
+                app_port: 851,
             },
         );
 

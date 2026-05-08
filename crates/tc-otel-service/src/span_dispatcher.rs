@@ -48,9 +48,15 @@ pub struct PendingSpan {
     #[allow(dead_code)]
     pub task_index: u8,
     /// AMS source-port the trace frame arrived from. Used together
-    /// with `ams_net_id` + `task_index` to identify the PLC task and
-    /// to compose `service.instance.id` (`app@netid:port`).
+    /// with `ams_net_id` + `task_index` as the registry key for the
+    /// `app_name` / `project_name` / `app_port` lookup.
     pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851) — looked up
+    /// from the registry at `Begin` time. Drives `service.instance.id`
+    /// so it lines up with logs/metrics for the same runtime instance,
+    /// rather than the per-task source port (340/350/…) which would
+    /// fragment instances across tasks.
+    pub ams_app_port: u16,
     /// Registered `app_name` for this PLC task — looked up in the
     /// `TaskRegistry` at `Begin` time (the same registry the log /
     /// metric paths populate). Empty when no registration has arrived
@@ -303,7 +309,7 @@ impl SpanDispatcher {
         // `project_name`, which propagate to `service.instance.id` /
         // `service.name` at finalise. Misses just fall through to the
         // dispatcher's configured defaults; no synthetic identity.
-        let (app_name, project_name) = self
+        let (app_name, project_name, app_port) = self
             .registry
             .as_ref()
             .and_then(|reg| {
@@ -313,8 +319,8 @@ impl SpanDispatcher {
                     task_index,
                 })
             })
-            .map(|m| (m.app_name, m.project_name))
-            .unwrap_or_else(|| (String::new(), String::new()));
+            .map(|m| (m.app_name, m.project_name, m.app_port))
+            .unwrap_or_else(|| (String::new(), String::new(), 0));
 
         let pending = PendingSpan {
             trace_id: final_trace_id,
@@ -330,6 +336,7 @@ impl SpanDispatcher {
             ams_net_id: net_id,
             task_index,
             ams_source_port,
+            ams_app_port: app_port,
             app_name,
             project_name,
         };
@@ -456,6 +463,7 @@ impl SpanDispatcher {
             pending.app_name.clone(),
             self.host_name.clone(),
             pending.ams_net_id.to_string(),
+            pending.ams_app_port,
             pending.ams_source_port,
         );
         resource_attributes.insert(

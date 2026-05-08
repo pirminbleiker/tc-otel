@@ -247,10 +247,12 @@ impl AdsRouter {
                     app_name: reg.app_name,
                     project_name: reg.project_name,
                     online_change_count: reg.online_change_count,
+                    app_port: reg.app_port,
                 };
                 self.registry.register(k, m);
             }
             for mut e in pr.entries {
+                let mut app_port = 0u16;
                 if e.version == crate::protocol::AdsProtocolVersion::V2 {
                     let k = RegistrationKey {
                         ams_net_id: source_net_id.to_string(),
@@ -262,6 +264,7 @@ impl AdsRouter {
                         e.app_name = m.app_name;
                         e.project_name = m.project_name;
                         e.online_change_count = m.online_change_count;
+                        app_port = m.app_port;
                     }
                 }
                 // sem-conv `source.address` carries the network-level
@@ -287,6 +290,7 @@ impl AdsRouter {
                 le.context = e.context;
                 le.ams_net_id = source_net_id.to_string();
                 le.ams_source_port = source_port;
+                le.ams_app_port = app_port;
                 le.trace_id = e.trace_id;
                 le.span_id = e.span_id;
                 let _ = self.log_tx.try_send(le);
@@ -329,10 +333,12 @@ impl AdsRouter {
                     app_name: reg.app_name,
                     project_name: reg.project_name,
                     online_change_count: reg.online_change_count,
+                    app_port: reg.app_port,
                 };
                 self.registry.register(k, m);
             }
             for mut e in pr.entries {
+                let mut app_port = 0u16;
                 if e.version == crate::protocol::AdsProtocolVersion::V2 {
                     let k = RegistrationKey {
                         ams_net_id: source_net_id.to_string(),
@@ -344,6 +350,7 @@ impl AdsRouter {
                         e.app_name = m.app_name;
                         e.project_name = m.project_name;
                         e.online_change_count = m.online_change_count;
+                        app_port = m.app_port;
                     }
                 }
                 // sem-conv `source.address` = network peer or local
@@ -364,6 +371,7 @@ impl AdsRouter {
                 le.context = e.context;
                 le.ams_net_id = source_net_id.to_string();
                 le.ams_source_port = source_port;
+                le.ams_app_port = app_port;
                 le.trace_id = e.trace_id;
                 le.span_id = e.span_id;
                 // Non-blocking: drop under backpressure rather than stall the
@@ -377,11 +385,11 @@ impl AdsRouter {
                         ams_source_port: source_port,
                         task_index: me.task_index as u8,
                     };
-                    let (task_name, app_name, project_name) =
+                    let (task_name, app_name, project_name, app_port) =
                         if let Some(m) = self.registry.lookup(&k) {
-                            (m.task_name, m.app_name, m.project_name)
+                            (m.task_name, m.app_name, m.project_name, m.app_port)
                         } else {
-                            (String::new(), String::new(), String::new())
+                            (String::new(), String::new(), String::new(), 0u16)
                         };
                     let met = MetricEntry {
                         name: me.name,
@@ -398,6 +406,7 @@ impl AdsRouter {
                         hostname: String::new(),
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,
+                        ams_app_port: app_port,
                         task_index: me.task_index,
                         task_name,
                         task_cycle_counter: me.task_cycle_counter,

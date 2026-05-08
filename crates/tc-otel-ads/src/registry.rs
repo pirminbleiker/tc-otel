@@ -76,6 +76,7 @@ mod tests {
             app_name: "MyApp".to_string(),
             project_name: "MyProject".to_string(),
             online_change_count: 42,
+            app_port: 851,
         };
 
         registry.register(key.clone(), metadata.clone());
@@ -102,12 +103,14 @@ mod tests {
             app_name: "App1".to_string(),
             project_name: "Project1".to_string(),
             online_change_count: 1,
+            app_port: 851,
         };
         let metadata2 = TaskMetadata {
             task_name: "Task1".to_string(),
             app_name: "App1".to_string(),
             project_name: "Project1".to_string(),
             online_change_count: 2,
+            app_port: 851,
         };
 
         registry.register(key.clone(), metadata1);
@@ -147,6 +150,7 @@ mod tests {
             app_name: "App".to_string(),
             project_name: "Project".to_string(),
             online_change_count: 0,
+            app_port: 851,
         };
 
         registry.register(key1, metadata.clone());

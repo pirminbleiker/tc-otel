@@ -310,6 +310,7 @@ fn test_gauge_entry_to_record_with_plc_metadata() {
     entry.hostname = "plc-01".to_string();
     entry.ams_net_id = "172.17.0.2.1.1".to_string();
     entry.ams_source_port = 851;
+    entry.ams_app_port = 851;
     entry.task_name = "MotionTask".to_string();
     entry.task_index = 1;
     entry.task_cycle_counter = 50000;

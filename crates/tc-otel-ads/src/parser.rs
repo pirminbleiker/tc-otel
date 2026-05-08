@@ -548,6 +548,11 @@ impl AdsParser {
         let app_name = reader.read_string()?;
         let project_name = reader.read_string()?;
         let online_change_count = reader.read_u32()?;
+        // `_AppInfo.AdsPort` (UINT) — trails OnlineChangeCount in the
+        // current registration wire format. Used for `service.instance.id`
+        // (`app_name@netid:app_port`) so the runtime instance — not the
+        // per-task source port from the AMS frame header — drives identity.
+        let app_port = reader.read_u16()?;
 
         Ok(RegistrationMessage {
             task_index,
@@ -555,6 +560,7 @@ impl AdsParser {
             app_name,
             project_name,
             online_change_count,
+            app_port,
         })
     }
 
@@ -2322,6 +2328,7 @@ mod tests {
         payload.extend_from_slice(project_name.as_bytes());
 
         payload.extend_from_slice(&123u32.to_le_bytes()); // online_change_count
+        payload.extend_from_slice(&851u16.to_le_bytes()); // app_port
 
         let result = AdsParser::parse_all(&payload).unwrap();
         assert_eq!(result.entries.len(), 0);
@@ -2333,6 +2340,7 @@ mod tests {
         assert_eq!(reg.app_name, app_name);
         assert_eq!(reg.project_name, project_name);
         assert_eq!(reg.online_change_count, 123);
+        assert_eq!(reg.app_port, 851);
     }
 
     #[test]
@@ -2349,6 +2357,7 @@ mod tests {
         payload.push(4); // "Proj"
         payload.extend_from_slice(b"Proj");
         payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&851u16.to_le_bytes()); // app_port
 
         // Second: v1 entry
         let v1_payload = build_test_payload("V1 message", "v1.logger", 2);
@@ -2456,6 +2465,7 @@ mod tests {
             payload.push(4); // "Proj"
             payload.extend_from_slice(b"Proj");
             payload.extend_from_slice(&(task_idx as u32).to_le_bytes());
+            payload.extend_from_slice(&851u16.to_le_bytes()); // app_port
         }
 
         let result = AdsParser::parse_all(&payload).unwrap();

@@ -12,12 +12,15 @@ use uuid::Uuid;
 /// OTel sem-conv requires `service.instance.id` to be unique per
 /// `(service.namespace, service.name)` replica. The user-friendly
 /// `app_name` alone is not unique — multiple PLC tasks can share it.
-/// We compose with the AMS Net ID and source port to get a stable,
-/// per-task identity that survives tc-otel restarts.
+/// Compose with the AMS Net ID and the runtime's `app_port` (the
+/// `_AppInfo.AdsPort` value, 851/852/…) to identify a runtime
+/// instance. The per-task AMS source port (340/350/351/…) is
+/// deliberately *not* used here — it changes per task, which would
+/// fragment `service.instance.id` across tasks of the same runtime.
 ///
 /// Fallback chain when fields are missing:
-/// - `app@netid:port`  — full per-task identity
-/// - `app@netid`       — port unknown (TaskStats not yet observed)
+/// - `app@netid:port`  — full identity
+/// - `app@netid`       — app_port not yet known (registration pending)
 /// - `app`             — net_id missing (rare fallback)
 /// - `netid:port`      — early frame before app_name registered
 /// - `netid`           — only PLC identity known
@@ -25,16 +28,16 @@ use uuid::Uuid;
 pub fn build_service_instance_id(
     app_name: &str,
     ams_net_id: &str,
-    ams_source_port: u16,
+    app_port: u16,
 ) -> Option<String> {
     let has_app = !app_name.is_empty();
     let has_net = !ams_net_id.is_empty();
-    let has_port = ams_source_port != 0;
+    let has_port = app_port != 0;
     match (has_app, has_net, has_port) {
-        (true, true, true) => Some(format!("{app_name}@{ams_net_id}:{ams_source_port}")),
+        (true, true, true) => Some(format!("{app_name}@{ams_net_id}:{app_port}")),
         (true, true, false) => Some(format!("{app_name}@{ams_net_id}")),
         (true, false, _) => Some(app_name.to_string()),
-        (false, true, true) => Some(format!("{ams_net_id}:{ams_source_port}")),
+        (false, true, true) => Some(format!("{ams_net_id}:{app_port}")),
         (false, true, false) => Some(ams_net_id.to_string()),
         (false, false, _) => None,
     }
@@ -42,6 +45,12 @@ pub fn build_service_instance_id(
 
 /// Build the OTLP `Resource` attribute set shared by
 /// `LogRecord` / `MetricRecord` / `TraceRecord`.
+///
+/// `app_port` (= TwinCAT `_AppInfo.AdsPort`, e.g. 851) drives
+/// `service.instance.id`. `ams_source_port` (the per-task port from
+/// the AMS frame header, e.g. 350) is emitted as the
+/// `plc.ams_source_port` resource attribute so dashboards can still
+/// filter by task-level source if needed.
 ///
 /// Empty / zero fields are skipped — emitting e.g. `service.name=""`
 /// produces a separate timeseries from `service.name="tc-otel"` in
@@ -52,16 +61,17 @@ pub fn build_otel_resource(
     app_name: String,
     hostname: String,
     ams_net_id: String,
+    app_port: u16,
     ams_source_port: u16,
 ) -> HashMap<String, serde_json::Value> {
-    let mut resource = HashMap::with_capacity(5);
+    let mut resource = HashMap::with_capacity(6);
     if !project_name.is_empty() {
         resource.insert(
             "service.name".to_string(),
             serde_json::Value::String(project_name),
         );
     }
-    if let Some(instance_id) = build_service_instance_id(&app_name, &ams_net_id, ams_source_port) {
+    if let Some(instance_id) = build_service_instance_id(&app_name, &ams_net_id, app_port) {
         resource.insert(
             "service.instance.id".to_string(),
             serde_json::Value::String(instance_id),
@@ -74,6 +84,12 @@ pub fn build_otel_resource(
         resource.insert(
             "plc.ams_net_id".to_string(),
             serde_json::Value::String(ams_net_id),
+        );
+    }
+    if app_port > 0 {
+        resource.insert(
+            "plc.ams_app_port".to_string(),
+            serde_json::Value::Number(app_port.into()),
         );
     }
     if ams_source_port > 0 {
@@ -144,6 +160,14 @@ pub struct MetricEntry {
     pub hostname: String,
     pub ams_net_id: String,
     pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort` on the PLC, e.g. 851)
+    /// pulled from the registry hit for this task. `0` when no
+    /// registration is visible yet (registration frame still pending).
+    /// Drives `service.instance.id` as `app_name@netid:app_port` so
+    /// the runtime instance — not the per-task source port — owns
+    /// identity.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Task metadata
     pub task_index: i32,
@@ -195,6 +219,7 @@ impl MetricEntry {
             hostname: String::new(),
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             task_index: 0,
             task_name: String::new(),
             task_cycle_counter: 0,
@@ -306,6 +331,7 @@ impl MetricRecord {
             entry.app_name,
             entry.hostname,
             entry.ams_net_id,
+            entry.ams_app_port,
             entry.ams_source_port,
         );
 
@@ -479,6 +505,11 @@ pub struct SpanEntry {
     pub hostname: String,
     pub ams_net_id: String,
     pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851). Drives
+    /// `service.instance.id` so it lines up with logs/metrics for
+    /// the same runtime instance.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Task metadata
     pub task_index: i32,
@@ -510,6 +541,7 @@ impl SpanEntry {
             hostname: String::new(),
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             task_index: 0,
             task_name: String::new(),
             task_cycle_counter: 0,
@@ -578,6 +610,7 @@ impl TraceRecord {
             entry.app_name,
             entry.hostname,
             entry.ams_net_id,
+            entry.ams_app_port,
             entry.ams_source_port,
         );
 
@@ -721,7 +754,13 @@ pub struct LogEntry {
     pub source: String,       // AMS address or source identifier
     pub hostname: String,     // PLC hostname
     pub ams_net_id: String,   // AMS Net ID from AMS header
-    pub ams_source_port: u16, // AMS Source Port from AMS header
+    pub ams_source_port: u16, // AMS Source Port from AMS header (task port, e.g. 350)
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851) from the
+    /// registration message. Drives `service.instance.id`
+    /// (`app_name@netid:app_port`) so the instance identifies the
+    /// runtime, not the per-task source port.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Message content
     pub message: String, // Template string or formatted message
@@ -766,6 +805,7 @@ impl LogEntry {
             hostname,
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             message,
             logger,
             level,
@@ -831,6 +871,7 @@ impl LogRecord {
             entry.app_name,
             entry.hostname,
             entry.ams_net_id,
+            entry.ams_app_port,
             entry.ams_source_port,
         );
 
@@ -1761,6 +1802,7 @@ mod tests {
         entry.app_name = "HydraulicPress".to_string();
         entry.ams_net_id = "172.17.0.2.1.1".to_string();
         entry.ams_source_port = 851;
+        entry.ams_app_port = 851;
         entry.task_name = "MotionTask".to_string();
         entry.task_index = 1;
         entry.task_cycle_counter = 5000;

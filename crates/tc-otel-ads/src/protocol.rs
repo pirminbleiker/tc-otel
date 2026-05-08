@@ -131,7 +131,15 @@ pub struct AdsContext {
     pub value: serde_json::Value,
 }
 
-/// Registration message for static task metadata (protocol v2)
+/// Registration message for static task metadata.
+///
+/// Wire format (type 0x03):
+/// `task_index, task_name, app_name, project_name, online_change_count, app_port`.
+/// `app_port` is `_AppInfo.AdsPort` from TwinCAT (the runtime's ADS
+/// port — 851 for the first runtime, 852 for the second, …). It
+/// drives `service.instance.id` so all three pillars line up on the
+/// runtime instance, not on the per-task source port that the AMS
+/// frame header carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrationMessage {
     pub task_index: u8,
@@ -139,6 +147,8 @@ pub struct RegistrationMessage {
     pub app_name: String,
     pub project_name: String,
     pub online_change_count: u32,
+    /// `_AppInfo.AdsPort` from TwinCAT — the runtime's ADS port (e.g. 851).
+    pub app_port: u16,
 }
 
 /// Unique key for task registration: (AMS Net ID, AMS Source Port, Task Index)
@@ -156,6 +166,10 @@ pub struct TaskMetadata {
     pub app_name: String,
     pub project_name: String,
     pub online_change_count: u32,
+    /// Runtime's ADS port (`_AppInfo.AdsPort`, e.g. 851). Stored
+    /// alongside the metadata so log/metric/span paths can stamp it
+    /// onto the entry without re-parsing the registration buffer.
+    pub app_port: u16,
 }
 
 /// Wire-level metric entry (ADS message type 0x04)
