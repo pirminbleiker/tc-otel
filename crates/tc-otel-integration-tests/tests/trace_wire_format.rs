@@ -277,6 +277,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -293,6 +294,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Attr {
             span_id,
             task_index: 2,
@@ -305,6 +307,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Event {
             span_id,
             task_index: 2,
@@ -317,6 +320,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id,
             task_index: 2,
@@ -381,6 +385,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -397,6 +402,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 2,
             task_index: 2,
@@ -413,6 +419,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: child_span_id,
             task_index: 2,
@@ -430,6 +437,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: parent_span_id,
             task_index: 2,
@@ -571,6 +579,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
     let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -586,6 +595,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
     );
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: expected_span,
             task_index: 2,
@@ -625,6 +635,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
     let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -640,6 +651,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
     );
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: pregen_span,
             task_index: 2,
@@ -686,6 +698,7 @@ async fn test_span_dispatcher_indexes_pregenerated_span_ids() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -720,6 +733,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -743,6 +757,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: pregenerated_span_id,
             task_index: 2,
@@ -774,6 +789,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -790,6 +806,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 2,
             task_index: 2,

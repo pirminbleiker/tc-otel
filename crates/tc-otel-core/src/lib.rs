@@ -9,6 +9,7 @@ pub mod error;
 pub mod formatter;
 pub mod metric_mapper;
 pub mod models;
+pub mod net;
 
 pub use config::{
     AppSettings, CustomMetricDef, DiagnosticsConfig, DiagnosticsTargetConfig, ExportConfig,
@@ -24,3 +25,4 @@ pub use models::{
     MetricKind, MetricRecord, SpanEntry, SpanEvent, SpanKind, SpanStatusCode, TraceEventRecord,
     TraceRecord,
 };
+pub use net::local_source_address;

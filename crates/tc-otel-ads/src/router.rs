@@ -9,7 +9,7 @@ use crate::parser::AdsParser;
 use crate::protocol::RegistrationKey;
 use crate::registry::TaskRegistry;
 use std::sync::Arc;
-use tc_otel_core::{LogEntry, MetricEntry};
+use tc_otel_core::{local_source_address, LogEntry, MetricEntry};
 use tokio::sync::mpsc;
 
 pub struct AdsRouter {
@@ -17,7 +17,12 @@ pub struct AdsRouter {
     log_tx: mpsc::Sender<LogEntry>,
     metric_tx: Option<mpsc::Sender<MetricEntry>>,
     push_tx: Option<mpsc::Sender<(crate::AmsNetId, DiagEvent)>>,
-    trace_tx: Option<mpsc::Sender<(crate::AmsNetId, crate::protocol::TraceWireEvent)>>,
+    /// Trace events tagged with their AMS source-port so the
+    /// SpanDispatcher can look up `(net_id, port, task_index)` in the
+    /// `TaskRegistry` and inherit `app_name` / `project_name` from
+    /// log/metric registrations — keeps `service.name` /
+    /// `service.instance.id` consistent across all three pillars.
+    trace_tx: Option<mpsc::Sender<(crate::AmsNetId, u16, crate::protocol::TraceWireEvent)>>,
     registry: Arc<TaskRegistry>,
 }
 
@@ -45,7 +50,7 @@ impl AdsRouter {
 
     pub fn with_trace_sender(
         mut self,
-        tx: mpsc::Sender<(crate::AmsNetId, crate::protocol::TraceWireEvent)>,
+        tx: mpsc::Sender<(crate::AmsNetId, u16, crate::protocol::TraceWireEvent)>,
     ) -> Self {
         self.trace_tx = Some(tx);
         self
@@ -57,12 +62,15 @@ impl AdsRouter {
 
     /// Dispatch one inbound AMS frame.
     ///
-    /// `peer_address` is the network-level peer the frame arrived from
-    /// (TCP transport: peer IP). It propagates to `LogEntry.source` /
-    /// `MetricEntry.source` so the OTel sem-conv `source.address`
-    /// resource attribute gets the real network address rather than
-    /// the AMS Net ID. Loopback / non-IP transports (local-router,
-    /// MQTT broker fan-out) pass `None`.
+    /// `peer_address` is the network-level peer the frame arrived from.
+    /// `Some(ip)` for the TCP transport (the real client peer IP);
+    /// `None` for loopback / non-IP transports (local-router, MQTT
+    /// broker fan-out, self-emitted). When `None`, the dispatch path
+    /// backfills `tc_otel_core::local_source_address()` so the OTel
+    /// sem-conv `source.address` resource attribute always carries a
+    /// real IPv4 — the IPC's primary interface (DHCP-leased or static),
+    /// or `127.0.0.1` on networkless hosts. Empty `source.address` is
+    /// avoided because it confuses dashboards that key off it.
     pub async fn dispatch(
         &self,
         frame: &[u8],
@@ -257,16 +265,16 @@ impl AdsRouter {
                     }
                 }
                 // sem-conv `source.address` carries the network-level
-                // peer the frame arrived from (TCP peer IP for
-                // tcp-transport; empty for loopback/MQTT). PLC identity
-                // lives separately in `plc.ams_net_id` (resource).
-                let mut le = LogEntry::new(
-                    peer_address.unwrap_or("").to_string(),
-                    String::new(),
-                    e.message,
-                    e.logger,
-                    e.level,
-                );
+                // peer the frame arrived from. TCP transport supplies
+                // the real client IP; everything else (loopback/MQTT,
+                // self-emitted) falls back to the IPC's own primary
+                // interface IP via `local_source_address()` so the key
+                // is never empty. PLC identity stays in
+                // `plc.ams_net_id` (resource).
+                let source = peer_address
+                    .map(str::to_string)
+                    .unwrap_or_else(|| local_source_address().to_string());
+                let mut le = LogEntry::new(source, String::new(), e.message, e.logger, e.level);
                 le.plc_timestamp = e.plc_timestamp;
                 le.clock_timestamp = e.clock_timestamp;
                 le.task_index = e.task_index;
@@ -287,7 +295,7 @@ impl AdsRouter {
             if let Some(ref tx) = self.trace_tx {
                 if let Ok(net_id) = crate::AmsNetId::from_str_ref(source_net_id) {
                     for ev in pr.trace_events {
-                        if tx.try_send((net_id, ev)).is_err() {
+                        if tx.try_send((net_id, source_port, ev)).is_err() {
                             tracing::debug!(
                                 "trace-event channel full, dropping from {}",
                                 source_net_id
@@ -338,15 +346,12 @@ impl AdsRouter {
                         e.online_change_count = m.online_change_count;
                     }
                 }
-                // sem-conv `source.address` = network peer (see
-                // `dispatch_write_sync` doc-comment for rationale).
-                let mut le = LogEntry::new(
-                    peer_address.unwrap_or("").to_string(),
-                    String::new(),
-                    e.message,
-                    e.logger,
-                    e.level,
-                );
+                // sem-conv `source.address` = network peer or local
+                // tc-otel IP (see `dispatch_write_sync` doc-comment).
+                let source = peer_address
+                    .map(str::to_string)
+                    .unwrap_or_else(|| local_source_address().to_string());
+                let mut le = LogEntry::new(source, String::new(), e.message, e.logger, e.level);
                 le.plc_timestamp = e.plc_timestamp;
                 le.clock_timestamp = e.clock_timestamp;
                 le.task_index = e.task_index;
@@ -385,8 +390,11 @@ impl AdsRouter {
                         kind: me.kind,
                         value: me.value,
                         timestamp: me.timestamp,
-                        // sem-conv `source.address` = network peer.
-                        source: peer_address.unwrap_or("").to_string(),
+                        // sem-conv `source.address` = network peer, or
+                        // local tc-otel IP fallback.
+                        source: peer_address
+                            .map(str::to_string)
+                            .unwrap_or_else(|| local_source_address().to_string()),
                         hostname: String::new(),
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,

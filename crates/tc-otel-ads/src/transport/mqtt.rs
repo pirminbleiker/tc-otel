@@ -175,9 +175,9 @@ impl AmsTransport for MqttAmsTransport {
                     );
 
                     // Dispatch through router. Broker fan-out hides the
-                    // original publisher's network identity, so
-                    // `source.address` stays empty (the AMS Net ID in
-                    // `plc.ams_net_id` already identifies the PLC).
+                    // original publisher's network identity, so we pass
+                    // `None` and let the router backfill with the local
+                    // tc-otel IP. PLC identity is in `plc.ams_net_id`.
                     match self.router.dispatch(&payload, None).await {
                         Ok(Some(response)) => {
                             // Extract source Net ID from request to build response topic

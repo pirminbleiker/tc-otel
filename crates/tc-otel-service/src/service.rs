@@ -178,7 +178,7 @@ impl TcOtelService {
         let (push_tx, mut push_rx) =
             mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
         let (trace_tx, mut trace_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::TraceWireEvent)>(256);
+            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(256);
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,
@@ -521,7 +521,11 @@ impl TcOtelService {
                     Duration::from_secs(self.settings.traces.span_ttl_secs),
                     self.settings.traces.max_pending_spans,
                 )
-                .with_service_metadata(self.settings.service.name.clone(), (*host_name).clone()),
+                .with_service_metadata(self.settings.service.name.clone(), (*host_name).clone())
+                // Share the same registry the log/metric paths populate
+                // so spans inherit `app_name` / `project_name` and
+                // `service.instance.id` matches across all three pillars.
+                .with_task_registry(task_registry.clone()),
             ));
 
             let span_disp_events = span_disp.clone();
@@ -529,9 +533,9 @@ impl TcOtelService {
             let event_handle = tokio::spawn(async move {
                 loop {
                     tokio::select! {
-                        Some((net_id, ev)) = trace_rx.recv() => {
+                        Some((net_id, source_port, ev)) = trace_rx.recv() => {
                             let mut disp = span_disp_events.lock().await;
-                            disp.on_event(net_id, ev);
+                            disp.on_event(net_id, source_port, ev);
                         }
                         _ = shutdown_rx_traces.recv() => {
                             tracing::info!("Trace event dispatcher stopped");

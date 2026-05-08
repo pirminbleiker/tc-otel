@@ -26,7 +26,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HOST = "172.18.129.178"
 USER = "Administrator"
 PASS = "1"
-TC_OTEL_LOCAL  = r"C:\tcoteltarget\release\tc-otel.exe"
+TC_OTEL_LOCAL  = r"D:\cargo-target\log4tc\release\tc-otel.exe"
 DIST_DIR       = r"Z:\Open Source\log4TC\dist\local-router"
 
 

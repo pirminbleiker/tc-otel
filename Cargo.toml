@@ -75,6 +75,9 @@ uuid = { version = "1.23", features = ["v4", "serde"] }
 bytes = "1.5"
 parking_lot = "0.12"
 gethostname = "0.5"
+# Used to enumerate local interface IPs for OTel sem-conv `source.address`
+# without relying on a default-route / Internet UDP-connect probe.
+if-addrs = "0.13"
 
 # Testing
 mockall = "0.14"
