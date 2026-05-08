@@ -13,7 +13,7 @@
 //! - `service.memory.rss` (Gauge) — tc-otel service RSS memory in bytes
 
 use std::sync::Arc;
-use tc_otel_core::MetricEntry;
+use tc_otel_core::{local_source_address, MetricEntry};
 
 use crate::cycle_time::CycleTimeTracker;
 
@@ -158,7 +158,7 @@ impl PlcSystemMetricsCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 
@@ -167,7 +167,7 @@ impl PlcSystemMetricsCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 }
@@ -345,7 +345,13 @@ mod tests {
 
         for m in &metrics {
             assert_eq!(m.project_name, "my-service");
-            assert_eq!(m.source, "tc-otel");
+            // sem-conv `source.address` = real IPv4 (host's primary
+            // interface or 127.0.0.1 fallback), never the legacy
+            // "tc-otel" sentinel. Exact value depends on the host.
+            assert_ne!(m.source, "tc-otel");
+            m.source
+                .parse::<std::net::Ipv4Addr>()
+                .expect("source.address must be a valid IPv4");
         }
     }
 
