@@ -36,6 +36,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tc_otel_ads::{AdsClient, AmsNetId};
 use tokio::sync::RwLock;
 
 /// One resolution attempt's outcome — the value we cache and stamp
@@ -72,12 +73,144 @@ impl ScopeValue {
 /// Errors propagate: a transient ADS failure is *not* cached so
 /// the next record retries. Only definitive "no symbol" answers
 /// produce a cached `Raw` entry.
+///
+/// `invalidate` lets the resolver tell the lookup to forget any
+/// per-`net_id` state it might be holding (e.g. a downloaded
+/// symbol table). Called whenever the resolver detects an
+/// `OnlineChangeCnt` bump — symbols may have changed and the
+/// lookup must re-fetch on the next miss.
+/// `target_port` is the PLC runtime's ADS port (851 for the first
+/// runtime, 852 for the second, …). Threaded through from the
+/// log/trace/metric record's `ams_app_port` so the resolver
+/// connects to the right runtime when the PLC has more than one.
 #[async_trait]
 pub trait ScopeLookup: Send + Sync {
-    async fn resolve(&self, net_id: &str, parent_path: &str) -> anyhow::Result<Option<String>>;
+    async fn resolve(
+        &self,
+        net_id: &str,
+        parent_path: &str,
+        target_port: u16,
+    ) -> anyhow::Result<Option<String>>;
+
+    async fn invalidate(&self, _net_id: &str) {
+        // Default: stateless lookups have nothing to invalidate.
+    }
 }
 
-/// Stub used until Phase 1B wires in the real ADS-backed lookup.
+/// Real ADS-backed lookup. Connects to the AMS router on `addr`
+/// (typically `"127.0.0.1"` for local-router setups) and downloads
+/// the full PLC symbol table the first time a record arrives for
+/// each `net_id`. The map is kept in memory; subsequent lookups
+/// for the same `net_id` are pure hash gets — microseconds — until
+/// the resolver invalidates on an `OnlineChangeCnt` bump.
+///
+/// Empirical numbers from the live PoC (see `scripts/scope_resolver_poc.py`):
+/// 337 symbols downloaded in 6.9–10 ms over local-router on the
+/// IPC. The "first record per `(net_id, namespace)` per app version
+/// may be unscoped while the lookup runs" promise from the plan
+/// is barely user-visible at that latency.
+pub struct AdsScopeLookup {
+    /// AMS-router host the resolver connects to. `"127.0.0.1"` when
+    /// tc-otel runs on the same IPC as the PLC; the IP of a remote
+    /// router otherwise.
+    addr: String,
+    /// Source NetID we use as the AMS-frame `source_net_id` on
+    /// outgoing reads. Typically the local-router NetID tc-otel
+    /// already learned via PortConnect during transport startup.
+    source_net_id: AmsNetId,
+    /// Source AMS port for outbound reads. Any unique 16-bit
+    /// number; not the same as the inbound register port (16150)
+    /// the local-router transport uses for receiving.
+    source_port: u16,
+    /// Per-net_id symbol table: `instance_path → type_name`.
+    /// Lazy-filled on first miss, dropped when `invalidate` runs.
+    /// Wrapped in `Arc` so concurrent resolutions share one
+    /// snapshot without re-downloading.
+    tables: RwLock<HashMap<String, Arc<HashMap<String, String>>>>,
+}
+
+impl AdsScopeLookup {
+    /// Build a lookup that connects to the AMS router at `addr` for
+    /// every new PLC `net_id` it encounters. The PLC's runtime port
+    /// (851 / 852 / …) is per-call (`target_port` on `resolve`)
+    /// because a single tc-otel instance may see records from
+    /// multiple runtimes on the same NetID.
+    pub fn new(addr: impl Into<String>, source_net_id: AmsNetId, source_port: u16) -> Self {
+        Self {
+            addr: addr.into(),
+            source_net_id,
+            source_port,
+            tables: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Fetch (or return cached) symbol-table map for a PLC.
+    async fn table_for(
+        &self,
+        net_id_str: &str,
+        target_port: u16,
+    ) -> anyhow::Result<Arc<HashMap<String, String>>> {
+        if let Some(t) = self.tables.read().await.get(net_id_str) {
+            return Ok(t.clone());
+        }
+        // Cache miss: connect + download. We hold the read lock
+        // already released; the write happens after the network
+        // round-trip so the lock contention window is short.
+        let target = AmsNetId::from_str_ref(net_id_str)
+            .map_err(|e| anyhow::anyhow!("invalid net_id {net_id_str:?}: {e}"))?;
+        let mut client = AdsClient::connect(
+            &self.addr,
+            self.source_net_id,
+            self.source_port,
+            target,
+            target_port,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("ADS connect to {} for {net_id_str}: {e}", self.addr))?;
+        let symbols = client
+            .read_symbol_table()
+            .await
+            .map_err(|e| anyhow::anyhow!("ADS symbol upload for {net_id_str}: {e}"))?;
+        let map: HashMap<String, String> =
+            symbols.into_iter().map(|s| (s.name, s.type_name)).collect();
+        let arc = Arc::new(map);
+        // Race: a concurrent caller may have populated the map
+        // between our read and write — accept either snapshot since
+        // the symbol table is the same for one app version.
+        let mut w = self.tables.write().await;
+        let stored = w
+            .entry(net_id_str.to_string())
+            .or_insert_with(|| arc.clone())
+            .clone();
+        Ok(stored)
+    }
+}
+
+#[async_trait]
+impl ScopeLookup for AdsScopeLookup {
+    async fn resolve(
+        &self,
+        net_id: &str,
+        parent_path: &str,
+        target_port: u16,
+    ) -> anyhow::Result<Option<String>> {
+        if parent_path.is_empty() {
+            // No parent path = the whole namespace was a single
+            // segment (custom literal like `FB_Log('Drives.Motor')`).
+            // Falls through to the resolver's `Raw(namespace)`
+            // branch upstream.
+            return Ok(None);
+        }
+        let table = self.table_for(net_id, target_port).await?;
+        Ok(table.get(parent_path).cloned())
+    }
+
+    async fn invalidate(&self, net_id: &str) {
+        self.tables.write().await.remove(net_id);
+    }
+}
+
+/// Stub used while no real symbol-table lookup is wired in.
 /// Always returns `Ok(None)` — every namespace lands in the
 /// negative-cache `Raw` slot, so records keep their PLC-supplied
 /// namespace. Same observable behaviour as the pre-resolver world.
@@ -85,7 +218,12 @@ pub struct NoopLookup;
 
 #[async_trait]
 impl ScopeLookup for NoopLookup {
-    async fn resolve(&self, _net_id: &str, _parent_path: &str) -> anyhow::Result<Option<String>> {
+    async fn resolve(
+        &self,
+        _net_id: &str,
+        _parent_path: &str,
+        _target_port: u16,
+    ) -> anyhow::Result<Option<String>> {
         Ok(None)
     }
 }
@@ -160,7 +298,7 @@ impl ScopeResolver {
     /// Returns the namespace itself (raw fallback) if the lookup
     /// errors transiently — the caller still gets a usable scope
     /// name, and the next record re-tries (errors are not cached).
-    pub async fn resolve(&self, net_id: &str, namespace: &str) -> String {
+    pub async fn resolve(&self, net_id: &str, namespace: &str, target_port: u16) -> String {
         if namespace.is_empty() {
             return String::new();
         }
@@ -169,7 +307,7 @@ impl ScopeResolver {
             return v.clone().into_scope_name();
         }
         let parent = parent_path(namespace);
-        let value = match self.inner.lookup.resolve(net_id, parent).await {
+        let value = match self.inner.lookup.resolve(net_id, parent, target_port).await {
             Ok(Some(type_name)) => ScopeValue::Resolved(type_name),
             Ok(None) => ScopeValue::Raw(namespace.to_string()),
             Err(_) => {
@@ -194,6 +332,7 @@ impl ScopeResolver {
             .await
             .retain(|(n, _), _| n != net_id);
         self.inner.occ_seen.write().await.remove(net_id);
+        self.inner.lookup.invalidate(net_id).await;
     }
 
     /// Observe a record's `(net_id, OnlineChangeCnt)`. If the OCC
@@ -223,12 +362,15 @@ impl ScopeResolver {
                 // to do.
             }
             Some(_) => {
-                // Genuine mismatch — drop cache for this net_id.
+                // Genuine mismatch — drop cache and the lookup's
+                // own per-net_id state (e.g. AdsScopeLookup's
+                // cached symbol table) for this net_id.
                 self.inner
                     .cache
                     .write()
                     .await
                     .retain(|(n, _), _| n != net_id);
+                self.inner.lookup.invalidate(net_id).await;
                 occ_map.insert(net_id.to_string(), occ);
             }
             None => {
@@ -279,7 +421,12 @@ mod tests {
 
     #[async_trait]
     impl ScopeLookup for MockLookup {
-        async fn resolve(&self, net_id: &str, parent_path: &str) -> anyhow::Result<Option<String>> {
+        async fn resolve(
+            &self,
+            net_id: &str,
+            parent_path: &str,
+            _target_port: u16,
+        ) -> anyhow::Result<Option<String>> {
             self.calls
                 .lock()
                 .unwrap()
@@ -304,7 +451,7 @@ mod tests {
     async fn noop_lookup_returns_raw() {
         let r = ScopeResolver::noop();
         assert_eq!(
-            r.resolve("net", "Drives.Motor.fbLog").await,
+            r.resolve("net", "Drives.Motor.fbLog", 851).await,
             "Drives.Motor.fbLog"
         );
     }
@@ -312,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn empty_namespace_returns_empty() {
         let r = ScopeResolver::noop();
-        assert!(r.resolve("net", "").await.is_empty());
+        assert!(r.resolve("net", "", 851).await.is_empty());
     }
 
     #[tokio::test]
@@ -322,7 +469,7 @@ mod tests {
             "FB_Motor",
         )]));
         let r = ScopeResolver::new(mock.clone());
-        let scope = r.resolve("net", "Cell1.Axis1.Motor.fbLog").await;
+        let scope = r.resolve("net", "Cell1.Axis1.Motor.fbLog", 851).await;
         assert_eq!(scope, "FB_Motor");
     }
 
@@ -332,11 +479,11 @@ mod tests {
         let r = ScopeResolver::new(mock.clone());
 
         // First call: miss → ADS lookup → None → cached as Raw.
-        let scope1 = r.resolve("net", "Custom.Logger").await;
+        let scope1 = r.resolve("net", "Custom.Logger", 851).await;
         assert_eq!(scope1, "Custom.Logger");
 
         // Second call hits the cache; no extra lookup.
-        let scope2 = r.resolve("net", "Custom.Logger").await;
+        let scope2 = r.resolve("net", "Custom.Logger", 851).await;
         assert_eq!(scope2, "Custom.Logger");
         assert_eq!(mock.calls().len(), 1, "cache should short-circuit");
     }
@@ -346,7 +493,7 @@ mod tests {
         let mock = Arc::new(MockLookup::new([(("net", "Cell1.Motor"), "FB_Motor")]));
         let r = ScopeResolver::new(mock.clone());
         for _ in 0..5 {
-            assert_eq!(r.resolve("net", "Cell1.Motor.fbLog").await, "FB_Motor");
+            assert_eq!(r.resolve("net", "Cell1.Motor.fbLog", 851).await, "FB_Motor");
         }
         assert_eq!(mock.calls().len(), 1);
     }
@@ -358,16 +505,16 @@ mod tests {
             (("netB", "P"), "FB_B"),
         ]));
         let r = ScopeResolver::new(mock.clone());
-        r.resolve("netA", "P.fbLog").await;
-        r.resolve("netB", "P.fbLog").await;
+        r.resolve("netA", "P.fbLog", 851).await;
+        r.resolve("netB", "P.fbLog", 851).await;
         assert_eq!(r.cache_len().await, 2);
 
         r.invalidate("netA").await;
         assert_eq!(r.cache_len().await, 1);
 
         // netA re-queries; netB stays cached.
-        r.resolve("netA", "P.fbLog").await;
-        r.resolve("netB", "P.fbLog").await;
+        r.resolve("netA", "P.fbLog", 851).await;
+        r.resolve("netB", "P.fbLog", 851).await;
         assert_eq!(mock.calls().len(), 3);
     }
 
@@ -375,7 +522,7 @@ mod tests {
     async fn observe_occ_first_sighting_does_not_clear() {
         let mock = Arc::new(MockLookup::new([(("net", "P"), "FB_X")]));
         let r = ScopeResolver::new(mock);
-        r.resolve("net", "P.fbLog").await;
+        r.resolve("net", "P.fbLog", 851).await;
         assert_eq!(r.cache_len().await, 1);
 
         // First time we see this net_id's OCC: record without dropping.
@@ -388,7 +535,7 @@ mod tests {
         let mock = Arc::new(MockLookup::new([(("net", "P"), "FB_X")]));
         let r = ScopeResolver::new(mock);
         r.observe_occ("net", 5).await;
-        r.resolve("net", "P.fbLog").await;
+        r.resolve("net", "P.fbLog", 851).await;
         assert_eq!(r.cache_len().await, 1);
 
         r.observe_occ("net", 5).await; // same OCC → no-op
@@ -404,8 +551,8 @@ mod tests {
         let r = ScopeResolver::new(mock);
         r.observe_occ("netA", 3).await;
         r.observe_occ("netB", 9).await;
-        r.resolve("netA", "P.fbLog").await;
-        r.resolve("netB", "P.fbLog").await;
+        r.resolve("netA", "P.fbLog", 851).await;
+        r.resolve("netB", "P.fbLog", 851).await;
         assert_eq!(r.cache_len().await, 2);
 
         // OCC bump on netA only.
@@ -422,13 +569,13 @@ mod tests {
         struct ErroringLookup;
         #[async_trait]
         impl ScopeLookup for ErroringLookup {
-            async fn resolve(&self, _: &str, _: &str) -> anyhow::Result<Option<String>> {
+            async fn resolve(&self, _: &str, _: &str, _: u16) -> anyhow::Result<Option<String>> {
                 Err(anyhow::anyhow!("transport down"))
             }
         }
         let r = ScopeResolver::new(Arc::new(ErroringLookup));
         // Returns raw fallback…
-        assert_eq!(r.resolve("net", "X.fbLog").await, "X.fbLog");
+        assert_eq!(r.resolve("net", "X.fbLog", 851).await, "X.fbLog");
         // …but doesn't cache, so next call re-tries (we can't observe
         // the retry directly without a counter; cache_len is the
         // signal that the negative-cache path didn't fire).

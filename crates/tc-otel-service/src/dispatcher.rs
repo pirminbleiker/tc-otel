@@ -130,18 +130,20 @@ impl LogDispatcher {
         // only the first record per `(net_id, namespace)` per app
         // version touches ADS. The OCC observation drops the cache
         // for this net_id whenever the PLC's `OnlineChangeCnt` bumps,
-        // so post-update records re-resolve cleanly. Net_id and OCC
-        // captured before `entry` moves into `from_log_entry`.
+        // so post-update records re-resolve cleanly. Net_id, OCC, and
+        // app_port captured before `entry` moves into `from_log_entry`
+        // (app_port = the PLC runtime port the resolver connects to).
         let net_id = entry.ams_net_id.clone();
         let occ = entry.online_change_count;
+        let app_port = entry.ams_app_port;
         if !net_id.is_empty() {
             self.scope_resolver.observe_occ(&net_id, occ).await;
         }
         let mut record = LogRecord::from_log_entry(entry);
-        if !net_id.is_empty() && !record.scope_name.is_empty() {
+        if !net_id.is_empty() && !record.scope_name.is_empty() && app_port != 0 {
             record.scope_name = self
                 .scope_resolver
-                .resolve(&net_id, &record.scope_name)
+                .resolve(&net_id, &record.scope_name, app_port)
                 .await;
         }
         // Preserve the trace suffix that from_log_entry appended, if any,

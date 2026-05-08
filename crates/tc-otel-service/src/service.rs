@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
-use crate::scope_resolver::ScopeResolver;
+use crate::scope_resolver::{AdsScopeLookup, ScopeResolver};
 use crate::span_dispatcher::SpanDispatcher;
 use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
@@ -91,6 +91,13 @@ fn backfill_metrics_from_registry(
     }
 }
 
+/// AMS source port for outbound symbol-table reads issued by
+/// `AdsScopeLookup`. Distinct from `receiver.ads_port` (16150 — the
+/// inbound register port the local-router transport uses) so the
+/// AMS router can route responses back to us on the resolver's own
+/// TCP socket instead of mixing them with incoming PLC writes.
+const SCOPE_RESOLVER_SOURCE_PORT: u16 = 30150;
+
 /// Main TC-OTel Service
 pub struct TcOtelService {
     settings: AppSettings,
@@ -158,10 +165,42 @@ impl TcOtelService {
             (None, None)
         };
 
-        // Build a process-wide ScopeResolver. Phase 1A wires only the
-        // log-side; Phase 1B will swap the no-op lookup for an ADS-
-        // backed implementation, no signature changes required.
-        let scope_resolver = ScopeResolver::noop();
+        // Parse the configured AMS NetID once up-front; the
+        // scope-resolver wiring (below) needs it for `AdsScopeLookup`,
+        // and the AMS transports further down reuse the same value.
+        let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
+            .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
+
+        // Build the process-wide `ScopeResolver`. For local-router
+        // setups (tc-otel runs on the same IPC as the PLC) we plug
+        // in `AdsScopeLookup` so `entry.logger` resolves to the
+        // FB's actual *type name* via the PLC's symbol table — see
+        // `docs/plans/scope-name-via-ads-symbol-resolution.md`. For
+        // TCP / MQTT transports the lookup stays no-op for now;
+        // those need a separate route to issue ADS reads back to
+        // the PLC and aren't in scope for this PR.
+        let scope_resolver = match &self.settings.receiver.transport {
+            TransportConfig::LocalRouter(lr_cfg) => {
+                tracing::info!(
+                    "ScopeResolver: ADS-backed via local router at {} (source NetID {}, source port {})",
+                    lr_cfg.router_host,
+                    net_id,
+                    SCOPE_RESOLVER_SOURCE_PORT,
+                );
+                let lookup = AdsScopeLookup::new(
+                    lr_cfg.router_host.clone(),
+                    net_id,
+                    SCOPE_RESOLVER_SOURCE_PORT,
+                );
+                ScopeResolver::new(Arc::new(lookup))
+            }
+            _ => {
+                tracing::info!(
+                    "ScopeResolver: no-op (transport != local-router; symbol-table lookup not wired)"
+                );
+                ScopeResolver::noop()
+            }
+        };
 
         // Create log dispatcher with config watch receiver for hot-reload
         let log_dispatcher = LogDispatcher::with_scope_resolver(
@@ -239,9 +278,8 @@ impl TcOtelService {
             None
         };
 
-        // Start AMS transport (TCP or MQTT based on configuration)
-        let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
-            .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
+        // Start AMS transport (TCP or MQTT based on configuration).
+        // `net_id` was parsed earlier (above the scope-resolver wiring).
 
         let conn_config = ConnectionConfig {
             max_connections: self.settings.receiver.max_connections,
