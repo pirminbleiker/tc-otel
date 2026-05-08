@@ -139,7 +139,7 @@ async fn batch_with_samples_produces_single_event_with_all_samples() {
     );
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
 
-    let resp = router.dispatch(&frame).await.unwrap();
+    let resp = router.dispatch(&frame, None).await.unwrap();
     assert!(resp.is_some(), "dispatch should return ACK response");
 
     let (net_id, ev) = push_rx.recv().await.expect("should receive one batch");
@@ -194,7 +194,7 @@ async fn empty_batch_still_produces_event_with_aggregates() {
 
     let payload = build_batch_payload(1, 350, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "PlcTask", &[]);
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("should receive event");
     match ev {
@@ -216,7 +216,7 @@ async fn batch_ack_returns_immediately() {
     let payload = build_batch_payload(1, 340, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, "IO Idle", &[]);
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
 
-    let resp = router.dispatch(&frame).await.unwrap();
+    let resp = router.dispatch(&frame, None).await.unwrap();
     let resp_data = resp.expect("dispatch returned ACK");
     assert!(resp_data.len() >= 32);
 
@@ -238,7 +238,7 @@ async fn unknown_version_is_dropped_silently() {
     payload[0] = 99; // invalid version
 
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     assert!(
         push_rx.try_recv().is_err(),
@@ -264,7 +264,7 @@ async fn truncated_batch_is_dropped_silently() {
     payload.truncate(payload.len() - PUSH_SAMPLE_SIZE);
 
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     assert!(
         push_rx.try_recv().is_err(),
@@ -287,7 +287,7 @@ async fn sample_count_above_max_is_rejected() {
     payload[0x0C..0x0E].copy_from_slice(&forged.to_le_bytes());
 
     let frame = wrap_as_ams_write(plc_net_id, 16150, IG_PUSH_DIAG, IO_PUSH_BATCH, &payload);
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     assert!(
         push_rx.try_recv().is_err(),
@@ -307,7 +307,7 @@ async fn non_push_write_still_reaches_log_parser() {
     // Send a regular write to IG_RT_SYSTEM (not push-diagnostic).
     let dummy = [0x01_u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
     let frame = wrap_as_ams_write(plc_net_id, 16150, 0xF200_0000, 0, &dummy);
-    let resp = router.dispatch(&frame).await.unwrap();
+    let resp = router.dispatch(&frame, None).await.unwrap();
     assert!(resp.is_some());
 
     assert!(

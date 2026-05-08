@@ -48,6 +48,30 @@ const AMS_TCP_CMD_GET_LOCAL_NETID: u16 = 0x1002;
 /// port (see `nAdsPort := 16150` in the PLC library).
 pub const TC_OTEL_REGISTER_PORT: u16 = 16150;
 
+/// Detect the IPC's primary outbound IPv4 (the interface the kernel
+/// would pick for traffic to the public internet). Used to populate
+/// OTel sem-conv `source.address` for frames that arrived over the
+/// local AMS router — TwinCAT runs on the same host, so the
+/// network-level peer IS this IPC. Reporting the real interface IP
+/// (e.g. `172.18.129.178`) instead of `127.0.0.1` lets dashboards
+/// correlate logs/metrics with the host they were collected from
+/// without an extra `host.ip` lookup.
+///
+/// Uses the standard UDP-connect trick: `UdpSocket::connect()` only
+/// sets the destination on the socket — no packets are sent — but it
+/// forces the kernel to resolve the outbound interface so
+/// `local_addr()` returns the real IP. Works offline; returns `None`
+/// only on hosts without any usable interface.
+fn detect_primary_local_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    if ip.is_unspecified() {
+        return None;
+    }
+    Some(ip.to_string())
+}
+
 /// Local AMS router client transport.
 pub struct LocalRouterAmsTransport {
     router_host: String,
@@ -57,6 +81,11 @@ pub struct LocalRouterAmsTransport {
     /// Populated on first successful `run()` call; stable thereafter.
     local_net_id: Arc<RwLock<AmsNetId>>,
     router: Arc<AdsRouter>,
+    /// IPC's primary outbound IPv4, captured once at construction.
+    /// `None` only on networkless hosts; the dispatch path falls back
+    /// to leaving `source.address` empty in that case (better than a
+    /// misleading `127.0.0.1`).
+    local_ip: Option<String>,
 }
 
 impl LocalRouterAmsTransport {
@@ -69,6 +98,7 @@ impl LocalRouterAmsTransport {
             // run() overwrites this before the first ADS frame is dispatched.
             local_net_id: Arc::new(RwLock::new(AmsNetId::from_bytes([0, 0, 0, 0, 0, 0]))),
             router,
+            local_ip: detect_primary_local_ip(),
         }
     }
 
@@ -133,7 +163,11 @@ impl LocalRouterAmsTransport {
     /// Frame loop: read AMS/TCP packets, dispatch ADS frames, write
     /// responses back on the same socket. Returns when the router
     /// closes the connection or an unrecoverable error occurs.
-    async fn frame_loop(stream: &mut TcpStream, router: Arc<AdsRouter>) -> crate::Result<()> {
+    async fn frame_loop(
+        stream: &mut TcpStream,
+        router: Arc<AdsRouter>,
+        local_ip: Option<&str>,
+    ) -> crate::Result<()> {
         let mut buf = vec![0u8; 16384];
         loop {
             // Read 6-byte AMS/TCP header.
@@ -174,7 +208,12 @@ impl LocalRouterAmsTransport {
                         // Skip without dropping the registration.
                         continue;
                     }
-                    match router.dispatch(frame).await {
+                    // Local-router transport: frames come from the Windows
+                    // AMS router (TwinCAT runtime on the same IPC) over a
+                    // loopback pipe. Report the IPC's primary interface
+                    // IP (not `127.0.0.1`) so OTel dashboards can correlate
+                    // logs/metrics with the host they came from.
+                    match router.dispatch(frame, local_ip).await {
                         Ok(Some(response)) => {
                             let mut full = Vec::with_capacity(6 + response.len());
                             full.extend_from_slice(&Self::make_amstcp_header(
@@ -255,7 +294,13 @@ impl AmsTransport for LocalRouterAmsTransport {
             }
 
             // Hand off to the read loop. On clean disconnect we reconnect.
-            if let Err(e) = Self::frame_loop(&mut stream, self.router.clone()).await {
+            if let Err(e) = Self::frame_loop(
+                &mut stream,
+                self.router.clone(),
+                self.local_ip.as_deref(),
+            )
+            .await
+            {
                 tracing::warn!("local-router frame loop error: {e}");
             }
 

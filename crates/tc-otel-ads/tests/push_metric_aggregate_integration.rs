@@ -130,7 +130,7 @@ async fn numeric_aggregate_dispatches_with_lreal_samples() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let resp = router.dispatch(&frame).await.unwrap();
+    let resp = router.dispatch(&frame, None).await.unwrap();
     assert!(resp.is_some(), "router should ACK the write");
 
     let (received_net_id, ev) = push_rx
@@ -201,7 +201,7 @@ async fn bool_aggregate_dispatches_with_correct_samples() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
     if let DiagEvent::MetricAggregateBatch {
@@ -252,7 +252,7 @@ async fn aggregate_with_trace_context_propagates_ids() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
     if let DiagEvent::MetricAggregateBatch {
@@ -290,7 +290,7 @@ async fn aggregate_overflow_flag_propagates() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     let (_, ev) = push_rx.recv().await.expect("expected event");
     if let DiagEvent::MetricAggregateBatch { flags, .. } = ev {
@@ -324,7 +324,7 @@ async fn aggregate_with_wrong_event_type_is_dropped() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     assert!(
         push_rx.try_recv().is_err(),
@@ -352,7 +352,7 @@ async fn aggregate_truncated_body_is_dropped() {
         IO_PUSH_METRIC_AGG,
         &payload,
     );
-    let _ = router.dispatch(&frame).await.unwrap();
+    let _ = router.dispatch(&frame, None).await.unwrap();
 
     assert!(
         push_rx.try_recv().is_err(),

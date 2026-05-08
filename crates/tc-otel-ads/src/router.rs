@@ -55,7 +55,19 @@ impl AdsRouter {
         &self.registry
     }
 
-    pub async fn dispatch(&self, frame: &[u8]) -> crate::Result<Option<Vec<u8>>> {
+    /// Dispatch one inbound AMS frame.
+    ///
+    /// `peer_address` is the network-level peer the frame arrived from
+    /// (TCP transport: peer IP). It propagates to `LogEntry.source` /
+    /// `MetricEntry.source` so the OTel sem-conv `source.address`
+    /// resource attribute gets the real network address rather than
+    /// the AMS Net ID. Loopback / non-IP transports (local-router,
+    /// MQTT broker fan-out) pass `None`.
+    pub async fn dispatch(
+        &self,
+        frame: &[u8],
+        peer_address: Option<&str>,
+    ) -> crate::Result<Option<Vec<u8>>> {
         if frame.len() < 32 {
             return Err(crate::AdsError::ParseError("AMS frame too short".into()));
         }
@@ -137,7 +149,12 @@ impl AdsRouter {
                             }
                         } else {
                             // Parse as log batch (existing behavior)
-                            self.dispatch_write_sync(&source_net_id, source_port, &wr.data);
+                            self.dispatch_write_sync(
+                                &source_net_id,
+                                source_port,
+                                peer_address,
+                                &wr.data,
+                            );
                         }
                     }
                 }
@@ -203,7 +220,13 @@ impl AdsRouter {
         r
     }
 
-    fn dispatch_write_sync(&self, source_net_id: &str, source_port: u16, write_data: &[u8]) {
+    fn dispatch_write_sync(
+        &self,
+        source_net_id: &str,
+        source_port: u16,
+        peer_address: Option<&str>,
+        write_data: &[u8],
+    ) {
         if let Ok(pr) = AdsParser::parse_all(write_data) {
             for reg in pr.registrations {
                 let k = RegistrationKey {
@@ -233,11 +256,12 @@ impl AdsRouter {
                         e.online_change_count = m.online_change_count;
                     }
                 }
-                // entry.source is left empty — sem-conv `source.address`
-                // is a network address, not the AMS Net ID. The PLC
-                // identity is already in plc.ams_net_id (resource).
+                // sem-conv `source.address` carries the network-level
+                // peer the frame arrived from (TCP peer IP for
+                // tcp-transport; empty for loopback/MQTT). PLC identity
+                // lives separately in `plc.ams_net_id` (resource).
                 let mut le = LogEntry::new(
-                    String::new(),
+                    peer_address.unwrap_or("").to_string(),
                     String::new(),
                     e.message,
                     e.logger,
@@ -282,6 +306,7 @@ impl AdsRouter {
         &self,
         source_net_id: &str,
         source_port: u16,
+        peer_address: Option<&str>,
         write_data: &[u8],
     ) -> crate::Result<()> {
         if let Ok(pr) = AdsParser::parse_all(write_data) {
@@ -313,10 +338,10 @@ impl AdsRouter {
                         e.online_change_count = m.online_change_count;
                     }
                 }
-                // entry.source is left empty — sem-conv `source.address`
-                // is a network address, not the AMS Net ID.
+                // sem-conv `source.address` = network peer (see
+                // `dispatch_write_sync` doc-comment for rationale).
                 let mut le = LogEntry::new(
-                    String::new(),
+                    peer_address.unwrap_or("").to_string(),
                     String::new(),
                     e.message,
                     e.logger,
@@ -360,10 +385,8 @@ impl AdsRouter {
                         kind: me.kind,
                         value: me.value,
                         timestamp: me.timestamp,
-                        // entry.source left empty — sem-conv `source.address`
-                        // is a network address, not the AMS Net ID. PLC
-                        // identity is in plc.ams_net_id (resource).
-                        source: String::new(),
+                        // sem-conv `source.address` = network peer.
+                        source: peer_address.unwrap_or("").to_string(),
                         hostname: String::new(),
                         ams_net_id: source_net_id.to_string(),
                         ams_source_port: source_port,
@@ -452,14 +475,14 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_frame_too_short() {
         let router = make_router();
-        assert!(router.dispatch(&[0u8; 20]).await.is_err());
+        assert!(router.dispatch(&[0u8; 20], None).await.is_err());
     }
 
     #[tokio::test]
     async fn test_dispatch_read_state_returns_valid_state_payload() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_READ_STATE, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         let hdr = assert_valid_response(&req, &resp);
         // READ_STATE response payload: adsState(2) + deviceState(2) — 8 bytes
         // total including the leading 4-byte result code? No: READ_STATE has
@@ -474,7 +497,7 @@ mod tests {
     async fn test_dispatch_read_device_info_returns_name() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_READ_DEVICE_INFO, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), 0);
         // Payload: result(4) + major(1) + minor(1) + build(2) + name(16)
@@ -492,7 +515,7 @@ mod tests {
         body.extend_from_slice(&0u32.to_le_bytes());
         body.extend_from_slice(&16u32.to_le_bytes());
         let (req, frame) = make_request_frame(ADS_CMD_READ, &body);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), 0);
         // Payload: result(4) + length(4) + data(16)
@@ -511,7 +534,7 @@ mod tests {
         body.extend_from_slice(&0u32.to_le_bytes());
         body.extend_from_slice(&0u32.to_le_bytes());
         let (req, frame) = make_request_frame(ADS_CMD_WRITE, &body);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), 0, "write always ACKs with 0");
         assert_eq!(resp.len(), 32 + 4);
@@ -521,7 +544,7 @@ mod tests {
     async fn test_dispatch_read_write_returns_srvnotsupp() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_READ_WRITE, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
         // READ_WRITE response shape: result(4) + length(4)
@@ -534,7 +557,7 @@ mod tests {
     async fn test_dispatch_write_control_returns_srvnotsupp() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_WRITE_CONTROL, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
         assert_eq!(resp.len(), 32 + 4);
@@ -544,7 +567,7 @@ mod tests {
     async fn test_dispatch_add_notification_returns_srvnotsupp_with_zero_handle() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_ADD_NOTIFICATION, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
         assert_eq!(resp.len(), 32 + 8);
@@ -556,7 +579,7 @@ mod tests {
     async fn test_dispatch_del_notification_returns_srvnotsupp() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_DEL_NOTIFICATION, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
         assert_eq!(resp.len(), 32 + 4);
@@ -566,7 +589,7 @@ mod tests {
     async fn test_dispatch_notification_returns_srvnotsupp() {
         let router = make_router();
         let (req, frame) = make_request_frame(ADS_CMD_NOTIFICATION, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
     }
@@ -575,7 +598,7 @@ mod tests {
     async fn test_dispatch_unknown_command_returns_srvnotsupp() {
         let router = make_router();
         let (req, frame) = make_request_frame(0xEEEE, &[]);
-        let resp = router.dispatch(&frame).await.unwrap().unwrap();
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
         assert_valid_response(&req, &resp);
         assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_SRVNOTSUPP);
         assert_eq!(resp.len(), 32 + 4);
@@ -595,7 +618,7 @@ mod tests {
         for id in ids {
             let (req, frame) = make_request_frame(id, &[]);
             let resp = router
-                .dispatch(&frame)
+                .dispatch(&frame, None)
                 .await
                 .unwrap_or_else(|e| panic!("dispatch errored for cmd {}: {}", id, e))
                 .unwrap_or_else(|| panic!("dispatch returned None for cmd {}", id));
