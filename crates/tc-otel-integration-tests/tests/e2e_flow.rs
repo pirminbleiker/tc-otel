@@ -163,11 +163,13 @@ fn test_e2e_log_entry_to_otel_record() {
         Some(&serde_json::Value::Number(3.into()))
     );
 
-    // Check scope attributes
-    assert_eq!(
-        record.scope_attributes.get("logger.name"),
-        Some(&serde_json::Value::String("system.monitor".to_string()))
-    );
+    // The PLC's logger name (`F_Log(...).WithLogger("system.monitor")`
+    // → `entry.logger`) is now the OTel `InstrumentationScope.name`,
+    // not a per-record `scope_attributes.logger.name` entry. Records
+    // bucket on this field at encode time, so each distinct logger
+    // becomes its own ScopeLogs block in the wire request.
+    assert_eq!(record.scope_name, "system.monitor");
+    assert!(record.scope_attributes.is_empty());
 
     // Check log attributes (context + standard fields + arguments)
     assert_eq!(

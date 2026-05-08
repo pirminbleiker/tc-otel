@@ -850,6 +850,14 @@ pub struct LogRecord {
     pub trace_id: String, // Hex-encoded trace ID (empty = no trace context)
     pub span_id: String,  // Hex-encoded span ID (empty = no span context)
     pub resource_attributes: HashMap<String, serde_json::Value>,
+    /// `InstrumentationScope.name` for this record. Per the OTel Logs
+    /// data model, the logger that produced the record IS the scope
+    /// name — not a per-record attribute. Records sharing the same
+    /// resource are bucketed by `scope_name` at encode time so each
+    /// distinct logger gets its own `ScopeLogs` block. Empty string
+    /// falls back to the default crate scope name (`tc-otel`).
+    #[serde(default)]
+    pub scope_name: String,
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub log_attributes: HashMap<String, serde_json::Value>,
 }
@@ -875,11 +883,13 @@ impl LogRecord {
             entry.ams_source_port,
         );
 
-        let mut scope_attributes = HashMap::with_capacity(1);
-        scope_attributes.insert(
-            "logger.name".to_string(),
-            serde_json::Value::String(entry.logger),
-        );
+        // The PLC's logger name (`F_Log(...).WithLogger("MyLogger")` →
+        // `entry.logger`) IS the OTel `InstrumentationScope.name` —
+        // not a per-record attribute. The encoder groups records by
+        // this field so each distinct logger ends up in its own
+        // `ScopeLogs` block.
+        let scope_name = entry.logger;
+        let scope_attributes = HashMap::new();
 
         // Pre-allocate log_attributes: context items + standard keys + arguments
         let expected_capacity = entry.context.len() + entry.arguments.len() + 4;
@@ -938,6 +948,7 @@ impl LogRecord {
             trace_id,
             span_id,
             resource_attributes,
+            scope_name,
             scope_attributes,
             log_attributes,
         }
@@ -1242,7 +1253,11 @@ mod tests {
             record.resource_attributes["service.instance.id"],
             serde_json::json!("App1")
         );
-        assert_eq!(record.scope_attributes.len(), 1);
+        // Logger name is now the InstrumentationScope.name, not a
+        // per-record scope attribute. scope_attributes is empty for
+        // tc-otel logs (reserved for future scope-level metadata).
+        assert!(record.scope_attributes.is_empty());
+        assert_eq!(record.scope_name, "app.module");
         assert!(record.log_attributes.len() >= 5); // context + standard + args
         assert_eq!(
             record.log_attributes["tc.task.index"],

@@ -49,28 +49,28 @@ fn backfill_metrics_from_registry(
         if m.ams_net_id.is_empty() {
             continue;
         }
-        // Try exact key first (cheaper, hits when ams_source_port known).
-        let exact = if m.ams_source_port != 0 {
-            registry.lookup(&tc_otel_ads::protocol::RegistrationKey {
-                ams_net_id: m.ams_net_id.clone(),
-                ams_source_port: m.ams_source_port,
-                task_index: m.task_index as u8,
-            })
-        } else {
-            None
-        };
-        let (key_port, meta) = if let Some(meta) = exact {
-            (m.ams_source_port, meta)
-        } else if let Some((k, meta)) = registry.lookup_by_task(&m.ams_net_id, m.task_index as u8) {
-            (k.ams_source_port, meta)
-        } else {
+        // Resolve via the strongest combination available on the entry.
+        // Different metric paths fill different subsets of the triple:
+        //   - `metric_aggregate_to_entries` / `PlcSystemMetricsCollector`
+        //     supply `(net_id, task_index)` with `ams_source_port = 0`.
+        //   - `batch_to_metrics` supplies `(net_id, ams_source_port)`
+        //     with `task_index = 0` (never set).
+        //   - Once a path supplies both, the exact-key lookup wins.
+        let port_filter = (m.ams_source_port != 0).then_some(m.ams_source_port);
+        let task_filter = (m.task_index > 0).then_some(m.task_index as u8);
+        let Some((k, meta)) = registry.lookup_partial(&m.ams_net_id, port_filter, task_filter)
+        else {
             continue;
         };
+        let key_port = k.ams_source_port;
         if m.ams_app_port == 0 {
             m.ams_app_port = meta.app_port;
         }
         if m.ams_source_port == 0 {
             m.ams_source_port = key_port;
+        }
+        if m.task_index == 0 {
+            m.task_index = i32::from(k.task_index);
         }
         // Registry values for app_name / project_name / task_name
         // override any pre-stamped fallback (e.g.

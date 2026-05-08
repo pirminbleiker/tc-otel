@@ -866,10 +866,32 @@ END_VAR
     __SYSTEM.TYPE_CLASS.TYPE_STRING:
         _eBodySchema := E_MetricBodySchema.eString;
         _nSampleSize := _nStringSize;
+        F_InternalLog(
+            E_LogLevel.eWarn,
+            'FB_Metrics._LockSchema',
+            'Unsupported TypeClass=%d for metric %s',
+            Tc2_Utilities.F_UDINT(stArg.TypeClass),
+            Tc2_Utilities.F_StringEx(_sName),
+            Tc2_Utilities.EMPTY_ARG_VALUE,
+            Tc2_Utilities.EMPTY_ARG_VALUE
+        );
+        _LockSchema := FALSE;
+        RETURN;
 
     __SYSTEM.TYPE_CLASS.TYPE_WSTRING:
         _eBodySchema := E_MetricBodySchema.eWstring;
         _nSampleSize := _nStringSize * 2;
+        F_InternalLog(
+            E_LogLevel.eWarn,
+            'FB_Metrics._LockSchema',
+            'Unsupported TypeClass=%d for metric %s',
+            Tc2_Utilities.F_UDINT(stArg.TypeClass),
+            Tc2_Utilities.F_StringEx(_sName),
+            Tc2_Utilities.EMPTY_ARG_VALUE,
+            Tc2_Utilities.EMPTY_ARG_VALUE
+        );
+        _LockSchema := FALSE;
+        RETURN;
 
     ELSE
         F_InternalLog(
@@ -1165,6 +1187,12 @@ END_VAR
         <ST><![CDATA[IF NOT _bInitialized OR stArg.pValue = 0 THEN
     Observe := FALSE;
     RETURN;
+END_IF
+
+IF _eBodySchema = E_MetricBodySchema.eString OR _eBodySchema = E_MetricBodySchema.eWstring THEN
+	_nWrongTypeDrops := _nWrongTypeDrops + 1;
+	Observe := FALSE;
+	RETURN;
 END_IF
 
 (* Lock schema on first call. *)

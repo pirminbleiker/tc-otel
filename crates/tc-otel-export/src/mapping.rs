@@ -131,11 +131,10 @@ mod tests {
             &serde_json::Value::String("MainTask".to_string())
         );
 
-        // Check scope attributes
-        assert_eq!(
-            record.scope_attributes.get("logger.name").unwrap(),
-            &serde_json::Value::String("app.startup".to_string())
-        );
+        // Check the InstrumentationScope.name (= logger). Per the
+        // OTel Logs data model the logger that produced the record IS
+        // the scope name, not a per-record `logger.name` attribute.
+        assert_eq!(record.scope_name, "app.startup");
     }
 
     #[test]

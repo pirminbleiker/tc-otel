@@ -35,12 +35,19 @@ pub fn build(records: &[LogRecord]) -> Vec<u8> {
 
 /// Build the OTLP request without serialising.
 ///
-/// Records are bucketed by resource attribute set, producing one
-/// `ResourceLogs` block per distinct resource. The scope attributes
-/// (e.g. `logger.name`) of the first record in each bucket are attached
-/// to that bucket's `InstrumentationScope`; if logs in a batch span
-/// multiple loggers, downstream backends still disambiguate via the
-/// per-record `attributes`.
+/// Two-level bucketing per the OTel Logs data model:
+/// 1. Outer: by resource attribute fingerprint → one `ResourceLogs`
+///    block per distinct resource.
+/// 2. Inner: by `record.scope_name` (the PLC logger that produced the
+///    record) → one `ScopeLogs` block per logger, with
+///    `InstrumentationScope.name` set to the logger name. Records with
+///    an empty `scope_name` (e.g. older entries that didn't carry the
+///    field) fall back to the crate-default `tc-otel` scope.
+///
+/// Backend effect: VictoriaLogs / Grafana Loki / Tempo show the
+/// logger as the canonical "scope" / "instrumentation" attribute
+/// rather than a free-form per-record label, so log queries can
+/// filter `scope.name="MyPlcLogger"` directly.
 pub fn build_request(records: &[LogRecord]) -> ExportLogsServiceRequest {
     if records.is_empty() {
         return ExportLogsServiceRequest {
@@ -48,23 +55,50 @@ pub fn build_request(records: &[LogRecord]) -> ExportLogsServiceRequest {
         };
     }
 
+    let crate_version = env!("CARGO_PKG_VERSION").to_string();
+
     let resource_logs = group_records_by_resource(records, |r| &r.resource_attributes)
         .into_iter()
-        .map(|(resource_attrs, bucket)| {
-            let scope = InstrumentationScope {
-                name: SCOPE_NAME.to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                attributes: build_attributes(&bucket[0].scope_attributes),
-                dropped_attributes_count: 0,
-            };
-            let log_records = bucket.into_iter().map(build_log_record).collect();
+        .map(|(resource_attrs, resource_bucket)| {
+            // Inner: bucket by logger (scope_name). Preserves first-seen
+            // order so encoder output is deterministic for fixed input.
+            let mut scope_buckets: Vec<(String, Vec<&LogRecord>)> = Vec::new();
+            for rec in resource_bucket {
+                let key = if rec.scope_name.is_empty() {
+                    SCOPE_NAME
+                } else {
+                    rec.scope_name.as_str()
+                };
+                if let Some((_, b)) = scope_buckets.iter_mut().find(|(n, _)| n == key) {
+                    b.push(rec);
+                } else {
+                    scope_buckets.push((key.to_string(), vec![rec]));
+                }
+            }
+
+            let scope_logs = scope_buckets
+                .into_iter()
+                .map(|(scope_name, bucket)| {
+                    let scope = InstrumentationScope {
+                        name: scope_name,
+                        // `version` is the *instrumentation library*'s
+                        // version. tc-otel is that library; per-logger
+                        // versioning would be misleading.
+                        version: crate_version.clone(),
+                        attributes: build_attributes(&bucket[0].scope_attributes),
+                        dropped_attributes_count: 0,
+                    };
+                    ScopeLogs {
+                        scope: Some(scope),
+                        log_records: bucket.into_iter().map(build_log_record).collect(),
+                        schema_url: String::new(),
+                    }
+                })
+                .collect();
+
             ResourceLogs {
                 resource: Some(build_resource(resource_attrs)),
-                scope_logs: vec![ScopeLogs {
-                    scope: Some(scope),
-                    log_records,
-                    schema_url: String::new(),
-                }],
+                scope_logs,
                 schema_url: String::new(),
             }
         })
@@ -118,8 +152,6 @@ mod tests {
             "service.name".to_string(),
             serde_json::json!("tc-otel-test"),
         );
-        let mut scope_attrs = HashMap::new();
-        scope_attrs.insert("logger.name".to_string(), serde_json::json!("MotionAxis"));
         let mut log_attrs = HashMap::new();
         log_attrs.insert("axis".to_string(), serde_json::json!("x"));
         LogRecord {
@@ -130,7 +162,8 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: resource,
-            scope_attributes: scope_attrs,
+            scope_name: "MotionAxis".to_string(),
+            scope_attributes: HashMap::new(),
             log_attributes: log_attrs,
         }
     }
@@ -185,7 +218,12 @@ mod tests {
     }
 
     #[test]
-    fn scope_carries_logger_name() {
+    fn scope_name_is_logger_name() {
+        // Per OTel Logs data model: the logger that produced the
+        // record IS the InstrumentationScope.name — not a per-record
+        // attribute. tc-otel maps `entry.logger` (`F_Log(...).
+        // WithLogger("MotionAxis")` on the PLC side) onto
+        // `LogRecord.scope_name`, and the encoder uses it directly.
         let r = log_record();
         let bytes = build(std::slice::from_ref(&r));
         let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
@@ -193,16 +231,43 @@ mod tests {
             .scope
             .as_ref()
             .unwrap();
-        assert_eq!(scope.name, "tc-otel");
-        let logger = scope
-            .attributes
-            .iter()
-            .find(|kv| kv.key == "logger.name")
+        assert_eq!(scope.name, "MotionAxis");
+        // No per-record `logger.name` scope attribute — the scope name
+        // already carries that information.
+        assert!(scope.attributes.iter().all(|kv| kv.key != "logger.name"));
+    }
+
+    #[test]
+    fn empty_scope_name_falls_back_to_crate_default() {
+        let mut r = log_record();
+        r.scope_name = String::new();
+        let bytes = build(std::slice::from_ref(&r));
+        let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
+        let scope = decoded.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
             .unwrap();
-        match logger.value.as_ref().unwrap().value.as_ref().unwrap() {
-            AnyValueOneof::StringValue(s) => assert_eq!(s, "MotionAxis"),
-            _ => panic!("expected StringValue"),
-        }
+        assert_eq!(scope.name, "tc-otel");
+    }
+
+    #[test]
+    fn distinct_loggers_become_separate_scope_logs() {
+        let mut a = log_record();
+        a.scope_name = "MotionAxis".to_string();
+        let mut b = log_record();
+        b.scope_name = "Hydraulics".to_string();
+        let bytes = build(&[a, b]);
+        let decoded = ExportLogsServiceRequest::decode(&bytes[..]).unwrap();
+        // Same resource → one ResourceLogs, but two ScopeLogs blocks.
+        assert_eq!(decoded.resource_logs.len(), 1);
+        let scopes: Vec<&str> = decoded.resource_logs[0]
+            .scope_logs
+            .iter()
+            .map(|s| s.scope.as_ref().unwrap().name.as_str())
+            .collect();
+        assert!(scopes.contains(&"MotionAxis"));
+        assert!(scopes.contains(&"Hydraulics"));
+        assert_eq!(scopes.len(), 2);
     }
 
     #[test]

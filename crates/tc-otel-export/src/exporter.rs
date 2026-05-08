@@ -291,6 +291,11 @@ impl OtelExporter {
                     log_record["spanId"] = json!(record.span_id);
                 }
 
+                let scope_name = if record.scope_name.is_empty() {
+                    "tc-otel".to_string()
+                } else {
+                    record.scope_name.clone()
+                };
                 json!({
                     "resource": {
                         "attributes": Self::to_otlp_attributes(&record.resource_attributes)
@@ -298,7 +303,7 @@ impl OtelExporter {
                     "scopeLogs": [
                         {
                             "scope": {
-                                "name": "tc-otel",
+                                "name": scope_name,
                                 "attributes": Self::to_otlp_attributes(&record.scope_attributes)
                             },
                             "logRecords": [log_record]
@@ -701,6 +706,7 @@ mod tests {
             },
             trace_id: String::new(),
             span_id: String::new(),
+            scope_name: String::new(),
             scope_attributes: Default::default(),
             log_attributes: Default::default(),
         };
@@ -770,6 +776,7 @@ mod tests {
                 trace_id: String::new(),
                 span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
+                scope_name: String::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
             },
@@ -781,6 +788,7 @@ mod tests {
                 trace_id: String::new(),
                 span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
+                scope_name: String::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
             },
@@ -810,6 +818,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: resource_attrs,
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: log_attrs,
         };
@@ -832,6 +841,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),
         };
@@ -890,6 +900,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),
         };

@@ -27,25 +27,45 @@ impl TaskRegistry {
         self.metadata.read().unwrap().get(key).cloned()
     }
 
-    /// Partial lookup by `(ams_net_id, task_index)` only — used by
-    /// metric paths that know the task index but not the per-frame
-    /// `ams_source_port` (e.g. `PlcSystemMetricsCollector` derives
-    /// metrics from cycle-time stats, `metric_aggregate_to_entries`
-    /// from FB_Metrics aggregate batches). Returns the first matching
-    /// entry; ambiguity is unlikely because one PLC task =
-    /// one ams_source_port. The matching key is returned so callers
-    /// can also backfill `ams_source_port` on the metric.
-    pub fn lookup_by_task(
+    /// Partial lookup — matches the first entry whose key satisfies
+    /// every supplied component. `None` filters skip that field.
+    /// Used by metric paths that know only a subset of the
+    /// `(net_id, ams_source_port, task_index)` triple:
+    /// - `PlcSystemMetricsCollector` / `metric_aggregate_to_entries`
+    ///   know `(net_id, task_index)` but not `ams_source_port`.
+    /// - `batch_to_metrics` knows `(net_id, ams_source_port)` but not
+    ///   `task_index` (zero-default on the MetricEntry).
+    ///
+    /// Returns the matching key so callers can backfill the missing
+    /// component(s). One PLC task = one ams_source_port = one
+    /// task_index, so ambiguity is practically impossible.
+    pub fn lookup_partial(
         &self,
         ams_net_id: &str,
-        task_index: u8,
+        ams_source_port: Option<u16>,
+        task_index: Option<u8>,
     ) -> Option<(RegistrationKey, TaskMetadata)> {
         self.metadata
             .read()
             .unwrap()
             .iter()
-            .find(|(k, _)| k.ams_net_id == ams_net_id && k.task_index == task_index)
+            .find(|(k, _)| {
+                k.ams_net_id == ams_net_id
+                    && ams_source_port.is_none_or(|p| k.ams_source_port == p)
+                    && task_index.is_none_or(|t| k.task_index == t)
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
+    /// Convenience wrapper for `lookup_partial` when only the task
+    /// index is known (the most common case from the metric-side
+    /// backfill path).
+    pub fn lookup_by_task(
+        &self,
+        ams_net_id: &str,
+        task_index: u8,
+    ) -> Option<(RegistrationKey, TaskMetadata)> {
+        self.lookup_partial(ams_net_id, None, Some(task_index))
     }
 
     /// Get the number of registered tasks
