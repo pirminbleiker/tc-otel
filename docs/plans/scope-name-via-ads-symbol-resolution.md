@@ -65,11 +65,12 @@ ScopeResolver.resolve(net_id, entry.logger)
                                    OnlineChangeCnt bump)
 ```
 
-The cache is wiped for a `net_id` whenever the `OnlineChangeCnt`
-on that PLC's registration changes — see "Cache semantics" below.
+The cache is wiped for a `net_id` whenever a fresh registration
+message arrives for that PLC — see "Cache semantics" below.
 Custom names (e.g. `FB_Log('Drives.Motor')`) hit the negative-cache
-path and stay raw within one app version; after a PLC code change
-they get re-resolved cleanly.
+path and stay raw within one app version; after any PLC code
+change (online change, full activate, cold reset) the next
+registration triggers a clean re-resolution.
 
 Records arriving before the first cache fill emit with the raw
 `entry.logger` (= the namespace). After ~1 ADS round-trip, all
@@ -81,29 +82,36 @@ subsequent records from that namespace get the resolved type.
 - **Value**: `Either(type_name, namespace_string_unchanged)`. Both
   outcomes cached identically; the consumer doesn't care whether
   the resolver hit or missed in ADS.
-- **Invalidation**: drop the entire cache for a `net_id` whenever
-  `RegistrationMessage.online_change_count` bumps for that net_id.
-  This covers:
-  - Custom names that became real symbols after a PLC code change
-    (e.g. user added an `FB_Motor` whose instance path matches a
-    string they previously hardcoded).
-  - Symbols renamed or removed by an online change.
-  - New FBs added — they were absent on the previous fetch and
-    would otherwise stay absent forever.
+- **Invalidation**: drop the entire cache for a `net_id` on **every
+  new registration message** received for that net_id. The PLC's
+  `FB_TcOtelTask` already sets `bRegistrationDirty := TRUE` and
+  re-emits a registration in all the scenarios that should
+  invalidate symbols:
+  - **Online Change** — `OnlineChangeCnt <> nLastOnlineChange`
+    triggers re-registration in the FB.
+  - **Full Activate Configuration** — re-initialises FB state,
+    `bRegistrationDirty := TRUE` initialiser fires, registration
+    emitted on first cycle.
+  - **Cold Reset / RT restart** — same path as above.
+  - **tc-otel restart** — PLC sees ADS error on next write, sets
+    `bRegistrationDirty := TRUE`, registration goes out as soon as
+    the connection is back.
 
   Both positive (resolved type) and negative (raw fallback) entries
-  are cleared together. Consequence: the first record per namespace
-  after every OCC bump triggers a fresh ADS lookup. The cost is one
-  round-trip per first-record-per-namespace per app version, which
-  is negligible compared to the alternative of stale type names
-  silently surviving across PLC updates.
-- **TTL**: 1 h on the cache map itself as a backstop so long-silent
-  net_ids don't keep stale entries forever even if no OCC bump
-  arrives.
+  are cleared together. OCC is *not* a reliable trigger on its own
+  because Full Activate Configuration may reset OCC depending on
+  build options; "any fresh registration" covers both OCC-driven
+  and OCC-resetting paths uniformly.
 
-The OCC-driven invalidation is mandatory; the TTL is just a safety
-net for the case where a PLC restarts without bumping OCC (rare,
-but possible).
+  Cost: one ADS round-trip per first-record-per-namespace per
+  registration cycle. For typical workloads (logs run continuously,
+  registrations are rare events) this is negligible compared to
+  stale type names silently surviving a PLC update.
+
+- **TTL**: 1 h on the cache map itself as a backstop, in case a
+  PLC stops registering altogether (e.g. tc-otel sees the net_id
+  go silent without a fresh registration). Pure safety net — the
+  registration-driven invalidation is the primary signal.
 
 ### Failure modes
 
