@@ -21,6 +21,75 @@ use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
 use crate::web::{self, DiagnosticStats, SymbolStore, WebState};
 
+/// Backfill metric resource fields from the cross-pillar `TaskRegistry`
+/// so PLC-derived metrics carry the same `service.name` /
+/// `service.instance.id` / `plc.ams_app_port` resource attributes the
+/// log and trace paths emit.
+///
+/// Three metric paths feed the bridge with partial info:
+/// 1. `batch_to_metrics` (`tc.task.*` cycle/exec gauges) — has
+///    `ams_source_port` (task port, e.g. 350) and `task_name`, but no
+///    `task_index`, `app_name`, `project_name`, or `app_port`.
+/// 2. `metric_aggregate_to_entries` (`demo.sine` etc., FB_Metrics
+///    aggregate) — has `task_index`, `ams_net_id`, no `ams_source_port`.
+/// 3. `PlcSystemMetricsCollector` (`plc.cpu.estimated_load`,
+///    `plc.task.cycle_time.*`) — has `task_index`, `ams_net_id`, no
+///    `ams_source_port` either.
+///
+/// All three need the same backfill: find the registry entry for
+/// `(net_id, task_index)` (partial lookup, since `ams_source_port`
+/// may be 0 here) and stamp `app_port`, `app_name`, `project_name`,
+/// and `ams_source_port` if any are still empty / zero. Lookups are
+/// O(n) over registered tasks (small N, microseconds).
+fn backfill_metrics_from_registry(
+    registry: &Arc<tc_otel_ads::registry::TaskRegistry>,
+    metrics: &mut [MetricEntry],
+) {
+    for m in metrics.iter_mut() {
+        if m.ams_net_id.is_empty() {
+            continue;
+        }
+        // Resolve via the strongest combination available on the entry.
+        // Different metric paths fill different subsets of the triple:
+        //   - `metric_aggregate_to_entries` / `PlcSystemMetricsCollector`
+        //     supply `(net_id, task_index)` with `ams_source_port = 0`.
+        //   - `batch_to_metrics` supplies `(net_id, ams_source_port)`
+        //     with `task_index = 0` (never set).
+        //   - Once a path supplies both, the exact-key lookup wins.
+        let port_filter = (m.ams_source_port != 0).then_some(m.ams_source_port);
+        let task_filter = (m.task_index > 0).then_some(m.task_index as u8);
+        let Some((k, meta)) = registry.lookup_partial(&m.ams_net_id, port_filter, task_filter)
+        else {
+            continue;
+        };
+        let key_port = k.ams_source_port;
+        if m.ams_app_port == 0 {
+            m.ams_app_port = meta.app_port;
+        }
+        if m.ams_source_port == 0 {
+            m.ams_source_port = key_port;
+        }
+        if m.task_index == 0 {
+            m.task_index = i32::from(k.task_index);
+        }
+        // Registry values for app_name / project_name / task_name
+        // override any pre-stamped fallback (e.g.
+        // `PlcSystemMetricsCollector::gauge` proactively writes the
+        // configured `AppSettings::service.name` into `project_name`
+        // as a fallback; once we have a real registration that should
+        // win so all three pillars line up on the same `service.name`).
+        if !meta.app_name.is_empty() {
+            m.app_name = meta.app_name;
+        }
+        if !meta.project_name.is_empty() {
+            m.project_name = meta.project_name;
+        }
+        if !meta.task_name.is_empty() {
+            m.task_name = meta.task_name;
+        }
+    }
+}
+
 /// Main TC-OTel Service
 pub struct TcOtelService {
     settings: AppSettings,
@@ -178,7 +247,7 @@ impl TcOtelService {
         let (push_tx, mut push_rx) =
             mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
         let (trace_tx, mut trace_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::TraceWireEvent)>(256);
+            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(256);
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,
@@ -334,14 +403,16 @@ impl TcOtelService {
         // the task name in the wire frame.
         let mut shutdown_rx_push = shutdown_tx.subscribe();
         let bridge_metric_tx = metric_tx.clone();
+        let bridge_registry = task_registry.clone();
         let push_drain_handle = tokio::spawn(async move {
             let empty_names = std::collections::HashMap::new();
             loop {
                 tokio::select! {
                     Some((net_id, ev)) = push_rx.recv() => {
-                        let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                        let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                             net_id, ev, &empty_names,
                         );
+                        backfill_metrics_from_registry(&bridge_registry, &mut metrics);
                         if let Some(ref tx) = bridge_metric_tx {
                             for m in metrics {
                                 if tx.try_send(m).is_err() {
@@ -400,6 +471,7 @@ impl TcOtelService {
                         // Bridge to the existing metric pipeline — each
                         // DiagEvent fans out to one or more MetricEntry items.
                         let bridge_metric_tx = metric_tx.clone();
+                        let poller_registry = task_registry.clone();
                         tokio::spawn(async move {
                             while let Some((net_id, ev)) = diag_rx.recv().await {
                                 push_seen_map
@@ -407,9 +479,10 @@ impl TcOtelService {
                                     .await
                                     .insert(net_id, std::time::Instant::now());
                                 let names = task_names.read().await.clone();
-                                let metrics = crate::diagnostics_bridge::diag_event_to_metrics(
+                                let mut metrics = crate::diagnostics_bridge::diag_event_to_metrics(
                                     net_id, ev, &names,
                                 );
+                                backfill_metrics_from_registry(&poller_registry, &mut metrics);
                                 if let Some(ref tx) = bridge_metric_tx {
                                     for m in metrics {
                                         if tx.try_send(m).is_err() {
@@ -510,20 +583,32 @@ impl TcOtelService {
                 .as_ref()
                 .expect("trace_dispatcher must exist when traces enabled")
                 .sender();
-            let span_disp = Arc::new(tokio::sync::Mutex::new(SpanDispatcher::new(
-                record_tx,
-                Duration::from_secs(self.settings.traces.span_ttl_secs),
-                self.settings.traces.max_pending_spans,
-            )));
+            // Reuse the same hostname the LogDispatcher / MetricDispatcher
+            // already cached at construction time. service.name comes from
+            // settings — falls back to empty when not configured (the
+            // resource builder skips empty attributes).
+            let host_name = log_dispatcher.host_name();
+            let span_disp = Arc::new(tokio::sync::Mutex::new(
+                SpanDispatcher::new(
+                    record_tx,
+                    Duration::from_secs(self.settings.traces.span_ttl_secs),
+                    self.settings.traces.max_pending_spans,
+                )
+                .with_service_metadata(self.settings.service.name.clone(), (*host_name).clone())
+                // Share the same registry the log/metric paths populate
+                // so spans inherit `app_name` / `project_name` and
+                // `service.instance.id` matches across all three pillars.
+                .with_task_registry(task_registry.clone()),
+            ));
 
             let span_disp_events = span_disp.clone();
             let mut shutdown_rx_traces = shutdown_tx.subscribe();
             let event_handle = tokio::spawn(async move {
                 loop {
                     tokio::select! {
-                        Some((net_id, ev)) = trace_rx.recv() => {
+                        Some((net_id, source_port, ev)) = trace_rx.recv() => {
                             let mut disp = span_disp_events.lock().await;
-                            disp.on_event(net_id, ev);
+                            disp.on_event(net_id, source_port, ev);
                         }
                         _ = shutdown_rx_traces.recv() => {
                             tracing::info!("Trace event dispatcher stopped");
@@ -634,6 +719,7 @@ impl TcOtelService {
                     self.settings.service.name.clone(),
                 );
                 let m_tx = m_tx.clone();
+                let sys_registry = task_registry.clone();
                 let mut shutdown_rx_sys = shutdown_tx.subscribe();
                 let collection_interval =
                     Duration::from_millis(self.settings.metrics.export_flush_interval_ms);
@@ -642,7 +728,9 @@ impl TcOtelService {
                     loop {
                         tokio::select! {
                             _ = interval.tick() => {
-                                for entry in collector.collect() {
+                                let mut batch: Vec<_> = collector.collect();
+                                backfill_metrics_from_registry(&sys_registry, &mut batch);
+                                for entry in batch {
                                     let _ = m_tx.send(entry).await;
                                 }
                             }

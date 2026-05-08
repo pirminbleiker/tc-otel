@@ -328,15 +328,20 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[
-(* If the span is still open and we're not in copy code (i.e., the FB is
-   being destroyed), close it with an error so tc-otel doesn't wait out
-   the TTL. End() handles unregistering from any bound tracer. *)
-IF _bOpen AND NOT bInCopyCode THEN
-    _eStatus := E_SpanStatus.eError;
-    _sMsg := 'FB_Span instance destroyed while open';
-    End();
-END_IF;
+(* Cold Reset / RT shutdown destroys all FB instances in undefined
+   order. If FB_TcOtelTracer is destroyed before its FB_Span instances,
+   _pTracer is dangling and the End() call below dereferences freed
+   memory → page fault inside the AuxTask. __ISVALIDREF only catches
+   NULL, not dangling-after-free, so we cannot guard the call.
 
+   Skip the safety-net flush on real disposal (bInCopyCode = FALSE):
+   span data is lost, but the runtime tears down cleanly. tc-otel
+   will time the open span out via TTL (10 s default) — fine because
+   no consumer remains anyway after a Reset.
+
+   Online change (bInCopyCode = TRUE) preserves both FB instances in
+   memory until the new ones are wired in, so any flush would
+   double-emit; we skip there too. *)
 FB_exit := TRUE;
 ]]></ST>
       </Implementation>

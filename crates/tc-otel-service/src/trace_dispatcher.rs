@@ -23,12 +23,24 @@ impl TraceDispatcher {
 
         // Spawn batch worker task
         let endpoint = settings.traces.export.endpoint.clone();
-        let exporter = if let Some(ref ep) = endpoint {
-            OtelExporter::new(ep.clone(), batch_size, 3)
-        } else {
-            // Dummy exporter if endpoint not configured - won't be used
-            OtelExporter::new("http://localhost:4318/v1/traces".to_string(), batch_size, 3)
+        // Per-pillar override wins; otherwise inherit the global
+        // export.format (defaults to JSON for backward compat).
+        let format = settings
+            .traces
+            .export
+            .format
+            .unwrap_or(settings.export.format);
+        let export_cfg = tc_otel_export::exporter::ExportConfig {
+            batch_size,
+            max_retries: settings.export.max_retries,
+            timeout_secs: settings.export.timeout_secs,
+            format,
+            endpoint: endpoint
+                .clone()
+                .unwrap_or_else(|| "http://localhost:4318/v1/traces".to_string()),
+            ..Default::default()
         };
+        let exporter = OtelExporter::with_config(export_cfg);
 
         tokio::spawn(async move {
             if endpoint.is_none() {

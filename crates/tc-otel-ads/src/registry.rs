@@ -27,6 +27,47 @@ impl TaskRegistry {
         self.metadata.read().unwrap().get(key).cloned()
     }
 
+    /// Partial lookup — matches the first entry whose key satisfies
+    /// every supplied component. `None` filters skip that field.
+    /// Used by metric paths that know only a subset of the
+    /// `(net_id, ams_source_port, task_index)` triple:
+    /// - `PlcSystemMetricsCollector` / `metric_aggregate_to_entries`
+    ///   know `(net_id, task_index)` but not `ams_source_port`.
+    /// - `batch_to_metrics` knows `(net_id, ams_source_port)` but not
+    ///   `task_index` (zero-default on the MetricEntry).
+    ///
+    /// Returns the matching key so callers can backfill the missing
+    /// component(s). One PLC task = one ams_source_port = one
+    /// task_index, so ambiguity is practically impossible.
+    pub fn lookup_partial(
+        &self,
+        ams_net_id: &str,
+        ams_source_port: Option<u16>,
+        task_index: Option<u8>,
+    ) -> Option<(RegistrationKey, TaskMetadata)> {
+        self.metadata
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| {
+                k.ams_net_id == ams_net_id
+                    && ams_source_port.is_none_or(|p| k.ams_source_port == p)
+                    && task_index.is_none_or(|t| k.task_index == t)
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
+    /// Convenience wrapper for `lookup_partial` when only the task
+    /// index is known (the most common case from the metric-side
+    /// backfill path).
+    pub fn lookup_by_task(
+        &self,
+        ams_net_id: &str,
+        task_index: u8,
+    ) -> Option<(RegistrationKey, TaskMetadata)> {
+        self.lookup_partial(ams_net_id, None, Some(task_index))
+    }
+
     /// Get the number of registered tasks
     pub fn len(&self) -> usize {
         self.metadata.read().unwrap().len()
@@ -76,6 +117,7 @@ mod tests {
             app_name: "MyApp".to_string(),
             project_name: "MyProject".to_string(),
             online_change_count: 42,
+            app_port: 851,
         };
 
         registry.register(key.clone(), metadata.clone());
@@ -102,12 +144,14 @@ mod tests {
             app_name: "App1".to_string(),
             project_name: "Project1".to_string(),
             online_change_count: 1,
+            app_port: 851,
         };
         let metadata2 = TaskMetadata {
             task_name: "Task1".to_string(),
             app_name: "App1".to_string(),
             project_name: "Project1".to_string(),
             online_change_count: 2,
+            app_port: 851,
         };
 
         registry.register(key.clone(), metadata1);
@@ -147,6 +191,7 @@ mod tests {
             app_name: "App".to_string(),
             project_name: "Project".to_string(),
             online_change_count: 0,
+            app_port: 851,
         };
 
         registry.register(key1, metadata.clone());

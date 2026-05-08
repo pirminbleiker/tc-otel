@@ -576,6 +576,29 @@ pub struct OutputConfig {
     pub settings: serde_json::Value,
 }
 
+/// OTLP wire format selector. Picks the encoding tc-otel uses when
+/// posting batches to OTLP-shaped endpoints.
+///
+/// Default is `Protobuf` — that matches the OTLP/HTTP spec which makes
+/// protobuf MANDATORY and JSON optional, and it's what every modern
+/// OTLP backend (VictoriaMetrics / VictoriaTraces / Tempo / Jaeger /
+/// OTel-Collector / Datadog) accepts out of the box. Existing
+/// JSON-based setups (Loki, custom collectors) need to opt-in
+/// explicitly with `format = "json"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WireFormat {
+    /// OTLP-JSON over HTTP, `Content-Type: application/json`. Optional
+    /// per the OTLP spec; pick this when the receiving backend doesn't
+    /// support protobuf or you need human-readable wire dumps.
+    Json,
+    /// OTLP-Protobuf over HTTP, `Content-Type: application/x-protobuf`.
+    /// The OTLP/HTTP spec default and the only encoding VictoriaMetrics'
+    /// metrics endpoint accepts.
+    #[default]
+    Protobuf,
+}
+
 /// Export configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExportConfig {
@@ -594,6 +617,9 @@ pub struct ExportConfig {
     /// Max retry attempts on failure
     #[serde(default = "default_max_retries")]
     pub max_retries: usize,
+    /// Wire format for OTLP exports. Default `json`.
+    #[serde(default)]
+    pub format: WireFormat,
 }
 
 fn default_export_endpoint() -> String {
@@ -620,6 +646,7 @@ impl Default for ExportConfig {
             flush_interval_ms: default_flush_interval_ms(),
             timeout_secs: default_export_timeout_secs(),
             max_retries: default_max_retries(),
+            format: WireFormat::default(),
         }
     }
 }
@@ -845,6 +872,11 @@ pub struct MetricsConfig {
     /// Flush interval for metrics export in milliseconds (default: 5000)
     #[serde(default = "default_metrics_flush_interval_ms")]
     pub export_flush_interval_ms: u64,
+    /// Wire format for metrics export. Defaults to the value of
+    /// `export.format` when unset; explicit `protobuf` is required for
+    /// VictoriaMetrics' `/opentelemetry/v1/metrics` endpoint.
+    #[serde(default)]
+    pub export_format: Option<WireFormat>,
 }
 
 fn default_cycle_time_enabled() -> bool {
@@ -870,6 +902,7 @@ impl Default for MetricsConfig {
             export_endpoint: None,
             export_batch_size: default_metrics_batch_size(),
             export_flush_interval_ms: default_metrics_flush_interval_ms(),
+            export_format: None,
         }
     }
 }
@@ -887,6 +920,10 @@ pub struct TracesExportConfig {
     /// Flush interval for trace export in milliseconds (default: 1000)
     #[serde(default = "default_traces_flush_interval_ms")]
     pub flush_interval_ms: u64,
+    /// Wire format for trace export. Defaults to the value of
+    /// `export.format` when unset.
+    #[serde(default)]
+    pub format: Option<WireFormat>,
 }
 
 fn default_traces_batch_size() -> usize {
@@ -903,6 +940,7 @@ impl Default for TracesExportConfig {
             endpoint: None,
             batch_size: default_traces_batch_size(),
             flush_interval_ms: default_traces_flush_interval_ms(),
+            format: None,
         }
     }
 }
@@ -1411,6 +1449,44 @@ mod tests {
     }
 
     #[test]
+    fn test_wire_format_default_is_protobuf() {
+        // OTLP/HTTP spec (PR-A / D1): protobuf is the mandatory wire
+        // format and JSON is optional, so `WireFormat::default()` is
+        // Protobuf. Per-pillar overrides remain `None` (= follow
+        // top-level `export.format`).
+        assert_eq!(WireFormat::default(), WireFormat::Protobuf);
+        let cfg = ExportConfig::default();
+        assert_eq!(cfg.format, WireFormat::Protobuf);
+        let metrics = MetricsConfig::default();
+        assert!(metrics.export_format.is_none());
+        let traces = TracesExportConfig::default();
+        assert!(traces.format.is_none());
+    }
+
+    #[test]
+    fn test_wire_format_serde_deserialize() {
+        // Explicit "protobuf" deserializes into WireFormat::Protobuf.
+        let cfg: ExportConfig =
+            serde_json::from_str(r#"{"endpoint":"http://x","format":"protobuf"}"#).unwrap();
+        assert_eq!(cfg.format, WireFormat::Protobuf);
+        let cfg_json: ExportConfig =
+            serde_json::from_str(r#"{"endpoint":"http://x","format":"json"}"#).unwrap();
+        assert_eq!(cfg_json.format, WireFormat::Json);
+
+        // Per-pillar overrides round-trip through Option<WireFormat>.
+        let metrics: MetricsConfig =
+            serde_json::from_str(r#"{"export_format":"protobuf"}"#).unwrap();
+        assert_eq!(metrics.export_format, Some(WireFormat::Protobuf));
+        let traces: TracesExportConfig = serde_json::from_str(r#"{"format":"protobuf"}"#).unwrap();
+        assert_eq!(traces.format, Some(WireFormat::Protobuf));
+
+        // Unknown format -> deserialization error.
+        let err =
+            serde_json::from_str::<ExportConfig>(r#"{"endpoint":"http://x","format":"yaml"}"#);
+        assert!(err.is_err());
+    }
+
+    #[test]
     fn test_receiver_config_port_validation() {
         // Valid port range
         let config = ReceiverConfig {
@@ -1641,6 +1717,7 @@ mod tests {
                 endpoint: Some("http://otel-collector:4318/v1/traces".to_string()),
                 batch_size: 50,
                 flush_interval_ms: 500,
+                format: None,
             },
         };
 

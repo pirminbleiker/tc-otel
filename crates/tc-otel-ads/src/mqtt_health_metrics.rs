@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tc_otel_core::MetricEntry;
+use tc_otel_core::{local_source_address, MetricEntry};
 
 /// Collects MQTT broker health metrics from the transport eventloop.
 ///
@@ -133,7 +133,7 @@ impl MqttHealthCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 
@@ -142,7 +142,7 @@ impl MqttHealthCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 
@@ -170,7 +170,7 @@ impl MqttHealthCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 }
@@ -310,7 +310,18 @@ mod tests {
         let metrics = collector.collect();
         for metric in metrics {
             assert_eq!(metric.project_name, "my-service");
-            assert_eq!(metric.source, "tc-otel");
+            // sem-conv `source.address` is a network address, not the
+            // legacy "tc-otel" string. Self-emitted metrics inherit the
+            // IPC's own primary IP via `local_source_address()`. The
+            // exact value depends on the host running the test, so only
+            // assert it is a syntactically valid IPv4 — never empty,
+            // never the old "tc-otel" sentinel.
+            assert_ne!(metric.source, "tc-otel");
+            assert!(!metric.source.is_empty());
+            metric
+                .source
+                .parse::<std::net::Ipv4Addr>()
+                .expect("source.address must be a valid IPv4");
             assert!(!metric.description.is_empty());
             assert!(!metric.unit.is_empty());
         }

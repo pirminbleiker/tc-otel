@@ -9,17 +9,20 @@ pub mod error;
 pub mod formatter;
 pub mod metric_mapper;
 pub mod models;
+pub mod net;
 
 pub use config::{
     AppSettings, CustomMetricDef, DiagnosticsConfig, DiagnosticsTargetConfig, ExportConfig,
     LogFormat, LoggingConfig, MetricKindConfig, MetricsConfig, OutputConfig, ReceiverConfig,
-    ServiceConfig, TlsConfig, TracesConfig, WebConfig,
+    ServiceConfig, TlsConfig, TracesConfig, WebConfig, WireFormat,
 };
 pub use config_watcher::ConfigDiff;
 pub use error::{Error, Result};
 pub use formatter::MessageFormatter;
 pub use metric_mapper::MetricMapper;
 pub use models::{
-    LogEntry, LogLevel, LogRecord, MetricEntry, MetricKind, MetricRecord, SpanEntry, SpanEvent,
-    SpanKind, SpanStatusCode, TraceEventRecord, TraceRecord,
+    build_otel_resource, build_service_instance_id, LogEntry, LogLevel, LogRecord, MetricEntry,
+    MetricKind, MetricRecord, SpanEntry, SpanEvent, SpanKind, SpanStatusCode, TraceEventRecord,
+    TraceRecord,
 };
+pub use net::local_source_address;

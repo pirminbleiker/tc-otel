@@ -277,6 +277,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -293,6 +294,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Attr {
             span_id,
             task_index: 2,
@@ -305,6 +307,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Event {
             span_id,
             task_index: 2,
@@ -317,6 +320,7 @@ fn test_dispatcher_lifecycle() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id,
             task_index: 2,
@@ -328,17 +332,32 @@ fn test_dispatcher_lifecycle() {
     );
 
     let trace_record = rx.blocking_recv().expect("Should receive trace record");
-    assert_eq!(
-        trace_record
+    // PR-A: SpanDispatcher no longer synthesises `service.name = plc-<netid>`.
+    // The value is now threaded in via `with_service_metadata` from
+    // `AppSettings::service.name` at service start; an unconfigured dispatcher
+    // emits no `service.name` resource attribute. `plc.ams_net_id` carries the
+    // PLC identity instead.
+    assert!(
+        !trace_record
             .resource_attributes
-            .get("service.name")
-            .and_then(|v| v.as_str()),
-        Some("plc-5.80.201.232.1.1")
+            .contains_key("service.name"),
+        "service.name must not be auto-synthesised; got: {:?}",
+        trace_record.resource_attributes.get("service.name")
     );
     assert_eq!(
         trace_record
             .resource_attributes
-            .get("plc.task_index")
+            .get("plc.ams_net_id")
+            .and_then(|v| v.as_str()),
+        Some("5.80.201.232.1.1")
+    );
+    // PR-A: `plc.task_index` renamed to `tc.task.index` (custom-namespace
+    // sem-conv key; OTel-reserved `process.*` is for OS processes, not
+    // PLC tasks).
+    assert_eq!(
+        trace_record
+            .resource_attributes
+            .get("tc.task.index")
             .and_then(|v| v.as_i64()),
         Some(2)
     );
@@ -366,6 +385,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -382,6 +402,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 2,
             task_index: 2,
@@ -398,6 +419,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: child_span_id,
             task_index: 2,
@@ -415,6 +437,7 @@ fn test_nested_spans_parent_child() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: parent_span_id,
             task_index: 2,
@@ -556,6 +579,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
     let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -571,6 +595,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
     );
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: expected_span,
             task_index: 2,
@@ -610,6 +635,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
     let net_id = AmsNetId::from_bytes([10, 0, 0, 1, 1, 1]);
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -625,6 +651,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
     );
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: pregen_span,
             task_index: 2,
@@ -671,6 +698,7 @@ async fn test_span_dispatcher_indexes_pregenerated_span_ids() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -705,6 +733,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -728,6 +757,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id: pregenerated_span_id,
             task_index: 2,
@@ -759,6 +789,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 2,
@@ -775,6 +806,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
 
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 2,
             task_index: 2,

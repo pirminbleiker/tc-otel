@@ -17,6 +17,15 @@ use tokio::sync::{mpsc, watch};
 #[derive(Clone)]
 pub struct LogDispatcher {
     export_tx: mpsc::Sender<LogRecord>,
+    /// Local IPC hostname (from `gethostname`) — backfilled into every
+    /// LogEntry whose `hostname` is empty before encoding. The PLC's
+    /// AMS Net ID is *not* the OTel `host.name`; that is the host the
+    /// data was collected from, i.e. this IPC.
+    host_name: Arc<String>,
+    /// Fallback `service.name` from `settings.service.name`, applied
+    /// when an inbound LogEntry has no project_name set (early frames
+    /// before the registration message arrives).
+    default_service_name: Arc<String>,
 }
 
 impl LogDispatcher {
@@ -30,6 +39,7 @@ impl LogDispatcher {
 
         let batch_size = settings.export.batch_size;
         let flush_interval = Duration::from_millis(settings.export.flush_interval_ms);
+        let format = settings.export.format;
 
         // Bounded channel for backpressure
         let (export_tx, export_rx) = mpsc::channel::<LogRecord>(settings.service.channel_capacity);
@@ -40,20 +50,47 @@ impl LogDispatcher {
             endpoint,
             batch_size,
             flush_interval,
+            format,
             config_rx,
         ));
 
+        let host_name = Arc::new(local_host_name());
+        let default_service_name = Arc::new(settings.service.name.clone());
+
         tracing::info!(
-            "Dispatcher ready (batch={}, flush={}ms)",
+            "Dispatcher ready (batch={}, flush={}ms, format={:?}, host_name={}, default_service_name={})",
             batch_size,
-            flush_interval.as_millis()
+            flush_interval.as_millis(),
+            format,
+            host_name,
+            default_service_name,
         );
 
-        Ok(Self { export_tx })
+        Ok(Self {
+            export_tx,
+            host_name,
+            default_service_name,
+        })
+    }
+
+    /// Read-only accessor used by the service layer to consult the same
+    /// hostname when wiring the SpanDispatcher.
+    pub fn host_name(&self) -> Arc<String> {
+        self.host_name.clone()
     }
 
     /// Dispatch a log entry - formats and sends to export worker (non-blocking)
-    pub async fn dispatch(&self, entry: LogEntry) -> Result<()> {
+    pub async fn dispatch(&self, mut entry: LogEntry) -> Result<()> {
+        // Backfill the local IPC hostname when emitter sites leave it
+        // empty (e.g. AMS receivers no longer synthesise a `plc-<netid>`
+        // value — that's the PLC identity, not where data was collected).
+        if entry.hostname.is_empty() {
+            entry.hostname = (*self.host_name).clone();
+        }
+        if entry.project_name.is_empty() {
+            entry.project_name = (*self.default_service_name).clone();
+        }
+
         // Format message only if template has placeholders
         let body = if entry.message.contains('{') {
             MessageFormatter::format_with_context(&entry.message, &entry.arguments, &entry.context)
@@ -82,20 +119,32 @@ impl LogDispatcher {
         Ok(())
     }
 
-    /// True if the endpoint is an OTLP HTTP logs endpoint
-    /// (OTel collector / Tempo / etc., not VictoriaLogs).
+    /// True if the endpoint is an OTLP HTTP logs endpoint (OTel
+    /// Collector, Tempo, VictoriaLogs' `/insert/opentelemetry/v1/logs`
+    /// path, etc.).
+    ///
+    /// The default dist `config.json` ships this OTLP-Logs path so the
+    /// service is spec-conformant out of the box. The legacy
+    /// `/insert/jsonline` endpoint is still supported as a non-default
+    /// VL-only fast path: VictoriaLogs ingests JSONL ~3× faster than
+    /// OTLP-Logs because there's no per-record `ResourceLogs` /
+    /// `ScopeLogs` wrapping overhead. Users who switch the endpoint
+    /// to `/insert/jsonline` opt into that throughput at the cost of
+    /// portability (the same stream cannot be re-pointed at a generic
+    /// OTLP-Logs receiver without re-encoding).
     fn is_otlp_endpoint(endpoint: &str) -> bool {
         endpoint.contains("/v1/logs")
     }
 
     /// Background worker that batches records and flushes to endpoint.
-    /// Supports hot-reload of export config (endpoint, batch_size, flush_interval)
+    /// Supports hot-reload of export config (endpoint, batch_size, flush_interval, format)
     /// via an optional `watch::Receiver<AppSettings>`.
     async fn batch_worker(
         mut rx: mpsc::Receiver<LogRecord>,
         initial_endpoint: String,
         initial_batch_size: usize,
         initial_flush_interval: Duration,
+        initial_format: tc_otel_core::WireFormat,
         config_rx: Option<watch::Receiver<AppSettings>>,
     ) {
         let client = reqwest::Client::builder()
@@ -107,10 +156,22 @@ impl LogDispatcher {
         let mut endpoint = initial_endpoint;
         let mut batch_size = initial_batch_size;
         let mut flush_interval = initial_flush_interval;
+        let mut format = initial_format;
         let mut config_rx = config_rx;
 
+        let build_log_exporter =
+            |endpoint: &str, batch_size: usize, format: tc_otel_core::WireFormat| -> OtelExporter {
+                let cfg = tc_otel_export::exporter::ExportConfig {
+                    endpoint: endpoint.to_string(),
+                    batch_size,
+                    format,
+                    ..Default::default()
+                };
+                OtelExporter::with_config(cfg)
+            };
+
         let mut otlp_exporter: Option<OtelExporter> = if Self::is_otlp_endpoint(&endpoint) {
-            Some(OtelExporter::new(endpoint.clone(), batch_size, 3))
+            Some(build_log_exporter(&endpoint, batch_size, format))
         } else {
             None
         };
@@ -167,12 +228,25 @@ impl LogDispatcher {
                         .unwrap_or(new_export.endpoint);
                     let new_batch_size = new_export.batch_size;
                     let new_flush_interval = Duration::from_millis(new_export.flush_interval_ms);
+                    let new_format = new_export.format;
 
+                    let exporter_dirty =
+                        new_endpoint != endpoint || new_format != format;
                     if new_endpoint != endpoint {
                         tracing::info!("Hot-reload: export endpoint changed to {}", new_endpoint);
                         endpoint = new_endpoint;
+                    }
+                    if new_format != format {
+                        tracing::info!(
+                            "Hot-reload: export format changed from {:?} to {:?}",
+                            format,
+                            new_format
+                        );
+                        format = new_format;
+                    }
+                    if exporter_dirty {
                         otlp_exporter = if Self::is_otlp_endpoint(&endpoint) {
-                            Some(OtelExporter::new(endpoint.clone(), batch_size, 3))
+                            Some(build_log_exporter(&endpoint, batch_size, format))
                         } else {
                             None
                         };
@@ -294,6 +368,15 @@ impl LogDispatcher {
 pub struct MetricDispatcher {
     export_tx: mpsc::Sender<MetricRecord>,
     mapper: Arc<RwLock<MetricMapper>>,
+    /// Fallback `service.name` applied when an inbound `MetricEntry` has
+    /// no `project_name` set. Without this, registry-lookup misses (early
+    /// PLC frames before the registration message arrives) emit metrics
+    /// with `service.name=""` which downstream TSDBs drop, fragmenting
+    /// the timeseries identity. Sourced from `settings.service.name`.
+    default_service_name: Arc<String>,
+    /// Local IPC hostname from `gethostname` — backfilled into every
+    /// MetricEntry whose `hostname` is empty before encoding.
+    host_name: Arc<String>,
 }
 
 impl MetricDispatcher {
@@ -301,9 +384,10 @@ impl MetricDispatcher {
         settings: &AppSettings,
         config_rx: Option<watch::Receiver<AppSettings>>,
     ) -> Result<Self> {
-        let endpoint = Self::resolve_endpoint(settings);
-        let batch_size = settings.metrics.export_batch_size;
+        let initial_cfg = Self::build_export_config(settings);
         let flush_interval = Duration::from_millis(settings.metrics.export_flush_interval_ms);
+        let default_service_name = Arc::new(settings.service.name.clone());
+        let host_name = Arc::new(local_host_name());
 
         let (export_tx, export_rx) =
             mpsc::channel::<MetricRecord>(settings.service.channel_capacity);
@@ -312,23 +396,28 @@ impl MetricDispatcher {
 
         tokio::spawn(Self::batch_worker(
             export_rx,
-            endpoint,
-            batch_size,
+            initial_cfg.clone(),
             flush_interval,
-            settings.export.max_retries,
-            settings.export.timeout_secs,
             config_rx,
             mapper.clone(),
         ));
 
         tracing::info!(
-            "MetricDispatcher ready (batch={}, flush={}ms, custom_metrics={})",
-            batch_size,
+            "MetricDispatcher ready (batch={}, flush={}ms, format={:?}, default_service_name={}, host_name={}, custom_metrics={})",
+            initial_cfg.batch_size,
             flush_interval.as_millis(),
+            initial_cfg.format,
+            default_service_name,
+            host_name,
             mapper.read().unwrap().len()
         );
 
-        Ok(Self { export_tx, mapper })
+        Ok(Self {
+            export_tx,
+            mapper,
+            default_service_name,
+            host_name,
+        })
     }
 
     /// Resolve the metrics export endpoint from config.
@@ -346,10 +435,46 @@ impl MetricDispatcher {
             .replace("/insert/jsonline", "/v1/metrics")
     }
 
+    /// Resolve the metrics wire format. `metrics.export_format` wins
+    /// when explicitly set; otherwise inherits the global
+    /// `export.format` (which defaults to `Json`).
+    fn resolve_format(settings: &AppSettings) -> tc_otel_core::WireFormat {
+        settings
+            .metrics
+            .export_format
+            .unwrap_or(settings.export.format)
+    }
+
+    /// Build the runtime `tc_otel_export::ExportConfig` for the metrics
+    /// pipeline, picking up endpoint + batch + format from app settings.
+    fn build_export_config(settings: &AppSettings) -> tc_otel_export::exporter::ExportConfig {
+        tc_otel_export::exporter::ExportConfig {
+            endpoint: Self::resolve_endpoint(settings),
+            batch_size: settings.metrics.export_batch_size,
+            max_retries: settings.export.max_retries,
+            timeout_secs: settings.export.timeout_secs,
+            format: Self::resolve_format(settings),
+            ..Default::default()
+        }
+    }
+
     /// Dispatch a metric entry - applies custom-metric mapping, converts to
     /// MetricRecord, and sends to the export worker.
     pub async fn dispatch(&self, mut entry: MetricEntry) -> Result<()> {
         self.mapper.read().unwrap().apply(&mut entry);
+        // Backfill the global service.name when individual emitter sites
+        // (e.g. diagnostics_bridge::with_task) leave it empty. Keeps every
+        // metric record from this tc-otel instance under a single
+        // `service.name` label so VictoriaMetrics doesn't fragment the
+        // timeseries identity.
+        if entry.project_name.is_empty() {
+            entry.project_name = (*self.default_service_name).clone();
+        }
+        // Backfill the local IPC hostname so every record carries the
+        // OTel `host.name` resource attribute.
+        if entry.hostname.is_empty() {
+            entry.hostname = (*self.host_name).clone();
+        }
         let record = MetricRecord::from_metric_entry(entry);
 
         if self.export_tx.try_send(record).is_err() {
@@ -360,26 +485,18 @@ impl MetricDispatcher {
     }
 
     /// Background worker that batches metric records and flushes to the OTLP endpoint.
-    #[allow(clippy::too_many_arguments)]
     async fn batch_worker(
         mut rx: mpsc::Receiver<MetricRecord>,
-        initial_endpoint: String,
-        initial_batch_size: usize,
+        initial_cfg: tc_otel_export::exporter::ExportConfig,
         initial_flush_interval: Duration,
-        max_retries: usize,
-        timeout_secs: u64,
         config_rx: Option<watch::Receiver<AppSettings>>,
         mapper: Arc<RwLock<MetricMapper>>,
     ) {
-        let exporter = OtelExporter::new(initial_endpoint.clone(), initial_batch_size, max_retries);
-        // Keep exporter config in sync — for now we rebuild on endpoint change
-        let mut current_endpoint = initial_endpoint;
-        let mut batch_size = initial_batch_size;
+        let mut current_cfg = initial_cfg;
+        let mut batch_size = current_cfg.batch_size;
         let mut flush_interval = initial_flush_interval;
         let mut config_rx = config_rx;
-        let mut current_max_retries = max_retries;
-        let mut current_timeout_secs = timeout_secs;
-        let mut exporter = exporter;
+        let mut exporter = OtelExporter::with_config(current_cfg.clone());
 
         let mut batch: Vec<MetricRecord> = Vec::with_capacity(batch_size);
         let mut interval = tokio::time::interval(flush_interval);
@@ -423,21 +540,29 @@ impl MetricDispatcher {
                         continue;
                     }
                     let new_settings = config_rx.as_ref().unwrap().borrow().clone();
-                    let new_endpoint = Self::resolve_endpoint_from(&new_settings);
-                    let new_batch_size = new_settings.metrics.export_batch_size;
+                    let new_cfg = Self::build_export_config(&new_settings);
                     let new_flush_interval = Duration::from_millis(new_settings.metrics.export_flush_interval_ms);
 
-                    if new_endpoint != current_endpoint || new_settings.export.max_retries != current_max_retries || new_settings.export.timeout_secs != current_timeout_secs {
-                        tracing::info!("Hot-reload: metrics export endpoint changed to {}", new_endpoint);
-                        current_endpoint = new_endpoint.clone();
-                        current_max_retries = new_settings.export.max_retries;
-                        current_timeout_secs = new_settings.export.timeout_secs;
-                        exporter = OtelExporter::new(current_endpoint.clone(), new_batch_size, current_max_retries);
+                    let exporter_changed = new_cfg.endpoint != current_cfg.endpoint
+                        || new_cfg.max_retries != current_cfg.max_retries
+                        || new_cfg.timeout_secs != current_cfg.timeout_secs
+                        || new_cfg.format != current_cfg.format
+                        || new_cfg.batch_size != current_cfg.batch_size;
+                    if exporter_changed {
+                        tracing::info!(
+                            "Hot-reload: metrics exporter rebuilt (endpoint={}, format={:?}, batch={}, max_retries={}, timeout_secs={})",
+                            new_cfg.endpoint,
+                            new_cfg.format,
+                            new_cfg.batch_size,
+                            new_cfg.max_retries,
+                            new_cfg.timeout_secs,
+                        );
+                        current_cfg = new_cfg;
+                        exporter = OtelExporter::with_config(current_cfg.clone());
                     }
-                    if new_batch_size != batch_size {
-                        tracing::info!("Hot-reload: metrics batch_size changed from {} to {}", batch_size, new_batch_size);
-                        batch_size = new_batch_size;
-                        batch.reserve(new_batch_size.saturating_sub(batch.capacity()));
+                    if current_cfg.batch_size != batch_size {
+                        batch_size = current_cfg.batch_size;
+                        batch.reserve(batch_size.saturating_sub(batch.capacity()));
                     }
                     if new_flush_interval != flush_interval {
                         tracing::info!("Hot-reload: metrics flush_interval changed to {}ms", new_flush_interval.as_millis());
@@ -459,18 +584,14 @@ impl MetricDispatcher {
             }
         }
     }
+}
 
-    /// Resolve endpoint from settings (used inside batch_worker for hot-reload)
-    fn resolve_endpoint_from(settings: &AppSettings) -> String {
-        if let Some(ref ep) = settings.metrics.export_endpoint {
-            return ep.clone();
-        }
-        settings
-            .export
-            .endpoint
-            .replace("/v1/logs", "/v1/metrics")
-            .replace("/insert/jsonline", "/v1/metrics")
-    }
+/// Read the local IPC's hostname for the OTel `host.name` resource
+/// attribute. Falls back to an empty string if the OS query fails — the
+/// resource builder skips the attribute when empty rather than emitting
+/// `host.name=""`.
+fn local_host_name() -> String {
+    gethostname::gethostname().into_string().unwrap_or_default()
 }
 
 /// Write a JSON key:value pair directly to buffer
@@ -858,19 +979,26 @@ mod tests {
     }
 
     /// Capture exported request bodies in a shared buffer.
+    ///
+    /// Uses a `Bytes` extractor (not `String`) because the default wire
+    /// format is now OTLP-Protobuf — the body contains binary that is
+    /// not valid UTF-8. Substring assertions still work via
+    /// `String::from_utf8_lossy`: protobuf wire format encodes string
+    /// fields (metric names, units, descriptions) as raw UTF-8 byte
+    /// runs, so ASCII metric names appear verbatim in the byte stream.
     async fn start_capturing_metrics_server(
-    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
-        use axum::{routing::post, Router};
+    ) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+        use axum::{body::Bytes, routing::post, Router};
 
         let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let b = bodies.clone();
 
         let app = Router::new().route(
             "/v1/metrics",
-            post(move |body: String| {
+            post(move |body: Bytes| {
                 let b = b.clone();
                 async move {
-                    b.lock().unwrap().push(body);
+                    b.lock().unwrap().push(body.to_vec());
                     ""
                 }
             }),
@@ -908,18 +1036,19 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let captured = bodies.lock().unwrap().join("");
+        let captured_bytes: Vec<u8> = bodies.lock().unwrap().concat();
+        let captured = String::from_utf8_lossy(&captured_bytes);
         assert!(
             captured.contains("plc.motor.temperature"),
-            "exported body should contain mapped metric name; got: {captured}"
+            "exported body should contain mapped metric name; got: {captured:?}"
         );
         assert!(
-            captured.contains("\"Cel\""),
-            "exported body should contain mapped unit; got: {captured}"
+            captured.contains("Cel"),
+            "exported body should contain mapped unit; got: {captured:?}"
         );
         assert!(
             !captured.contains("raw.plc.symbol"),
-            "exported body should not contain the pre-mapping name"
+            "exported body should not contain the pre-mapping name; got: {captured:?}"
         );
     }
 
@@ -963,14 +1092,15 @@ mod tests {
         dispatcher.dispatch(e2).await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let captured = bodies.lock().unwrap().join("");
+        let captured_bytes: Vec<u8> = bodies.lock().unwrap().concat();
+        let captured = String::from_utf8_lossy(&captured_bytes);
         assert!(
             captured.contains("plc.parts.produced"),
-            "body after hot-reload should contain remapped name; got: {captured}"
+            "body after hot-reload should contain remapped name; got: {captured:?}"
         );
         assert!(
             captured.contains("initial.name"),
-            "body before hot-reload should still contain original (unmapped) name; got: {captured}"
+            "body before hot-reload should still contain original (unmapped) name; got: {captured:?}"
         );
     }
 }

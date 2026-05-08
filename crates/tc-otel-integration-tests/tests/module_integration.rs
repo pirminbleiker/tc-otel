@@ -197,7 +197,11 @@ fn test_type_conversions() {
     assert!(record.severity_text.is_ascii());
     assert!(record.body.is_string());
     assert!(!record.resource_attributes.is_empty());
-    assert!(!record.scope_attributes.is_empty());
+    // `scope_name` now carries the logger ("logger" from the entry
+    // above) directly. `scope_attributes` is empty for tc-otel logs —
+    // the field is reserved for future scope-level metadata.
+    assert_eq!(record.scope_name, "logger");
+    assert!(record.scope_attributes.is_empty());
     assert!(!record.log_attributes.is_empty());
 }
 

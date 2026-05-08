@@ -237,12 +237,29 @@ pub fn convert_request_to_entries(request: &ExportLogsServiceRequest) -> Vec<Log
             .map(|r| &r.attributes[..])
             .unwrap_or(&[]);
 
-        // Extract resource-level fields
+        // Extract resource-level fields. Task index/name moved off the
+        // OTel-reserved `process.*` names (those denote OS-level
+        // identifiers, not PLC tasks) onto our custom `tc.task.*`
+        // namespace. Read both for backward compatibility with senders
+        // that still emit the legacy keys; new senders should use
+        // `tc.task.{index,name}`.
         let hostname = extract_string_attr(resource_attrs, "host.name");
         let project_name = extract_string_attr(resource_attrs, "service.name");
         let app_name = extract_string_attr(resource_attrs, "service.instance.id");
-        let task_index = extract_int_attr(resource_attrs, "process.pid");
-        let task_name = extract_string_attr(resource_attrs, "process.command_line");
+        // Use key-presence (not value 0) to disambiguate — task slot 0
+        // is a legitimate index, so falling through on `value == 0`
+        // would silently prefer the legacy key over the new one.
+        let has_attr = |key: &str| resource_attrs.iter().any(|kv| kv.key == key);
+        let task_index = if has_attr("tc.task.index") {
+            extract_int_attr(resource_attrs, "tc.task.index")
+        } else {
+            extract_int_attr(resource_attrs, "process.pid")
+        };
+        let task_name = if has_attr("tc.task.name") {
+            extract_string_attr(resource_attrs, "tc.task.name")
+        } else {
+            extract_string_attr(resource_attrs, "process.command_line")
+        };
 
         for scope_logs in &resource_logs.scope_logs {
             let logger = scope_logs

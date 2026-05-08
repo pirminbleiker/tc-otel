@@ -5,7 +5,7 @@
 
 use crate::ConnectionManager;
 use std::sync::Arc;
-use tc_otel_core::MetricEntry;
+use tc_otel_core::{local_source_address, MetricEntry};
 
 /// Collects ADS connection health metrics from a ConnectionManager.
 ///
@@ -99,7 +99,10 @@ impl AdsHealthCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        // sem-conv `source.address` is a network address. Self-emitted
+        // metrics report the IPC's own primary IP rather than the
+        // legacy "tc-otel" string, which was not a valid address.
+        entry.source = local_source_address().to_string();
         entry
     }
 
@@ -108,7 +111,7 @@ impl AdsHealthCollector {
         entry.description = description.to_string();
         entry.unit = unit.to_string();
         entry.project_name = self.service_name.clone();
-        entry.source = "tc-otel".to_string();
+        entry.source = local_source_address().to_string();
         entry
     }
 }

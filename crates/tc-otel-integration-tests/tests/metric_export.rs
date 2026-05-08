@@ -181,6 +181,7 @@ fn test_prometheus_gauge_resource_attributes() {
     entry.hostname = "plc-production-01".to_string();
     entry.ams_net_id = "10.0.1.50.1.1".to_string();
     entry.ams_source_port = 851;
+    entry.ams_app_port = 851;
     entry.task_name = "PlcTask".to_string();
     entry.task_index = 1;
     entry.task_cycle_counter = 999999;
@@ -204,7 +205,7 @@ fn test_prometheus_gauge_resource_attributes() {
     );
     assert_eq!(
         find_attr("service.instance.id").unwrap()["stringValue"],
-        "MainTask"
+        "MainTask@10.0.1.50.1.1:851"
     );
     assert_eq!(
         find_attr("host.name").unwrap()["stringValue"],

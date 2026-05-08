@@ -174,7 +174,13 @@ impl LocalRouterAmsTransport {
                         // Skip without dropping the registration.
                         continue;
                     }
-                    match router.dispatch(frame).await {
+                    // Local-router transport: frames come from the Windows
+                    // AMS router (TwinCAT runtime on the same IPC) over a
+                    // loopback pipe. The dispatch path sees `None` and
+                    // backfills the central `local_source_address()` so
+                    // every record reports the IPC's primary interface IP
+                    // (or `127.0.0.1` on hosts with no NIC).
+                    match router.dispatch(frame, None).await {
                         Ok(Some(response)) => {
                             let mut full = Vec::with_capacity(6 + response.len());
                             full.extend_from_slice(&Self::make_amstcp_header(

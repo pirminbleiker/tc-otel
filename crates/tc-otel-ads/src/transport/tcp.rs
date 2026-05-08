@@ -117,9 +117,16 @@ impl TcpAmsTransport {
 
     async fn handle_connection(
         mut stream: TcpStream,
-        _peer_addr: SocketAddr,
+        peer_addr: SocketAddr,
         router: Arc<AdsRouter>,
     ) -> crate::Result<()> {
+        // Captured once per connection — tcp peer IP is what populates
+        // OTel sem-conv `source.address` on every frame routed through
+        // this connection. Port is omitted: each new client connection
+        // gets an ephemeral source port, so including it would explode
+        // resource cardinality on the metrics side without adding
+        // identity information beyond the IP.
+        let peer_ip = peer_addr.ip().to_string();
         let _ = stream.set_nodelay(true);
 
         // Pre-allocated buffers to avoid per-frame allocations
@@ -130,7 +137,7 @@ impl TcpAmsTransport {
             match stream.read_exact(&mut read_buf[..6]).await {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    tracing::debug!("AMS/TCP: peer closed ({})", _peer_addr);
+                    tracing::debug!("AMS/TCP: peer closed ({})", peer_addr);
                     break;
                 }
                 Err(e) => return Err(crate::AdsError::IoError(e)),
@@ -146,7 +153,7 @@ impl TcpAmsTransport {
             if reserved != 0 || data_len == 0 || data_len > 16 * 1_048_576 {
                 tracing::warn!(
                     "AMS/TCP: dropping connection from {} — bad header (reserved={}, data_len={})",
-                    _peer_addr,
+                    peer_addr,
                     reserved,
                     data_len
                 );
@@ -188,7 +195,7 @@ impl TcpAmsTransport {
                 || cmd == ADS_CMD_READ_DEVICE_INFO
                 || cmd != ADS_CMD_WRITE
             {
-                match router.dispatch(data).await {
+                match router.dispatch(data, Some(&peer_ip)).await {
                     Ok(Some(response)) => {
                         let mut full = Vec::with_capacity(6 + response.len());
                         full.extend_from_slice(&0u16.to_le_bytes());
@@ -207,7 +214,7 @@ impl TcpAmsTransport {
             }
 
             // ADS_CMD_WRITE: full log-processing path
-            match router.dispatch(data).await {
+            match router.dispatch(data, Some(&peer_ip)).await {
                 Ok(Some(response)) => {
                     let mut full_response = Vec::with_capacity(6 + response.len());
                     full_response.extend_from_slice(&0u16.to_le_bytes());

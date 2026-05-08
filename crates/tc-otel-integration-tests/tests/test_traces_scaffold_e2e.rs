@@ -260,7 +260,7 @@ async fn test_span_dispatcher_processes_begin_event() {
         span_id,
     };
 
-    dispatcher.on_event(net_id, begin_event);
+    dispatcher.on_event(net_id, 0, begin_event);
     assert_eq!(dispatcher.pending_count(), 1);
 
     // Simulate SPAN_END
@@ -273,7 +273,7 @@ async fn test_span_dispatcher_processes_begin_event() {
         message: "ok".to_string(),
     };
 
-    dispatcher.on_event(net_id, end_event);
+    dispatcher.on_event(net_id, 0, end_event);
     assert_eq!(dispatcher.pending_count(), 0);
 
     // Verify the trace record was sent
@@ -295,6 +295,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     // BEGIN
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Begin {
             local_id: 1,
             task_index: 0,
@@ -312,6 +313,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     // ATTR
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Attr {
             span_id,
             task_index: 0,
@@ -325,6 +327,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     // EVENT
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::Event {
             span_id,
             task_index: 0,
@@ -338,6 +341,7 @@ async fn test_span_dispatcher_full_lifecycle() {
     // END
     dispatcher.on_event(
         net_id,
+        0,
         TraceWireEvent::End {
             span_id,
             task_index: 0,

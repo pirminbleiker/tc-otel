@@ -21,7 +21,7 @@ use tc_otel_ads::diagnostics::{
     METRIC_FLAG_RING_OVERFLOWED, METRIC_STAT_ORDER, SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_OVERFLOW,
     SAMPLE_FLAG_RT_VIOLATION,
 };
-use tc_otel_core::MetricEntry;
+use tc_otel_core::{local_source_address, MetricEntry};
 
 /// Descriptor table per `(ams_net_id, task_port)`. Maps metric_id → MetricDescriptor.
 /// This cache is populated as descriptors are announced and referenced across
@@ -334,6 +334,7 @@ fn metric_aggregate_to_entries(
         entry.timestamp = dc_time_to_datetime(ts_ns);
         entry.ams_net_id = net_id.to_string();
         entry.task_index = task_index as i32;
+        entry.source = local_source_address().to_string();
 
         entry.attributes.insert(
             "metric_id".into(),
@@ -391,6 +392,7 @@ fn build_aggregate_entry(
     entry.timestamp = dc_time_to_datetime(ts_ns);
     entry.ams_net_id = net_id.to_string();
     entry.task_index = task_index as i32;
+    entry.source = local_source_address().to_string();
 
     entry.attributes.insert(
         "metric_id".into(),
@@ -649,6 +651,9 @@ fn metric_batch_to_entries(
         entry.unit = desc.unit.clone();
         entry.timestamp = sample_ts;
         entry.ams_net_id = net_id.to_string();
+        // PLC-published custom metrics (FB_Metrics aggregate) — same
+        // local-router origin as the diag-bridge wrappers.
+        entry.source = local_source_address().to_string();
 
         // Add attributes from descriptor.
         for (key, val) in &desc.attributes {
@@ -665,6 +670,12 @@ fn metric_batch_to_entries(
 
 fn with_ams(net_id: String, mut m: MetricEntry) -> MetricEntry {
     m.ams_net_id = net_id;
+    // sem-conv `source.address` for diag-bridge metrics: PLC sits on
+    // the same IPC over loopback, so report the IPC's primary IPv4
+    // (same value the router/log path uses for local-router frames).
+    if m.source.is_empty() {
+        m.source = local_source_address().to_string();
+    }
     m
 }
 
@@ -672,14 +683,17 @@ fn with_task(net_id: String, task_port: u16, task_name: &str, mut m: MetricEntry
     m.ams_net_id = net_id;
     m.ams_source_port = task_port;
     m.task_name = task_name.to_string();
-    m.attributes.insert(
-        "task_port".into(),
-        serde_json::Value::Number(task_port.into()),
-    );
-    m.attributes.insert(
-        "task_name".into(),
-        serde_json::Value::String(task_name.to_string()),
-    );
+    if m.source.is_empty() {
+        m.source = local_source_address().to_string();
+    }
+    // Don't duplicate task_name / task_port as snake_case data-point
+    // attributes — `MetricRecord::from_metric_entry` already promotes
+    // `entry.task_name` to the dotted resource attribute `task.name`,
+    // and `entry.ams_source_port` becomes the resource attribute
+    // `plc.ams_source_port`. Carrying both shapes inflates the label
+    // set without adding information and makes VictoriaMetrics treat
+    // otherwise-equivalent samples as separate timeseries when one
+    // emitter omits a duplicate.
     m
 }
 

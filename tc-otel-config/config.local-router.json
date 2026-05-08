@@ -4,16 +4,15 @@
     "targets": []
   },
   "export": {
-    "batch_size": 2000,
-    "endpoint": "http://127.0.0.1:9428/insert/opentelemetry/v1/logs",
-    "flush_interval_ms": 1000,
+    "batch_size": 100,
+    "endpoint": "http://localhost:4318/v1/logs",
+    "flush_interval_ms": 5000,
     "max_retries": 3,
-    "timeout_secs": 10,
-    "format": "protobuf"
+    "timeout_secs": 10
   },
   "logging": {
     "format": "text",
-    "log_level": "info",
+    "log_level": "debug",
     "output_path": null
   },
   "metrics": {
@@ -21,10 +20,9 @@
     "cycle_time_enabled": true,
     "cycle_time_window": 1000,
     "export_batch_size": 100,
-    "export_enabled": true,
-    "export_endpoint": "http://127.0.0.1:8428/opentelemetry/v1/metrics",
-    "export_flush_interval_ms": 1000,
-    "export_format": "protobuf"
+    "export_enabled": false,
+    "export_endpoint": null,
+    "export_flush_interval_ms": 1000
   },
   "outputs": [],
   "receiver": {
@@ -70,12 +68,11 @@
     "worker_threads": null
   },
   "traces": {
-    "enabled": true,
+    "enabled": false,
     "export": {
       "batch_size": 100,
-      "endpoint": "http://127.0.0.1:10428/insert/opentelemetry/v1/traces",
-      "flush_interval_ms": 1000,
-      "format": "protobuf"
+      "endpoint": null,
+      "flush_interval_ms": 1000
     },
     "max_pending_spans": 1024,
     "span_ttl_secs": 10

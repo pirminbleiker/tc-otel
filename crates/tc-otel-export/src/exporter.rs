@@ -4,7 +4,7 @@ use crate::error::*;
 use regex::Regex;
 use serde_json::json;
 use std::time::Duration;
-use tc_otel_core::{LogRecord, MetricKind, MetricRecord, TraceRecord};
+use tc_otel_core::{LogRecord, MetricKind, MetricRecord, TraceRecord, WireFormat};
 
 /// Helper function to expand environment variables in strings
 /// Supports ${VAR_NAME} syntax, e.g., "Bearer ${API_KEY}"
@@ -37,6 +37,11 @@ pub struct ExportConfig {
     pub timeout_secs: u64,
     /// Optional auth header with environment variable expansion (e.g., "Bearer ${OTEL_AUTH_TOKEN}")
     pub auth_header: Option<String>,
+    /// Wire format for OTLP payloads. JSON is the legacy / default
+    /// behaviour; Protobuf is required by VictoriaMetrics' OTLP
+    /// metrics endpoint and accepted by VictoriaLogs / VictoriaTraces /
+    /// OTel-Collector / Tempo / Jaeger.
+    pub format: WireFormat,
 }
 
 impl Default for ExportConfig {
@@ -52,6 +57,7 @@ impl Default for ExportConfig {
             retry_delay_ms: 100,
             timeout_secs: 30,
             auth_header,
+            format: WireFormat::default(),
         }
     }
 }
@@ -111,19 +117,28 @@ impl OtelExporter {
             return Ok(());
         }
 
-        let payload = self.build_otel_payload(&records)?;
+        let (body, content_type) = match self.config.format {
+            WireFormat::Json => {
+                let payload = self.build_otel_payload(&records)?;
+                (payload.into_bytes(), "application/json")
+            }
+            WireFormat::Protobuf => {
+                let bytes = crate::logs_proto::build(&records);
+                (bytes, "application/x-protobuf")
+            }
+        };
 
-        self.send_with_retry(&payload).await
+        self.send_with_retry(body, content_type).await
     }
 
     /// Send payload to collector with exponential backoff retry
     /// Only retries on transient errors (5xx), fails immediately on permanent errors (4xx)
-    async fn send_with_retry(&self, payload: &str) -> Result<()> {
+    async fn send_with_retry(&self, body: Vec<u8>, content_type: &str) -> Result<()> {
         let mut retry_count = 0;
         let mut delay_ms = self.config.retry_delay_ms;
 
         loop {
-            match self.send_payload(payload).await {
+            match self.send_payload(&body, content_type).await {
                 Ok(_) => {
                     tracing::debug!("Successfully exported logs to {}", self.config.endpoint);
                     return Ok(());
@@ -182,18 +197,26 @@ impl OtelExporter {
     }
 
     /// Send the actual HTTP request to the collector
-    async fn send_payload(&self, payload: &str) -> Result<()> {
+    async fn send_payload(&self, body: &[u8], content_type: &str) -> Result<()> {
         // Special sink: print to stdout instead of HTTP POST.
         // Useful for local testing / dry-run exporter.
         if self.config.endpoint.eq_ignore_ascii_case("stdout") {
-            println!("{}", payload);
+            // For protobuf bodies the bytes are binary — print a length
+            // marker rather than the raw bytes to keep terminals happy.
+            if content_type == "application/json" {
+                if let Ok(s) = std::str::from_utf8(body) {
+                    println!("{}", s);
+                    return Ok(());
+                }
+            }
+            println!("[stdout sink] {} byte(s) {}", body.len(), content_type);
             return Ok(());
         }
 
         let mut request = self
             .http_client
             .post(&self.config.endpoint)
-            .header("Content-Type", "application/json");
+            .header("Content-Type", content_type);
 
         // Add authentication header if configured (with environment variable expansion)
         if let Some(auth) = &self.config.auth_header {
@@ -202,7 +225,7 @@ impl OtelExporter {
         }
 
         let response = request
-            .body(payload.to_string())
+            .body(body.to_vec())
             .timeout(Duration::from_secs(self.config.timeout_secs))
             .send()
             .await
@@ -268,6 +291,11 @@ impl OtelExporter {
                     log_record["spanId"] = json!(record.span_id);
                 }
 
+                let scope_name = if record.scope_name.is_empty() {
+                    "tc-otel".to_string()
+                } else {
+                    record.scope_name.clone()
+                };
                 json!({
                     "resource": {
                         "attributes": Self::to_otlp_attributes(&record.resource_attributes)
@@ -275,7 +303,7 @@ impl OtelExporter {
                     "scopeLogs": [
                         {
                             "scope": {
-                                "name": "tc-otel",
+                                "name": scope_name,
                                 "attributes": Self::to_otlp_attributes(&record.scope_attributes)
                             },
                             "logRecords": [log_record]
@@ -300,8 +328,6 @@ impl OtelExporter {
             return Ok(());
         }
 
-        let payload = self.build_otel_metrics_payload(&records)?;
-
         // Metrics use /v1/metrics endpoint
         let endpoint = self
             .config
@@ -309,11 +335,32 @@ impl OtelExporter {
             .replace("/v1/logs", "/v1/metrics")
             .replace("/insert/jsonline", "/v1/metrics");
 
-        self.send_metrics_with_retry(&payload, &endpoint).await
+        // Encode the batch in the configured wire format. Both paths
+        // produce a `Vec<u8>` body and a Content-Type string the
+        // underlying retry helper applies verbatim.
+        let (body, content_type) = match self.config.format {
+            WireFormat::Json => {
+                let payload = self.build_otel_metrics_payload(&records)?;
+                (payload.into_bytes(), "application/json")
+            }
+            WireFormat::Protobuf => {
+                let bytes = crate::metrics_proto::build(&records);
+                (bytes, "application/x-protobuf")
+            }
+        };
+
+        self.send_metrics_with_retry(body, content_type, &endpoint)
+            .await
     }
 
-    /// Send metrics payload with retry
-    async fn send_metrics_with_retry(&self, payload: &str, endpoint: &str) -> Result<()> {
+    /// Send metrics payload with retry. `body` is opaque bytes; the
+    /// caller picks the wire format and matching `Content-Type`.
+    async fn send_metrics_with_retry(
+        &self,
+        body: Vec<u8>,
+        content_type: &str,
+        endpoint: &str,
+    ) -> Result<()> {
         let mut retry_count = 0;
         let mut delay_ms = self.config.retry_delay_ms;
 
@@ -321,7 +368,7 @@ impl OtelExporter {
             let mut request = self
                 .http_client
                 .post(endpoint)
-                .header("Content-Type", "application/json");
+                .header("Content-Type", content_type);
 
             if let Some(auth) = &self.config.auth_header {
                 let expanded_auth = expand_env_vars(auth);
@@ -329,7 +376,7 @@ impl OtelExporter {
             }
 
             match request
-                .body(payload.to_string())
+                .body(body.clone())
                 .timeout(Duration::from_secs(self.config.timeout_secs))
                 .send()
                 .await
@@ -478,8 +525,6 @@ impl OtelExporter {
             return Ok(());
         }
 
-        let payload = self.build_otel_traces_payload(&records)?;
-
         // Traces use /v1/traces endpoint
         let endpoint = self
             .config
@@ -488,11 +533,28 @@ impl OtelExporter {
             .replace("/v1/metrics", "/v1/traces")
             .replace("/insert/jsonline", "/v1/traces");
 
-        self.send_traces_with_retry(&payload, &endpoint).await
+        let (body, content_type) = match self.config.format {
+            WireFormat::Json => {
+                let payload = self.build_otel_traces_payload(&records)?;
+                (payload.into_bytes(), "application/json")
+            }
+            WireFormat::Protobuf => {
+                let bytes = crate::traces_proto::build(&records);
+                (bytes, "application/x-protobuf")
+            }
+        };
+
+        self.send_traces_with_retry(body, content_type, &endpoint)
+            .await
     }
 
     /// Send traces payload with retry
-    async fn send_traces_with_retry(&self, payload: &str, endpoint: &str) -> Result<()> {
+    async fn send_traces_with_retry(
+        &self,
+        body: Vec<u8>,
+        content_type: &str,
+        endpoint: &str,
+    ) -> Result<()> {
         let mut retry_count = 0;
         let mut delay_ms = self.config.retry_delay_ms;
 
@@ -500,7 +562,7 @@ impl OtelExporter {
             let mut request = self
                 .http_client
                 .post(endpoint)
-                .header("Content-Type", "application/json");
+                .header("Content-Type", content_type);
 
             if let Some(auth) = &self.config.auth_header {
                 let expanded_auth = expand_env_vars(auth);
@@ -508,7 +570,7 @@ impl OtelExporter {
             }
 
             match request
-                .body(payload.to_string())
+                .body(body.clone())
                 .timeout(Duration::from_secs(self.config.timeout_secs))
                 .send()
                 .await
@@ -644,6 +706,7 @@ mod tests {
             },
             trace_id: String::new(),
             span_id: String::new(),
+            scope_name: String::new(),
             scope_attributes: Default::default(),
             log_attributes: Default::default(),
         };
@@ -662,6 +725,7 @@ mod tests {
             retry_delay_ms: 200,
             timeout_secs: 60,
             auth_header: None,
+            format: WireFormat::default(),
         };
 
         assert_eq!(config.batch_size, 500);
@@ -679,6 +743,7 @@ mod tests {
             retry_delay_ms: 50,
             timeout_secs: 45,
             auth_header: None,
+            format: WireFormat::default(),
         };
 
         let exporter = OtelExporter::with_config(config.clone());
@@ -711,6 +776,7 @@ mod tests {
                 trace_id: String::new(),
                 span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
+                scope_name: String::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
             },
@@ -722,6 +788,7 @@ mod tests {
                 trace_id: String::new(),
                 span_id: String::new(),
                 resource_attributes: std::collections::HashMap::new(),
+                scope_name: String::new(),
                 scope_attributes: std::collections::HashMap::new(),
                 log_attributes: std::collections::HashMap::new(),
             },
@@ -751,6 +818,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: resource_attrs,
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: log_attrs,
         };
@@ -773,6 +841,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),
         };
@@ -831,6 +900,7 @@ mod tests {
             trace_id: String::new(),
             span_id: String::new(),
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             scope_attributes: std::collections::HashMap::new(),
             log_attributes: std::collections::HashMap::new(),
         };

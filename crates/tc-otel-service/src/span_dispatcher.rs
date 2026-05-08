@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tc_otel_ads::protocol::RegistrationKey;
+use tc_otel_ads::registry::TaskRegistry;
 use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent};
-use tc_otel_core::{SpanStatusCode, TraceRecord};
+use tc_otel_core::{build_otel_resource, SpanStatusCode, TraceRecord};
 use tokio::sync::mpsc;
 
 /// Span attributes from the wire
@@ -45,6 +47,27 @@ pub struct PendingSpan {
     pub ams_net_id: AmsNetId,
     #[allow(dead_code)]
     pub task_index: u8,
+    /// AMS source-port the trace frame arrived from. Used together
+    /// with `ams_net_id` + `task_index` as the registry key for the
+    /// `app_name` / `project_name` / `app_port` lookup.
+    pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851) — looked up
+    /// from the registry at `Begin` time. Drives `service.instance.id`
+    /// so it lines up with logs/metrics for the same runtime instance,
+    /// rather than the per-task source port (340/350/…) which would
+    /// fragment instances across tasks.
+    pub ams_app_port: u16,
+    /// Registered `app_name` for this PLC task — looked up in the
+    /// `TaskRegistry` at `Begin` time (the same registry the log /
+    /// metric paths populate). Empty when no registration has arrived
+    /// yet, in which case `service.instance.id` falls back to
+    /// `<netid>:<port>`.
+    pub app_name: String,
+    /// Registered `project_name` for this PLC task — used as
+    /// `service.name` so spans line up with the same value the log
+    /// pipeline emits. Falls back to the dispatcher's configured
+    /// `service_name` when no registration is available.
+    pub project_name: String,
 }
 
 /// Dispatcher that processes trace wire events and produces completed spans
@@ -58,6 +81,21 @@ pub struct SpanDispatcher {
     span_ttl: Duration,
     max_pending: usize,
     orphan_counter: Arc<AtomicU64>,
+    /// Default `service.name` when no registry hit is available.
+    /// Backfilled from `AppSettings::service.name` at service start.
+    /// Per-task spans prefer the registered `project_name` (looked up
+    /// in the shared `TaskRegistry` at `Begin` time) so all three
+    /// pillars report the same `service.name` for the same PLC task.
+    service_name: String,
+    /// `host.name` resource attribute — the local IPC's hostname,
+    /// captured once at service start via `gethostname::gethostname()`.
+    host_name: String,
+    /// Optional handle to the cross-pillar `TaskRegistry`. When set,
+    /// `on_begin` looks up `(net_id, source_port, task_index)` and
+    /// inherits `app_name` / `project_name` so spans get the same
+    /// `service.instance.id` (`app@netid:port`) as logs and metrics
+    /// for the same task. `None` keeps the legacy fallback behaviour.
+    registry: Option<Arc<TaskRegistry>>,
 }
 
 impl SpanDispatcher {
@@ -74,7 +112,28 @@ impl SpanDispatcher {
             span_ttl,
             max_pending,
             orphan_counter: Arc::new(AtomicU64::new(0)),
+            service_name: String::new(),
+            host_name: String::new(),
+            registry: None,
         }
+    }
+
+    /// Set the `service.name` and `host.name` values applied to every
+    /// emitted span's resource. Empty strings are skipped at encode time
+    /// (see `tc_otel_core::build_otel_resource`).
+    pub fn with_service_metadata(mut self, service_name: String, host_name: String) -> Self {
+        self.service_name = service_name;
+        self.host_name = host_name;
+        self
+    }
+
+    /// Wire in the shared `TaskRegistry` so `on_begin` can inherit the
+    /// `app_name` / `project_name` registered by the log/metric paths.
+    /// Without this, `service.instance.id` falls back to the
+    /// `<netid>:<port>` form (the M3 fallback chain).
+    pub fn with_task_registry(mut self, registry: Arc<TaskRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     /// Get the orphan span counter value for testing/observability
@@ -83,8 +142,14 @@ impl SpanDispatcher {
         self.orphan_counter.load(Ordering::SeqCst)
     }
 
-    /// Process an incoming trace wire event
-    pub fn on_event(&mut self, net_id: AmsNetId, ev: TraceWireEvent) {
+    /// Process an incoming trace wire event.
+    ///
+    /// `ams_source_port` is the AMS port the event arrived on (carried
+    /// in the AMS frame header). It propagates onto `PendingSpan` so
+    /// the registry lookup can resolve `app_name` / `project_name` for
+    /// this task and so `service.instance.id` reflects the full
+    /// `app@netid:port` shape.
+    pub fn on_event(&mut self, net_id: AmsNetId, ams_source_port: u16, ev: TraceWireEvent) {
         match ev {
             TraceWireEvent::Begin {
                 local_id,
@@ -100,6 +165,7 @@ impl SpanDispatcher {
             } => {
                 self.on_begin(
                     net_id,
+                    ams_source_port,
                     local_id,
                     task_index,
                     dc_time,
@@ -148,6 +214,7 @@ impl SpanDispatcher {
     fn on_begin(
         &mut self,
         net_id: AmsNetId,
+        ams_source_port: u16,
         local_id: u8,
         task_index: u8,
         dc_time: i64,
@@ -237,6 +304,24 @@ impl SpanDispatcher {
             );
         }
 
+        // Look up the cross-pillar registry — same key shape the log
+        // and metric paths use. Hits give us `app_name` /
+        // `project_name`, which propagate to `service.instance.id` /
+        // `service.name` at finalise. Misses just fall through to the
+        // dispatcher's configured defaults; no synthetic identity.
+        let (app_name, project_name, app_port) = self
+            .registry
+            .as_ref()
+            .and_then(|reg| {
+                reg.lookup(&RegistrationKey {
+                    ams_net_id: net_id.to_string(),
+                    ams_source_port,
+                    task_index,
+                })
+            })
+            .map(|m| (m.app_name, m.project_name, m.app_port))
+            .unwrap_or_else(|| (String::new(), String::new(), 0));
+
         let pending = PendingSpan {
             trace_id: final_trace_id,
             span_id,
@@ -250,6 +335,10 @@ impl SpanDispatcher {
             orphan_reason,
             ams_net_id: net_id,
             task_index,
+            ams_source_port,
+            ams_app_port: app_port,
+            app_name,
+            project_name,
         };
 
         // Always insert into secondary index (span_id keying)
@@ -354,20 +443,31 @@ impl SpanDispatcher {
         status_code: SpanStatusCode,
         status_message: String,
     ) {
-        // Populate resource attributes so Grafana/Tempo link the span to a
-        // service. Without service.name the UI labels it "root span not yet
-        // received" and the trace-detail view returns no data.
-        let mut resource_attributes = HashMap::with_capacity(3);
-        resource_attributes.insert(
-            "service.name".to_string(),
-            serde_json::json!(format!("plc-{}", pending.ams_net_id)),
+        // Populate resource attributes via the shared OTel-sem-conv
+        // helper so spans line up with logs/metrics for the same PLC.
+        //
+        // Cross-pillar consistency: when the registry holds an entry
+        // for this task, we inherit the registered `project_name` as
+        // `service.name` and the registered `app_name` for
+        // `service.instance.id` — same values the log path emits for
+        // the same PLC task. When no registry hit (Begin arrived
+        // before the registration), fall back to the dispatcher's
+        // configured `service_name` and the netid-only instance id.
+        let service_name = if pending.project_name.is_empty() {
+            self.service_name.clone()
+        } else {
+            pending.project_name.clone()
+        };
+        let mut resource_attributes = build_otel_resource(
+            service_name,
+            pending.app_name.clone(),
+            self.host_name.clone(),
+            pending.ams_net_id.to_string(),
+            pending.ams_app_port,
+            pending.ams_source_port,
         );
         resource_attributes.insert(
-            "plc.ams_net_id".to_string(),
-            serde_json::json!(pending.ams_net_id.to_string()),
-        );
-        resource_attributes.insert(
-            "plc.task_index".to_string(),
+            "tc.task.index".to_string(),
             serde_json::json!(pending.task_index as i64),
         );
 
@@ -638,6 +738,7 @@ mod tests {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -662,6 +763,7 @@ mod tests {
         // First BEGIN
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -677,6 +779,7 @@ mod tests {
         // Second BEGIN with same key — should flush first
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             100,
@@ -704,6 +807,7 @@ mod tests {
         let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -736,6 +840,7 @@ mod tests {
         let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -769,6 +874,7 @@ mod tests {
         let parent_span_id_bytes = [1u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -791,6 +897,7 @@ mod tests {
         // Child span with parent_span_id pointing to parent
         dispatcher.on_begin(
             net_id,
+            0,
             2,
             0,
             100,
@@ -821,6 +928,7 @@ mod tests {
 
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -862,6 +970,7 @@ mod tests {
         let orphan_parent = [5u8, 0, 0, 0, 0, 0, 0, 0]; // non-existent parent
         dispatcher.on_begin(
             net_id,
+            0,
             10,
             0,
             0,
@@ -924,6 +1033,7 @@ mod tests {
         // First orphan
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -939,6 +1049,7 @@ mod tests {
         // Second orphan
         dispatcher.on_begin(
             net_id,
+            0,
             2,
             0,
             100,
@@ -955,6 +1066,7 @@ mod tests {
         let root_span_id = [3u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
+            0,
             3,
             0,
             200,
@@ -969,6 +1081,7 @@ mod tests {
 
         dispatcher.on_begin(
             net_id,
+            0,
             4,
             0,
             300,
@@ -993,6 +1106,7 @@ mod tests {
         let parent_span_id = [1u8, 0, 0, 0, 0, 0, 0, 0];
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1016,6 +1130,7 @@ mod tests {
         // Child span with valid parent
         dispatcher.on_begin(
             net_id,
+            0,
             2,
             0,
             100,
@@ -1050,6 +1165,7 @@ mod tests {
 
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1078,6 +1194,7 @@ mod tests {
         // BEGIN without pregenerated_span_id
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1113,6 +1230,7 @@ mod tests {
 
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1149,6 +1267,7 @@ mod tests {
         // Two parallel spans with different pregenerated IDs
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1162,6 +1281,7 @@ mod tests {
 
         dispatcher.on_begin(
             net_id,
+            0,
             2,
             0,
             100,
@@ -1194,6 +1314,7 @@ mod tests {
         // First BEGIN with pregenerated_span_id
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             0,
@@ -1210,6 +1331,7 @@ mod tests {
         // Second BEGIN with same key (local_id) but different name — should flush first
         dispatcher.on_begin(
             net_id,
+            0,
             1,
             0,
             100,

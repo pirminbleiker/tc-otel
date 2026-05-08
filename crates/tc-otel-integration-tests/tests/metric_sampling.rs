@@ -310,6 +310,7 @@ fn test_gauge_entry_to_record_with_plc_metadata() {
     entry.hostname = "plc-01".to_string();
     entry.ams_net_id = "172.17.0.2.1.1".to_string();
     entry.ams_source_port = 851;
+    entry.ams_app_port = 851;
     entry.task_name = "MotionTask".to_string();
     entry.task_index = 1;
     entry.task_cycle_counter = 50000;
@@ -327,14 +328,15 @@ fn test_gauge_entry_to_record_with_plc_metadata() {
     assert_eq!(record.value, 150.5);
     assert_eq!(record.unit, "mm");
 
-    // Check resource attributes
+    // Check resource attributes — service.instance.id now combines
+    // app_name + ams_net_id + ams_source_port for sem-conv uniqueness.
     assert_eq!(
         record.resource_attributes["service.name"],
         serde_json::json!("ProductionLine")
     );
     assert_eq!(
         record.resource_attributes["service.instance.id"],
-        serde_json::json!("HydraulicPress")
+        serde_json::json!("HydraulicPress@172.17.0.2.1.1:851")
     );
     assert_eq!(
         record.resource_attributes["host.name"],

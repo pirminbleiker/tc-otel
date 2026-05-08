@@ -5,6 +5,102 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// ─── Shared OTel resource helpers ─────────────────────────────────
+
+/// Build a stable per-PLC-task `service.instance.id`.
+///
+/// OTel sem-conv requires `service.instance.id` to be unique per
+/// `(service.namespace, service.name)` replica. The user-friendly
+/// `app_name` alone is not unique — multiple PLC tasks can share it.
+/// Compose with the AMS Net ID and the runtime's `app_port` (the
+/// `_AppInfo.AdsPort` value, 851/852/…) to identify a runtime
+/// instance. The per-task AMS source port (340/350/351/…) is
+/// deliberately *not* used here — it changes per task, which would
+/// fragment `service.instance.id` across tasks of the same runtime.
+///
+/// Fallback chain when fields are missing:
+/// - `app@netid:port`  — full identity
+/// - `app@netid`       — app_port not yet known (registration pending)
+/// - `app`             — net_id missing (rare fallback)
+/// - `netid:port`      — early frame before app_name registered
+/// - `netid`           — only PLC identity known
+/// - `None`            — nothing known; caller skips the attribute
+pub fn build_service_instance_id(
+    app_name: &str,
+    ams_net_id: &str,
+    app_port: u16,
+) -> Option<String> {
+    let has_app = !app_name.is_empty();
+    let has_net = !ams_net_id.is_empty();
+    let has_port = app_port != 0;
+    match (has_app, has_net, has_port) {
+        (true, true, true) => Some(format!("{app_name}@{ams_net_id}:{app_port}")),
+        (true, true, false) => Some(format!("{app_name}@{ams_net_id}")),
+        (true, false, _) => Some(app_name.to_string()),
+        (false, true, true) => Some(format!("{ams_net_id}:{app_port}")),
+        (false, true, false) => Some(ams_net_id.to_string()),
+        (false, false, _) => None,
+    }
+}
+
+/// Build the OTLP `Resource` attribute set shared by
+/// `LogRecord` / `MetricRecord` / `TraceRecord`.
+///
+/// `app_port` (= TwinCAT `_AppInfo.AdsPort`, e.g. 851) drives
+/// `service.instance.id`. `ams_source_port` (the per-task port from
+/// the AMS frame header, e.g. 350) is emitted as the
+/// `plc.ams_source_port` resource attribute so dashboards can still
+/// filter by task-level source if needed.
+///
+/// Empty / zero fields are skipped — emitting e.g. `service.name=""`
+/// produces a separate timeseries from `service.name="tc-otel"` in
+/// VictoriaMetrics / Prometheus (empty-label drop convention), so
+/// every resource attribute is only inserted when populated.
+pub fn build_otel_resource(
+    project_name: String,
+    app_name: String,
+    hostname: String,
+    ams_net_id: String,
+    app_port: u16,
+    ams_source_port: u16,
+) -> HashMap<String, serde_json::Value> {
+    let mut resource = HashMap::with_capacity(6);
+    if !project_name.is_empty() {
+        resource.insert(
+            "service.name".to_string(),
+            serde_json::Value::String(project_name),
+        );
+    }
+    if let Some(instance_id) = build_service_instance_id(&app_name, &ams_net_id, app_port) {
+        resource.insert(
+            "service.instance.id".to_string(),
+            serde_json::Value::String(instance_id),
+        );
+    }
+    if !hostname.is_empty() {
+        resource.insert("host.name".to_string(), serde_json::Value::String(hostname));
+    }
+    if !ams_net_id.is_empty() {
+        resource.insert(
+            "plc.ams_net_id".to_string(),
+            serde_json::Value::String(ams_net_id),
+        );
+    }
+    if app_port > 0 {
+        resource.insert(
+            "plc.ams_app_port".to_string(),
+            serde_json::Value::Number(app_port.into()),
+        );
+    }
+    if ams_source_port > 0 {
+        resource.insert(
+            "plc.ams_source_port".to_string(),
+            serde_json::Value::Number(ams_source_port.into()),
+        );
+    }
+    resource
+}
+
 // ─── Metric types ─────────────────────────────────────────────────
 
 /// OpenTelemetry metric kind
@@ -64,6 +160,14 @@ pub struct MetricEntry {
     pub hostname: String,
     pub ams_net_id: String,
     pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort` on the PLC, e.g. 851)
+    /// pulled from the registry hit for this task. `0` when no
+    /// registration is visible yet (registration frame still pending).
+    /// Drives `service.instance.id` as `app_name@netid:app_port` so
+    /// the runtime instance — not the per-task source port — owns
+    /// identity.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Task metadata
     pub task_index: i32,
@@ -115,6 +219,7 @@ impl MetricEntry {
             hostname: String::new(),
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             task_index: 0,
             task_name: String::new(),
             task_cycle_counter: 0,
@@ -221,31 +326,14 @@ impl MetricRecord {
         let trace_id = entry.trace_id_hex();
         let span_id = entry.span_id_hex();
 
-        let mut resource_attributes = HashMap::with_capacity(5);
-        resource_attributes.insert(
-            "service.name".to_string(),
-            serde_json::Value::String(entry.project_name),
+        let resource_attributes = build_otel_resource(
+            entry.project_name,
+            entry.app_name,
+            entry.hostname,
+            entry.ams_net_id,
+            entry.ams_app_port,
+            entry.ams_source_port,
         );
-        resource_attributes.insert(
-            "service.instance.id".to_string(),
-            serde_json::Value::String(entry.app_name),
-        );
-        resource_attributes.insert(
-            "host.name".to_string(),
-            serde_json::Value::String(entry.hostname),
-        );
-        if !entry.ams_net_id.is_empty() {
-            resource_attributes.insert(
-                "plc.ams_net_id".to_string(),
-                serde_json::Value::String(entry.ams_net_id),
-            );
-        }
-        if entry.ams_source_port > 0 {
-            resource_attributes.insert(
-                "plc.ams_source_port".to_string(),
-                serde_json::Value::Number(entry.ams_source_port.into()),
-            );
-        }
 
         let mut attributes = entry.attributes;
         if !entry.source.is_empty() {
@@ -417,6 +505,11 @@ pub struct SpanEntry {
     pub hostname: String,
     pub ams_net_id: String,
     pub ams_source_port: u16,
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851). Drives
+    /// `service.instance.id` so it lines up with logs/metrics for
+    /// the same runtime instance.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Task metadata
     pub task_index: i32,
@@ -448,6 +541,7 @@ impl SpanEntry {
             hostname: String::new(),
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             task_index: 0,
             task_name: String::new(),
             task_cycle_counter: 0,
@@ -511,31 +605,14 @@ pub struct TraceEventRecord {
 impl TraceRecord {
     /// Convert a SpanEntry to OTEL TraceRecord
     pub fn from_span_entry(entry: SpanEntry) -> Self {
-        let mut resource_attributes = HashMap::with_capacity(5);
-        resource_attributes.insert(
-            "service.name".to_string(),
-            serde_json::Value::String(entry.project_name),
+        let resource_attributes = build_otel_resource(
+            entry.project_name,
+            entry.app_name,
+            entry.hostname,
+            entry.ams_net_id,
+            entry.ams_app_port,
+            entry.ams_source_port,
         );
-        resource_attributes.insert(
-            "service.instance.id".to_string(),
-            serde_json::Value::String(entry.app_name),
-        );
-        resource_attributes.insert(
-            "host.name".to_string(),
-            serde_json::Value::String(entry.hostname),
-        );
-        if !entry.ams_net_id.is_empty() {
-            resource_attributes.insert(
-                "plc.ams_net_id".to_string(),
-                serde_json::Value::String(entry.ams_net_id),
-            );
-        }
-        if entry.ams_source_port > 0 {
-            resource_attributes.insert(
-                "plc.ams_source_port".to_string(),
-                serde_json::Value::Number(entry.ams_source_port.into()),
-            );
-        }
 
         let mut span_attributes = entry.attributes;
         if !entry.source.is_empty() {
@@ -677,7 +754,13 @@ pub struct LogEntry {
     pub source: String,       // AMS address or source identifier
     pub hostname: String,     // PLC hostname
     pub ams_net_id: String,   // AMS Net ID from AMS header
-    pub ams_source_port: u16, // AMS Source Port from AMS header
+    pub ams_source_port: u16, // AMS Source Port from AMS header (task port, e.g. 350)
+    /// Runtime ADS port (`_AppInfo.AdsPort`, e.g. 851) from the
+    /// registration message. Drives `service.instance.id`
+    /// (`app_name@netid:app_port`) so the instance identifies the
+    /// runtime, not the per-task source port.
+    #[serde(default)]
+    pub ams_app_port: u16,
 
     // Message content
     pub message: String, // Template string or formatted message
@@ -722,6 +805,7 @@ impl LogEntry {
             hostname,
             ams_net_id: String::new(),
             ams_source_port: 0,
+            ams_app_port: 0,
             message,
             logger,
             level,
@@ -766,6 +850,14 @@ pub struct LogRecord {
     pub trace_id: String, // Hex-encoded trace ID (empty = no trace context)
     pub span_id: String,  // Hex-encoded span ID (empty = no span context)
     pub resource_attributes: HashMap<String, serde_json::Value>,
+    /// `InstrumentationScope.name` for this record. Per the OTel Logs
+    /// data model, the logger that produced the record IS the scope
+    /// name — not a per-record attribute. Records sharing the same
+    /// resource are bucketed by `scope_name` at encode time so each
+    /// distinct logger gets its own `ScopeLogs` block. Empty string
+    /// falls back to the default crate scope name (`tc-otel`).
+    #[serde(default)]
+    pub scope_name: String,
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub log_attributes: HashMap<String, serde_json::Value>,
 }
@@ -782,47 +874,30 @@ impl LogRecord {
             (String::new(), String::new())
         };
 
-        // Pre-allocate resource attributes with expected capacity
-        let mut resource_attributes = HashMap::with_capacity(5);
-        resource_attributes.insert(
-            "service.name".to_string(),
-            serde_json::Value::String(entry.project_name),
-        );
-        resource_attributes.insert(
-            "service.instance.id".to_string(),
-            serde_json::Value::String(entry.app_name),
-        );
-        resource_attributes.insert(
-            "host.name".to_string(),
-            serde_json::Value::String(entry.hostname),
-        );
-        resource_attributes.insert(
-            "process.pid".to_string(),
-            serde_json::Value::Number(entry.task_index.into()),
-        );
-        resource_attributes.insert(
-            "process.command_line".to_string(),
-            serde_json::Value::String(entry.task_name),
+        let resource_attributes = build_otel_resource(
+            entry.project_name,
+            entry.app_name,
+            entry.hostname,
+            entry.ams_net_id,
+            entry.ams_app_port,
+            entry.ams_source_port,
         );
 
-        let mut scope_attributes = HashMap::with_capacity(1);
-        scope_attributes.insert(
-            "logger.name".to_string(),
-            serde_json::Value::String(entry.logger),
-        );
+        // The PLC's logger name (`F_Log(...).WithLogger("MyLogger")` →
+        // `entry.logger`) IS the OTel `InstrumentationScope.name` —
+        // not a per-record attribute. The encoder groups records by
+        // this field so each distinct logger ends up in its own
+        // `ScopeLogs` block.
+        let scope_name = entry.logger;
+        let scope_attributes = HashMap::new();
 
-        // Pre-allocate log_attributes: context items + 4 standard keys + arguments
+        // Pre-allocate log_attributes: context items + standard keys + arguments
         let expected_capacity = entry.context.len() + entry.arguments.len() + 4;
         let mut log_attributes = HashMap::with_capacity(expected_capacity);
 
         // Merge context items without cloning the entire map
         log_attributes.extend(entry.context);
 
-        // Add standard OTEL attributes
-        log_attributes.insert(
-            "plc.timestamp".to_string(),
-            serde_json::Value::String(entry.plc_timestamp.to_rfc3339()),
-        );
         log_attributes.insert(
             "task.cycle".to_string(),
             serde_json::Value::Number(entry.task_cycle_counter.into()),
@@ -831,36 +906,28 @@ impl LogRecord {
             "online.changes".to_string(),
             serde_json::Value::Number(entry.online_change_count.into()),
         );
-        log_attributes.insert(
-            "source.address".to_string(),
-            serde_json::Value::String(entry.source),
-        );
-        if !entry.ams_net_id.is_empty() {
+        if !entry.source.is_empty() {
             log_attributes.insert(
-                "plc.ams_net_id".to_string(),
-                serde_json::Value::String(entry.ams_net_id),
+                "source.address".to_string(),
+                serde_json::Value::String(entry.source),
             );
         }
-        if entry.ams_source_port > 0 {
+        if entry.task_index > 0 {
             log_attributes.insert(
-                "plc.ams_source_port".to_string(),
-                serde_json::Value::Number(entry.ams_source_port.into()),
+                "tc.task.index".to_string(),
+                serde_json::Value::Number(entry.task_index.into()),
+            );
+        }
+        if !entry.task_name.is_empty() {
+            log_attributes.insert(
+                "tc.task.name".to_string(),
+                serde_json::Value::String(entry.task_name),
             );
         }
 
-        // Merge in positional arguments with pre-formatted keys
         for (idx, val) in entry.arguments {
             log_attributes.insert(format!("arg.{}", idx), val);
         }
-
-        // Emit a lowercase `level` attribute alongside the OTLP severityText.
-        // Grafana's VictoriaLogs datasource colours log rows and populates the
-        // level-breakdown volume chart from a field literally named `level`;
-        // `severityText` alone renders everything as "unknown".
-        log_attributes.insert(
-            "level".to_string(),
-            serde_json::Value::String(severity_text.to_ascii_lowercase()),
-        );
 
         // The body suffix "[trace_id=... span_id=...]" — which Grafana's
         // derivedFields regex turns into a clickable Tempo link — is added
@@ -881,6 +948,7 @@ impl LogRecord {
             trace_id,
             span_id,
             resource_attributes,
+            scope_name,
             scope_attributes,
             log_attributes,
         }
@@ -965,6 +1033,57 @@ mod tests {
         assert_eq!(LogLevel::Warn.as_u8(), 3);
         assert_eq!(LogLevel::Error.as_u8(), 4);
         assert_eq!(LogLevel::Fatal.as_u8(), 5);
+    }
+
+    #[test]
+    fn test_build_service_instance_id_full() {
+        assert_eq!(
+            build_service_instance_id("HydraulicSystem", "172.28.41.37.1.1", 851),
+            Some("HydraulicSystem@172.28.41.37.1.1:851".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_service_instance_id_no_port() {
+        assert_eq!(
+            build_service_instance_id("HydraulicSystem", "172.28.41.37.1.1", 0),
+            Some("HydraulicSystem@172.28.41.37.1.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_service_instance_id_no_app() {
+        assert_eq!(
+            build_service_instance_id("", "172.28.41.37.1.1", 851),
+            Some("172.28.41.37.1.1:851".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_service_instance_id_only_app() {
+        assert_eq!(
+            build_service_instance_id("HydraulicSystem", "", 0),
+            Some("HydraulicSystem".to_string())
+        );
+        // ams_source_port without netid still degrades to just app.
+        assert_eq!(
+            build_service_instance_id("HydraulicSystem", "", 851),
+            Some("HydraulicSystem".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_service_instance_id_only_netid() {
+        assert_eq!(
+            build_service_instance_id("", "172.28.41.37.1.1", 0),
+            Some("172.28.41.37.1.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_service_instance_id_empty_returns_none() {
+        assert_eq!(build_service_instance_id("", "", 0), None);
+        assert_eq!(build_service_instance_id("", "", 851), None);
     }
 
     #[test]
@@ -1118,10 +1237,43 @@ mod tests {
 
         let record = LogRecord::from_log_entry(entry);
 
-        // Check all attribute categories are present
-        assert_eq!(record.resource_attributes.len(), 5);
-        assert_eq!(record.scope_attributes.len(), 1);
-        assert!(record.log_attributes.len() >= 5); // context + 4 standard + args
+        // After the OTel sem-conv hardening the resource carries:
+        //   service.name, service.instance.id, host.name (no ams → no
+        //   plc.ams_net_id / plc.ams_source_port).
+        assert!(record.resource_attributes.contains_key("service.name"));
+        assert!(record
+            .resource_attributes
+            .contains_key("service.instance.id"));
+        assert!(record.resource_attributes.contains_key("host.name"));
+        assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("plc.ams_source_port"));
+        assert_eq!(
+            record.resource_attributes["service.instance.id"],
+            serde_json::json!("App1")
+        );
+        // Logger name is now the InstrumentationScope.name, not a
+        // per-record scope attribute. scope_attributes is empty for
+        // tc-otel logs (reserved for future scope-level metadata).
+        assert!(record.scope_attributes.is_empty());
+        assert_eq!(record.scope_name, "app.module");
+        assert!(record.log_attributes.len() >= 5); // context + standard + args
+        assert_eq!(
+            record.log_attributes["tc.task.index"],
+            serde_json::json!(10)
+        );
+        assert_eq!(
+            record.log_attributes["tc.task.name"],
+            serde_json::json!("Task1")
+        );
+        // process.* / level / plc.timestamp keys removed.
+        assert!(!record.resource_attributes.contains_key("process.pid"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("process.command_line"));
+        assert!(!record.log_attributes.contains_key("level"));
+        assert!(!record.log_attributes.contains_key("plc.timestamp"));
 
         assert_eq!(record.severity_number, 17); // Error = 17
         assert_eq!(record.severity_text, "ERROR");
@@ -1139,10 +1291,22 @@ mod tests {
 
         let record = LogRecord::from_log_entry(entry);
 
-        // Should still have standard attributes
-        assert!(record.resource_attributes.contains_key("service.name"));
+        // host.name comes from the LogEntry::new "host" arg → resource
+        // attribute kept when non-empty.
         assert!(record.resource_attributes.contains_key("host.name"));
-        assert!(record.log_attributes.contains_key("plc.timestamp"));
+        // Empty project_name / app_name / task_name → corresponding
+        // resource attributes are skipped to keep series identity stable
+        // across log records from the same producer.
+        assert!(!record.resource_attributes.contains_key("service.name"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("service.instance.id"));
+        assert!(!record.resource_attributes.contains_key("process.pid"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("process.command_line"));
+        assert!(!record.log_attributes.contains_key("plc.timestamp"));
+        assert!(!record.log_attributes.contains_key("level"));
         assert!(record.log_attributes.contains_key("task.cycle"));
     }
 
@@ -1195,14 +1359,21 @@ mod tests {
             record.resource_attributes["service.instance.id"],
             serde_json::Value::String("MyApp".to_string())
         );
+        // tc.task.* lives on the log_attributes side after the OTel
+        // sem-conv hardening — process.* names are reserved for OS-level
+        // identifiers in the OTel registry.
         assert_eq!(
-            record.resource_attributes["process.command_line"],
+            record.log_attributes["tc.task.name"],
             serde_json::Value::String("MainTask".to_string())
         );
         assert_eq!(
-            record.resource_attributes["process.pid"],
+            record.log_attributes["tc.task.index"],
             serde_json::Value::Number(5.into())
         );
+        assert!(!record.resource_attributes.contains_key("process.pid"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("process.command_line"));
     }
 
     #[test]
@@ -1608,9 +1779,17 @@ mod tests {
         let entry = MetricEntry::gauge("test".to_string(), 0.0);
         let record = MetricRecord::from_metric_entry(entry);
 
-        // Should still have service.name (empty string)
-        assert!(record.resource_attributes.contains_key("service.name"));
-        // Should not have ams_net_id or ams_source_port when empty/zero
+        // Empty resource strings are skipped — emitting `service.name=""`
+        // produces a separate timeseries from `service.name="tc-otel"` in
+        // VictoriaMetrics / Prometheus (empty-label drop convention).
+        // The MetricDispatcher injects the global service.name fallback
+        // before this conversion runs, so populated entries always emit
+        // the resource key.
+        assert!(!record.resource_attributes.contains_key("service.name"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("service.instance.id"));
+        assert!(!record.resource_attributes.contains_key("host.name"));
         assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
         assert!(!record
             .resource_attributes
@@ -1638,6 +1817,7 @@ mod tests {
         entry.app_name = "HydraulicPress".to_string();
         entry.ams_net_id = "172.17.0.2.1.1".to_string();
         entry.ams_source_port = 851;
+        entry.ams_app_port = 851;
         entry.task_name = "MotionTask".to_string();
         entry.task_index = 1;
         entry.task_cycle_counter = 5000;
@@ -1656,14 +1836,15 @@ mod tests {
         assert_eq!(record.status_code, 1); // STATUS_CODE_OK
         assert_eq!(record.status_message, "Success");
 
-        // Resource attributes
+        // Resource attributes — service.instance.id now combines
+        // app_name + ams_net_id + ams_source_port for sem-conv uniqueness.
         assert_eq!(
             record.resource_attributes["service.name"],
             serde_json::json!("ProductionLine")
         );
         assert_eq!(
             record.resource_attributes["service.instance.id"],
-            serde_json::json!("HydraulicPress")
+            serde_json::json!("HydraulicPress@172.17.0.2.1.1:851")
         );
         assert_eq!(
             record.resource_attributes["host.name"],
@@ -1711,8 +1892,13 @@ mod tests {
         let entry = SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
         let record = TraceRecord::from_span_entry(entry);
 
-        // Should still have service.name (empty string)
-        assert!(record.resource_attributes.contains_key("service.name"));
+        // Empty resource strings are skipped to keep series identity
+        // consistent across span records from the same producer.
+        assert!(!record.resource_attributes.contains_key("service.name"));
+        assert!(!record
+            .resource_attributes
+            .contains_key("service.instance.id"));
+        assert!(!record.resource_attributes.contains_key("host.name"));
         // Should not have ams fields when empty/zero
         assert!(!record.resource_attributes.contains_key("plc.ams_net_id"));
         assert!(!record
