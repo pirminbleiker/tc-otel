@@ -68,6 +68,13 @@ pub struct PendingSpan {
     /// pipeline emits. Falls back to the dispatcher's configured
     /// `service_name` when no registration is available.
     pub project_name: String,
+    /// PLC-side namespace from the trace wire `Begin` event (the
+    /// owning FB's instance path, after FB_Init strip). Carried
+    /// through to `TraceRecord.scope_name`; the
+    /// `TraceDispatcher` then runs `ScopeResolver` to map this to
+    /// an FB type for `InstrumentationScope.name`. Empty when the
+    /// PLC wire predates the namespace bump.
+    pub scope_namespace: String,
 }
 
 /// Dispatcher that processes trace wire events and produces completed spans
@@ -162,6 +169,7 @@ impl SpanDispatcher {
                 traceparent,
                 trace_id,
                 span_id,
+                scope_namespace,
             } => {
                 self.on_begin(
                     net_id,
@@ -175,6 +183,7 @@ impl SpanDispatcher {
                     traceparent,
                     trace_id,
                     span_id,
+                    scope_namespace,
                 );
             }
             TraceWireEvent::Attr {
@@ -224,6 +233,7 @@ impl SpanDispatcher {
         traceparent: Option<String>,
         trace_id: [u8; 16],
         span_id: [u8; 8],
+        scope_namespace: String,
     ) {
         let key = SpanKey {
             ams_net_id: net_id,
@@ -339,6 +349,7 @@ impl SpanDispatcher {
             ams_app_port: app_port,
             app_name,
             project_name,
+            scope_namespace,
         };
 
         // Always insert into secondary index (span_id keying)
@@ -482,6 +493,7 @@ impl SpanDispatcher {
             status_code: status_code as i32,
             status_message,
             resource_attributes,
+            scope_name: pending.scope_namespace.clone(),
             scope_attributes: HashMap::new(),
             span_attributes: pending
                 .attrs
@@ -748,6 +760,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
 
         assert_eq!(dispatcher.pending_count(), 1);
@@ -773,6 +786,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -789,6 +803,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -817,6 +832,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             span_id,
+            String::new(),
         );
         dispatcher.on_attr(net_id, span_id, 0, "key1".to_string(), AttrValue::I64(42));
 
@@ -850,6 +866,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             span_id,
+            String::new(),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -884,6 +901,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             parent_span_id_bytes,
+            String::new(),
         );
 
         let parent_key = SpanKey {
@@ -907,6 +925,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
 
         let child_key = SpanKey {
@@ -938,6 +957,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.pending_count(), 1);
 
@@ -980,6 +1000,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             span_id,
+            String::new(),
         );
 
         // Should create a pending span with orphan_reason set
@@ -1043,6 +1064,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.orphan_counter(), 1);
 
@@ -1059,6 +1081,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.orphan_counter(), 2);
 
@@ -1076,6 +1099,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             root_span_id,
+            String::new(),
         );
         assert_eq!(dispatcher.orphan_counter(), 2); // still 2
 
@@ -1091,6 +1115,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
         assert_eq!(dispatcher.orphan_counter(), 2); // still 2
     }
@@ -1116,6 +1141,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             parent_span_id,
+            String::new(),
         );
 
         let parent_key = SpanKey {
@@ -1140,6 +1166,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
 
         let child_key = SpanKey {
@@ -1175,6 +1202,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             pregenerated_id,
+            String::new(),
         );
 
         // Should be retrievable via pending_by_span_id
@@ -1204,6 +1232,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             TEST_SPAN_ID,
+            String::new(),
         );
 
         // Get the generated span_id from pending
@@ -1240,6 +1269,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             pregenerated_id,
+            String::new(),
         );
 
         // Verify it's indexed
@@ -1277,6 +1307,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             id1,
+            String::new(),
         );
 
         dispatcher.on_begin(
@@ -1291,6 +1322,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             id2,
+            String::new(),
         );
 
         // Both should be retrievable
@@ -1324,6 +1356,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             pregenerated_id,
+            String::new(),
         );
 
         assert!(dispatcher.pending_by_span_id(&pregenerated_id).is_some());
@@ -1341,6 +1374,7 @@ mod tests {
             None,
             TEST_TRACE_ID,
             pregenerated_id,
+            String::new(),
         );
 
         // Old span should be finalized

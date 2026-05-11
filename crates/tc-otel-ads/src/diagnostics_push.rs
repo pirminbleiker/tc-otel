@@ -307,6 +307,7 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         name,
         unit,
         description,
+        scope_namespace: String::new(),
         attributes,
         histogram_bounds,
     };

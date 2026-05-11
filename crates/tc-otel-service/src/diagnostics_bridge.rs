@@ -920,6 +920,7 @@ mod tests {
             description: "Motor temperature".into(),
             attributes: vec![],
             histogram_bounds: None,
+            scope_namespace: String::new(),
         };
         let sample = MetricSample {
             metric_id: 10,
@@ -958,6 +959,7 @@ mod tests {
             description: "HTTP requests".into(),
             attributes: vec![],
             histogram_bounds: None,
+            scope_namespace: String::new(),
         };
         let sample = MetricSample {
             metric_id: 20,
@@ -994,6 +996,7 @@ mod tests {
             description: "Account balance change".into(),
             attributes: vec![],
             histogram_bounds: None,
+            scope_namespace: String::new(),
         };
         let sample = MetricSample {
             metric_id: 25,
@@ -1029,6 +1032,7 @@ mod tests {
             description: "HTTP response time".into(),
             attributes: vec![],
             histogram_bounds: Some(bounds),
+            scope_namespace: String::new(),
         };
         let samples = vec![
             MetricSample {
@@ -1086,6 +1090,7 @@ mod tests {
             description: "Motor vibration".into(),
             attributes: attrs,
             histogram_bounds: None,
+            scope_namespace: String::new(),
         };
         let sample = MetricSample {
             metric_id: 40,
@@ -1155,6 +1160,7 @@ mod tests {
                 description: "".into(),
                 attributes: vec![],
                 histogram_bounds: None,
+                scope_namespace: String::new(),
             },
             MetricDescriptor {
                 metric_id: 20,
@@ -1165,6 +1171,7 @@ mod tests {
                 description: "".into(),
                 attributes: vec![],
                 histogram_bounds: None,
+                scope_namespace: String::new(),
             },
         ];
         let samples = vec![

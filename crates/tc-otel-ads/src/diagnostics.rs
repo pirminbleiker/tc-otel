@@ -421,6 +421,12 @@ pub struct MetricDescriptor {
     pub attributes: Vec<(String, String)>,
     /// For Histogram kind: bucket boundaries (f32). Empty for other kinds.
     pub histogram_bounds: Option<Vec<f32>>,
+    /// PLC-side namespace (owning FB's instance path after the
+    /// FB_Init strip). Sent in the descriptor frame after
+    /// histogram_bounds. tc-otel's ScopeResolver maps this to an
+    /// FB type for `InstrumentationScope.name`. Empty when the
+    /// PLC firmware predates the Phase 2 wire bump.
+    pub scope_namespace: String,
 }
 
 /// Metric sample — a single value point.

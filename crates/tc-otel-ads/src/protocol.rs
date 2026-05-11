@@ -31,6 +31,11 @@ pub enum TraceWireEvent {
         traceparent: Option<String>,
         trace_id: [u8; 16], // Always present, minted by PLC
         span_id: [u8; 8],   // Always present, minted by PLC
+        /// PLC-side namespace (owning FB's instance path after the
+        /// FB_Init strip). Present when the PLC sets
+        /// `flag_has_namespace = 0x04`. Empty when the flag is
+        /// clear (pre-Phase 2 PLC firmware).
+        scope_namespace: String,
     },
     /// SPAN_ATTR (event_type=6): adds an attribute to a pending span
     /// Phase 6 Stage 3: span_id now identifies the span (not local_id)

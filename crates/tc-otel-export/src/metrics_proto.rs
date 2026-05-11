@@ -212,6 +212,7 @@ mod tests {
             value: v,
             is_monotonic: false,
             resource_attributes: resource,
+            scope_name: String::new(),
             attributes: attrs,
             histogram_bounds: Vec::new(),
             histogram_counts: Vec::new(),

@@ -646,6 +646,26 @@ impl AdsParser {
                     None
                 };
 
+                // Phase 2 wire-bump: flag_has_namespace = 0x04. The
+                // PLC's FB_Tracer FB_Init strips its own instance
+                // segment and appends the result here so the OTel
+                // ScopeResolver can map it to an FB type
+                // (`InstrumentationScope.name`).
+                let scope_namespace = if (flags & 0x04) != 0 {
+                    let ns_len = reader.read_u8()? as usize;
+                    if ns_len > 127 {
+                        return Err(AdsError::ParseError(
+                            "SPAN_BEGIN: namespace length exceeds 127".to_string(),
+                        ));
+                    }
+                    let ns_bytes = reader.read_bytes(ns_len)?;
+                    String::from_utf8(ns_bytes.to_vec()).map_err(|_| {
+                        AdsError::ParseError("SPAN_BEGIN: invalid UTF-8 in namespace".to_string())
+                    })?
+                } else {
+                    String::new()
+                };
+
                 Ok(TraceWireEvent::Begin {
                     local_id,
                     task_index,
@@ -657,6 +677,7 @@ impl AdsParser {
                     traceparent,
                     trace_id,
                     span_id,
+                    scope_namespace,
                 })
             }
             6 => {

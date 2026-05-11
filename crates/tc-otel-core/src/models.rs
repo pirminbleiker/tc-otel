@@ -178,6 +178,17 @@ pub struct MetricEntry {
     pub app_name: String,
     pub project_name: String,
 
+    /// PLC-side namespace (FB_Metrics' owning-FB instance path)
+    /// auto-derived from `{attribute 'instance-path'}` after the
+    /// FB_Init strip. tc-otel's ScopeResolver maps this to an FB
+    /// type name via the PLC symbol table; the resolved type
+    /// becomes `InstrumentationScope.name` on export. Empty when
+    /// the PLC-side wire predates the namespace bump or no
+    /// instance path is available — encoder falls back to the
+    /// crate-default scope.
+    #[serde(default)]
+    pub scope_namespace: String,
+
     /// Additional attributes (e.g., PLC symbol name, data type)
     pub attributes: HashMap<String, serde_json::Value>,
 
@@ -225,6 +236,7 @@ impl MetricEntry {
             task_cycle_counter: 0,
             app_name: String::new(),
             project_name: String::new(),
+            scope_namespace: String::new(),
             attributes: HashMap::new(),
             histogram_bounds: Vec::new(),
             histogram_counts: Vec::new(),
@@ -301,6 +313,11 @@ pub struct MetricRecord {
     pub value: f64,
     pub is_monotonic: bool,
     pub resource_attributes: HashMap<String, serde_json::Value>,
+    /// `InstrumentationScope.name` — set by the MetricDispatcher
+    /// after ScopeResolver maps `MetricEntry.scope_namespace` to
+    /// an FB type. Empty falls back to the crate-default scope.
+    #[serde(default)]
+    pub scope_name: String,
     pub attributes: HashMap<String, serde_json::Value>,
     // Histogram-specific
     pub histogram_bounds: Vec<f64>,
@@ -370,6 +387,7 @@ impl MetricRecord {
             value: entry.value,
             is_monotonic: entry.is_monotonic,
             resource_attributes,
+            scope_name: entry.scope_namespace,
             attributes,
             histogram_bounds: entry.histogram_bounds,
             histogram_counts: entry.histogram_counts,
@@ -520,6 +538,15 @@ pub struct SpanEntry {
     pub app_name: String,
     pub project_name: String,
 
+    /// PLC-side namespace (FB_Tracer's owning-FB instance path)
+    /// auto-derived from `{attribute 'instance-path'}` after the
+    /// FB_Init strip. tc-otel's ScopeResolver maps this to an FB
+    /// type name via the PLC symbol table; the resolved type
+    /// becomes `InstrumentationScope.name` on export. Empty when
+    /// the PLC-side wire predates the namespace bump.
+    #[serde(default)]
+    pub scope_namespace: String,
+
     pub attributes: HashMap<String, serde_json::Value>,
     pub events: Vec<SpanEvent>,
 }
@@ -547,6 +574,7 @@ impl SpanEntry {
             task_cycle_counter: 0,
             app_name: String::new(),
             project_name: String::new(),
+            scope_namespace: String::new(),
             attributes: HashMap::new(),
             events: Vec::new(),
         }
@@ -589,6 +617,11 @@ pub struct TraceRecord {
     pub status_code: i32,
     pub status_message: String,
     pub resource_attributes: HashMap<String, serde_json::Value>,
+    /// `InstrumentationScope.name` — set by the TraceDispatcher
+    /// after ScopeResolver maps `SpanEntry.scope_namespace` to
+    /// an FB type. Empty falls back to the crate-default scope.
+    #[serde(default)]
+    pub scope_name: String,
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub span_attributes: HashMap<String, serde_json::Value>,
     pub events: Vec<TraceEventRecord>,
@@ -669,6 +702,7 @@ impl TraceRecord {
             status_code: entry.status_code.to_otel_status(),
             status_message: entry.status_message,
             resource_attributes,
+            scope_name: entry.scope_namespace,
             scope_attributes: HashMap::new(),
             span_attributes,
             events,

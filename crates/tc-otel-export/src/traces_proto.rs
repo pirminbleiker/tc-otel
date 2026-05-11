@@ -142,6 +142,7 @@ mod tests {
             status_code: 1, // OK
             status_message: String::new(),
             resource_attributes: resource,
+            scope_name: String::new(),
             scope_attributes: HashMap::new(),
             span_attributes: attrs,
             events: vec![TraceEventRecord {

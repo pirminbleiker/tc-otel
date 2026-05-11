@@ -412,6 +412,7 @@ impl AdsRouter {
                         task_cycle_counter: me.task_cycle_counter,
                         app_name,
                         project_name,
+                        scope_namespace: String::new(),
                         attributes: me.attributes,
                         histogram_bounds: me.histogram_bounds,
                         histogram_counts: me.histogram_counts,

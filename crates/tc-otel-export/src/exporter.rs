@@ -930,6 +930,7 @@ mod tests {
                 m.insert("service.name".to_string(), serde_json::json!("TestProject"));
                 m
             },
+            scope_name: String::new(),
             attributes: {
                 let mut m = std::collections::HashMap::new();
                 m.insert(
@@ -980,6 +981,7 @@ mod tests {
             value: 0.42,
             is_monotonic: false,
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             attributes: std::collections::HashMap::new(),
             histogram_bounds: Vec::new(),
             histogram_counts: Vec::new(),
@@ -1018,6 +1020,7 @@ mod tests {
             value: 42.0,
             is_monotonic: true,
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             attributes: std::collections::HashMap::new(),
             histogram_bounds: Vec::new(),
             histogram_counts: Vec::new(),
@@ -1050,6 +1053,7 @@ mod tests {
             value: 0.0,
             is_monotonic: false,
             resource_attributes: std::collections::HashMap::new(),
+            scope_name: String::new(),
             attributes: std::collections::HashMap::new(),
             histogram_bounds: vec![1.0, 5.0, 10.0],
             histogram_counts: vec![10, 25, 5, 1],
