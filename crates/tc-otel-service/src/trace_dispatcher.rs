@@ -117,19 +117,27 @@ impl TraceDispatcher {
     }
 }
 
-/// Detached HTTP POST — mirrors `LogDispatcher::spawn_flush` so the
-/// receiver loop never `.await`s an outbound POST. The semaphore caps
-/// concurrent flushes.
+/// Bounded detached HTTP POST — mirrors `LogDispatcher::spawn_flush`.
+/// `try_acquire_owned` keeps the spawn queue capped; under sustained
+/// backend slowness we drop with a warning rather than pile up
+/// `Vec<TraceRecord>` allocations across spawned futures.
 fn spawn_trace_flush(
     exporter: Arc<OtelExporter>,
     inflight: Arc<Semaphore>,
     batch: Vec<TraceRecord>,
 ) {
+    let permit = match inflight.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!(
+                "Trace flush dropped: {} records — {} concurrent POSTs in flight",
+                batch.len(),
+                MAX_INFLIGHT_FLUSHES,
+            );
+            return;
+        }
+    };
     tokio::spawn(async move {
-        let permit = match inflight.acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return,
-        };
         if let Err(e) = exporter.export_traces_batch(batch).await {
             tracing::error!("Failed to export trace batch: {}", e);
         }

@@ -220,7 +220,10 @@ impl LogDispatcher {
     ) {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(4)
+            // Keep one warm connection per concurrent in-flight POST
+            // so the next batch doesn't pay a TCP/keep-alive setup
+            // cost when the previous one releases its permit.
+            .pool_max_idle_per_host(MAX_INFLIGHT_FLUSHES)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -359,9 +362,14 @@ impl LogDispatcher {
         }
     }
 
-    /// Spawn a detached task that acquires a flush permit, ships one
-    /// batch, then releases the permit. Callers must NOT `.await` the
-    /// returned task — the whole point is to keep `rx.recv()` alive.
+    /// Spawn a detached task that ships one batch with an inflight
+    /// permit. **Bounded** — uses `try_acquire_owned()` so we never
+    /// queue up more than `MAX_INFLIGHT_FLUSHES` outstanding tasks;
+    /// when the backend is slow and the cap is reached we drop the
+    /// batch and warn rather than accumulate `Vec<LogRecord>` in
+    /// the scheduler. That keeps memory bounded and avoids the
+    /// death-spiral failure mode where a slow VictoriaLogs would
+    /// silently turn into runaway task spawning + Tokio overload.
     fn spawn_flush(
         client: Arc<reqwest::Client>,
         inflight: Arc<Semaphore>,
@@ -369,11 +377,18 @@ impl LogDispatcher {
         otlp_exporter: Option<Arc<OtelExporter>>,
         batch: Vec<LogRecord>,
     ) {
+        let permit = match inflight.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    "Log flush dropped: {} records — {} concurrent POSTs in flight, backend too slow",
+                    batch.len(),
+                    MAX_INFLIGHT_FLUSHES,
+                );
+                return;
+            }
+        };
         tokio::spawn(async move {
-            let permit = match inflight.acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => return, // semaphore closed (service shutting down)
-            };
             if let Err(e) =
                 Self::flush_batch_owned(&client, &endpoint, otlp_exporter.as_deref(), batch).await
             {
@@ -732,18 +747,24 @@ impl MetricDispatcher {
         }
     }
 
-    /// Spawn a detached task that acquires a flush permit and ships
-    /// one metric batch. Same pattern as `LogDispatcher::spawn_flush`.
+    /// Bounded spawn — see `LogDispatcher::spawn_flush` for rationale.
     fn spawn_metric_flush(
         exporter: Arc<OtelExporter>,
         inflight: Arc<Semaphore>,
         batch: Vec<MetricRecord>,
     ) {
+        let permit = match inflight.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    "Metric flush dropped: {} records — {} concurrent POSTs in flight",
+                    batch.len(),
+                    MAX_INFLIGHT_FLUSHES,
+                );
+                return;
+            }
+        };
         tokio::spawn(async move {
-            let permit = match inflight.acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
             if let Err(e) = exporter.export_metrics_batch(batch).await {
                 tracing::error!("Metric batch export error: {}", e);
             }
