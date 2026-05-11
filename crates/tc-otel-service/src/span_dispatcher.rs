@@ -19,14 +19,22 @@ pub struct SpanEvent {
     pub attrs: Vec<(String, AttrValue)>,
 }
 
-/// Unique identifier for a pending span
+/// Unique identifier for a pending span.
+///
+/// Phase 6 Stage 3 made the PLC mint `span_id` at Begin time, so the
+/// dispatcher keys spans by that 8-byte id. The earlier
+/// `(net_id, task_index, local_id)` form was vulnerable to PLC-side
+/// slot reuse: `_nNextLocalId` is a `u8` that wraps every 256 Begins
+/// per task, and online change resets it to 0. A still-open span (e.g.
+/// a 2 s recipe span) colliding with a new Begin on the same slot
+/// triggered spurious `finalise_timed_out` ("Span timed out after
+/// 0s") even though the span was perfectly healthy. Keying on the
+/// 64-bit `span_id` eliminates that collision class entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpanKey {
     #[allow(dead_code)]
     pub ams_net_id: AmsNetId,
-    #[allow(dead_code)]
-    pub task_index: u8,
-    pub local_id: u8,
+    pub span_id: [u8; 8],
 }
 
 /// A span that is still being built (not yet ended)
@@ -235,10 +243,13 @@ impl SpanDispatcher {
         span_id: [u8; 8],
         scope_namespace: String,
     ) {
+        // Note: span_id is set by the PLC's _MintSpanId before Begin
+        // emits the wire frame, so we key on it from t=0 onwards.
+        // local_id stays in the wire format for backward compatibility
+        // but is no longer load-bearing in the dispatcher.
         let key = SpanKey {
             ams_net_id: net_id,
-            task_index,
-            local_id,
+            span_id,
         };
 
         // Resolution order for trace_id + resolved_parent_span_id:
@@ -608,7 +619,7 @@ impl SpanDispatcher {
         let mut best: Option<(SpanKey, DateTime<Utc>, String, String)> = None;
 
         for (key, pending) in self.pending.iter() {
-            if key.ams_net_id == *ams_net_id && key.task_index == task_index {
+            if key.ams_net_id == *ams_net_id && pending.task_index == task_index {
                 let trace_id_hex = hex::encode(pending.trace_id);
                 let span_id_hex = hex::encode(pending.span_id);
 
@@ -721,15 +732,14 @@ mod tests {
     #[test]
     fn test_span_key_hash_and_eq() {
         let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
         let k1 = SpanKey {
             ams_net_id: net_id,
-            task_index: 1,
-            local_id: 5,
+            span_id,
         };
         let k2 = SpanKey {
             ams_net_id: net_id,
-            task_index: 1,
-            local_id: 5,
+            span_id,
         };
         assert_eq!(k1, k2);
     }
@@ -838,8 +848,7 @@ mod tests {
 
         let span_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 1,
+            span_id,
         };
         let pending = dispatcher.pending.get(&span_key).unwrap();
         assert_eq!(pending.attrs.len(), 1);
@@ -906,8 +915,7 @@ mod tests {
 
         let parent_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 1,
+            span_id: parent_span_id_bytes,
         };
         let parent_trace_id = dispatcher.pending.get(&parent_key).unwrap().trace_id;
         let parent_span_id = dispatcher.pending.get(&parent_key).unwrap().span_id;
@@ -930,8 +938,7 @@ mod tests {
 
         let child_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 2,
+            span_id: TEST_SPAN_ID,
         };
         let child = dispatcher.pending.get(&child_key).unwrap();
         assert_eq!(child.trace_id, parent_trace_id);
@@ -964,8 +971,7 @@ mod tests {
         // Manually set deadline to past
         let span_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 1,
+            span_id: TEST_SPAN_ID,
         };
         if let Some(p) = dispatcher.pending.get_mut(&span_key) {
             p.deadline = Instant::now() - Duration::from_millis(50);
@@ -1006,8 +1012,7 @@ mod tests {
         // Should create a pending span with orphan_reason set
         let orphan_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 10,
+            span_id,
         };
         let pending = dispatcher.pending.get(&orphan_key).unwrap();
 
@@ -1146,8 +1151,7 @@ mod tests {
 
         let parent_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 1,
+            span_id: parent_span_id,
         };
         let parent = dispatcher.pending.get(&parent_key).unwrap();
         assert!(parent.orphan_reason.is_none());
@@ -1171,8 +1175,7 @@ mod tests {
 
         let child_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 2,
+            span_id: TEST_SPAN_ID,
         };
         let child = dispatcher.pending.get(&child_key).unwrap();
         assert!(child.orphan_reason.is_none());
@@ -1238,8 +1241,7 @@ mod tests {
         // Get the generated span_id from pending
         let span_key = SpanKey {
             ams_net_id: net_id,
-            task_index: 0,
-            local_id: 1,
+            span_id: TEST_SPAN_ID,
         };
         let generated_id = dispatcher.pending.get(&span_key).unwrap().span_id;
 
