@@ -51,6 +51,8 @@ attributes.
 | `BindTracer(t)` | Attach a tracer; flushes snapshot its innermost-open span. Pass `0` to unbind. |
 | `WithSpan(span)` | One-shot trace-context override for the very next flush — captures the span immediately, survives `End()`. |
 | `SetAggregation(nMask)` | Enable Welford online aggregation (numeric metrics only). Bitmask of `E_MetricStat` values, or `0` for raw single-value sampling. See "Aggregation" below. |
+| `SetRecordSampleTimes(b)` | Emit a u16 cycle-offset per sample (wire flag `0x04`). Use when `Observe` is irregular within a window but stays at ≤ 1 call per task cycle. +2 B / sample. |
+| `SetRecordSampleTimesDc(b)` | Emit an i64 absolute DC time per sample (wire flag `0x10`). **True oversampling** — preserves every `Observe` call inside a single task cycle as a distinct datapoint. +8 B / sample, mutually exclusive with `SetRecordSampleTimes`. See "Oversampling" below. |
 
 ### Properties
 
@@ -67,7 +69,15 @@ attributes.
    * Locks the body schema on first non-zero-value observation.
    * Skips if rate-limit interval hasn't elapsed.
    * Skips if change-detect says "byte-identical to last sampled value".
-   * Appends to the 8 KB body buffer (overflow → flag, drops further appends).
+   * Appends to the 32 KB body buffer (overflow → `ring_overflowed` flag,
+     drops further appends and bumps `_nDropAppend`).
+   * Triggers a mid-window autoflush when the body crosses ~80 % capacity
+     **and the pending half is free** — swaps the A / B half so a burst
+     keeps streaming without waiting for the push-interval timer. If the
+     previous frame is still in flight the autoflush is suppressed so we
+     don't reset the active buffer and lose the whole burst; the body
+     keeps filling and drops sample-by-sample via `_nDropAppend` once it
+     reaches 100 %.
    * Triggers `_DoFlush` when the push window expires.
 3. **`PRG_TaskLog.Call()`**: pumps the per-task `FB_TcOtelTaskMetrics` sender
    that owns the `ADSWRITE` to tc-otel.
@@ -143,6 +153,55 @@ startup before the first `Observe`.
 Welford online formula (B. P. Welford, *Technometrics 4(3), 1962*) keeps
 mean and sum-of-squared-deltas exact in single pass; stddev derives
 from `sqrt(SumSq / (n-1))` only at flush time, never per `Observe`.
+
+## Oversampling (multiple Observes per task cycle)
+
+Default sampling pairs one `Observe` call with one task cycle. When the
+application drives `Observe` more than once per cycle — for example a
+motion-control loop that fires several state transitions per scan, or
+a counter that ticks faster than the PLC scheduler — the default
+linear-interpolation path on the receiver side collapses every
+same-cycle sample onto the same timestamp. The backend then keeps
+only the last value and the rest of the calls vanish on the chart.
+
+The fix is `SetRecordSampleTimesDc(TRUE)`: emit a raw
+`F_GetActualDcTime64()` reading as an 8-byte prefix on every sample.
+The receiver uses `dc_time[i]` directly as the sample timestamp —
+no interpolation, no dependency on `cycle_count_*`.
+
+```pascal
+IF _TaskInfo[GETCURTASKINDEXEX()].FirstCycle THEN
+    fbMotorCycles.Init('motor.cycles', '{count}');
+    fbMotorCycles.SetRecordSampleTimesDc(TRUE);
+    fbMotorCycles.SetPushIntervalMs(200);   // shorter window keeps the buffer drained
+END_IF
+
+// Inner control loop, multiple times per task cycle:
+fbMotorCycles.Observe(nCycles);
+```
+
+**Honest timestamps, no synthetic tiebreaker.** If two consecutive
+`Observe` calls happen faster than the hardware DC clock ticks the
+emitted DC values can be identical. The PLC does **not** fabricate
+a fake `+1 ns` increment because that would lie about when the
+observation actually happened. Identical-timestamp duplicates may be
+deduplicated by storage backends with last-value-wins semantics; if
+distinguishability beyond the hardware clock matters, space the
+`Observe` calls or aggregate.
+
+**Cost.** +8 B per sample (Numeric: 8 → 16 B, +100 %). The body
+buffer is 32 KB per half, so ~2048 Numeric samples per half before
+the mid-window autoflush trips at 80 % fill. Pair with a push
+interval ≤ 200 ms so the sender keeps draining between bursts —
+otherwise the next burst may hit a `_bPending` half and bump
+`_nDropWindow`.
+
+**When NOT to use it.** One `Observe` per cycle is the common case:
+the cheaper u16-cycle-offset mode (`SetRecordSampleTimes(TRUE)`,
++2 B per sample) is exact at that rate, and the default no-prefix
+linear-interpolation mode is exact as long as the cycle cadence is
+uniform across the window. Reach for DC mode only when the
+oversampling problem actually bites.
 
 ## Wire format
 

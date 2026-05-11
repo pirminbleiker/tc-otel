@@ -114,8 +114,22 @@ pub const METRIC_FLAG_HAS_SAMPLE_TS: u8 = 1 << 2;
 /// flag clear and writes no trailing namespace.
 pub const METRIC_FLAG_HAS_NAMESPACE: u8 = 1 << 3;
 
+/// FB_Metrics flag: each body slot is preceded by an 8-byte little-endian
+/// `i64` absolute DC time — the raw `F_GetActualDcTime64()` reading at the
+/// `Observe` call site. Body slot stride becomes `sample_size + 8`. Used
+/// for **true oversampling** when `Observe` is called more than once per
+/// task cycle and every observation must reach the backend as a distinct
+/// datapoint. Emitted when the PLC calls
+/// `FB_Metrics.SetRecordSampleTimesDc(TRUE)`. Mutually exclusive with
+/// [`METRIC_FLAG_HAS_SAMPLE_TS`] — a frame setting both bits is rejected
+/// by the decoder.
+pub const METRIC_FLAG_HAS_SAMPLE_TS_DC: u8 = 1 << 4;
+
 /// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS` is set.
 pub const METRIC_SAMPLE_TS_SIZE: usize = 2;
+
+/// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS_DC` is set.
+pub const METRIC_SAMPLE_TS_DC_SIZE: usize = 8;
 
 /// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum
 /// encodes the same values; ``stat_mask`` in the wire header is the OR
@@ -358,6 +372,13 @@ pub enum DiagEvent {
         /// which case the receiver falls back to linear interpolation across
         /// `[dc_time_start, dc_time_end]`.
         sample_cycle_offsets: Option<Vec<u16>>,
+        /// Optional per-sample absolute DC times (raw `F_GetActualDcTime64`
+        /// readings, ns since DC epoch 2000-01-01). `Some(v)` when
+        /// `flags & METRIC_FLAG_HAS_SAMPLE_TS_DC != 0`, with
+        /// `v.len() == samples.len()`. Mutually exclusive with
+        /// `sample_cycle_offsets` — the decoder rejects frames where both
+        /// flags are set.
+        sample_dc_times: Option<Vec<i64>>,
     },
 }
 

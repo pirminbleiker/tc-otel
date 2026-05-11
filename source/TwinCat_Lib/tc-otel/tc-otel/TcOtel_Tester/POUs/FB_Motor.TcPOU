@@ -49,6 +49,7 @@ nCycles := nCycles + 1;
 IF NOT bInitialized THEN
     fbSpan.BindTracer(fbTrace);
     fbMetric.Init('motor.cycles', '{count}');
+	fbMetric.SetRecordSampleTimesDc(TRUE);
     bInitialized := TRUE;
 END_IF
 
@@ -69,7 +70,7 @@ fbSpan.AddInt('motor_id', nMotorId);
 fbSpan.AddLInt('cycle', nCycles);
 fbSpan.End();
 
-fbMetric.Observe(nCycles);
+//fbMetric.Observe(nCycles);
 ]]></ST>
       </Implementation>
     </Method>

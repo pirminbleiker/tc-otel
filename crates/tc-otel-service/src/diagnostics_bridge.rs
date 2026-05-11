@@ -185,6 +185,7 @@ pub fn diag_event_to_metrics(
             span_id,
             samples,
             sample_cycle_offsets,
+            sample_dc_times,
         } => metric_aggregate_to_entries(
             &net_id_str,
             metric_id,
@@ -203,6 +204,7 @@ pub fn diag_event_to_metrics(
             span_id,
             &samples,
             sample_cycle_offsets.as_deref(),
+            sample_dc_times.as_deref(),
         ),
     }
 }
@@ -214,12 +216,20 @@ pub fn diag_event_to_metrics(
 ///   * Discrete (BYTE/WORD/DWORD/LWORD/ENUM) → little-endian unsigned int → f64
 ///   * String / Wstring → silently dropped (OTel metrics are numeric)
 ///
-/// Per-sample timestamps: when `sample_cycle_offsets` is `Some(v)` (the PLC
-/// emitted the frame with `METRIC_FLAG_HAS_SAMPLE_TS`), each sample gets its
-/// true DC time reconstructed from `dc_time_start + v[i] * cycle_time_ns`,
-/// where `cycle_time_ns` is derived from the header span. Otherwise the
-/// receiver linearly interpolates between `dc_time_start` and `dc_time_end`.
-/// Single-sample batches always use `dc_time_start` directly.
+/// Per-sample timestamps — three modes in priority order:
+///
+/// 1. **DC mode** (`sample_dc_times` = `Some`, set by `METRIC_FLAG_HAS_SAMPLE_TS_DC`):
+///    `ts_ns = dc_times[i]` directly. No interpolation, no dependency on
+///    `cycle_count_*`. The honest receiver path for true oversampling — each
+///    `Observe` carries its own raw `F_GetActualDcTime64()` reading. Duplicate
+///    values inside one task cycle are passed through unchanged; backend
+///    storage decides whether to collapse identical-ts samples.
+/// 2. **Cycle-offset mode** (`sample_cycle_offsets` = `Some`, set by
+///    `METRIC_FLAG_HAS_SAMPLE_TS`): `ts_ns = dc_time_start + offset[i] *
+///    cycle_time_ns`, where `cycle_time_ns` is derived from the header
+///    span. Falls back to linear interpolation if the cycle math degenerates.
+/// 3. **Default**: linear interpolation between `dc_time_start` and
+///    `dc_time_end`. Single-sample batches always use `dc_time_start`.
 ///
 /// trace_id / span_id are stored on each ``MetricEntry`` as raw bytes and
 /// promoted to a proper OTel Exemplar on the OTLP NumberDataPoint later in
@@ -245,6 +255,7 @@ fn metric_aggregate_to_entries(
     span_id: Option<[u8; 8]>,
     samples: &[MetricAggregateSample],
     sample_cycle_offsets: Option<&[u16]>,
+    sample_dc_times: Option<&[i64]>,
 ) -> Vec<MetricEntry> {
     let mut out: Vec<MetricEntry> = Vec::with_capacity(samples.len());
     if samples.is_empty() {
@@ -267,13 +278,20 @@ fn metric_aggregate_to_entries(
     };
 
     for (i, sample) in samples.iter().enumerate() {
-        let ts_ns = match (sample_cycle_offsets, cycle_time_ns) {
-            (Some(offs), Some(cns)) if i < offs.len() => dc_time_start + (offs[i] as i64) * cns,
-            _ => {
-                if samples.len() == 1 {
-                    dc_time_start
-                } else {
-                    dc_time_start + (i as i64) * span_ns / denom
+        let ts_ns = if let Some(dc) = sample_dc_times.and_then(|v| v.get(i).copied()) {
+            // DC mode wins outright — exact per-Observe DC time.
+            dc
+        } else {
+            match (sample_cycle_offsets, cycle_time_ns) {
+                (Some(offs), Some(cns)) if i < offs.len() => {
+                    dc_time_start + (offs[i] as i64) * cns
+                }
+                _ => {
+                    if samples.len() == 1 {
+                        dc_time_start
+                    } else {
+                        dc_time_start + (i as i64) * span_ns / denom
+                    }
                 }
             }
         };
@@ -1250,6 +1268,7 @@ mod tests {
                 values: vec![-1.0, 1.0, 0.0], // min, max, mean
             }],
             sample_cycle_offsets: None,
+            sample_dc_times: None,
             scope_namespace: String::new(),
         };
 
@@ -1318,6 +1337,7 @@ mod tests {
                 MetricAggregateSample::Numeric(23.1),
             ],
             sample_cycle_offsets: Some(vec![0, 100, 250]),
+            sample_dc_times: None,
             scope_namespace: String::new(),
         };
 
@@ -1361,6 +1381,7 @@ mod tests {
                 MetricAggregateSample::Numeric(3.0),
             ],
             sample_cycle_offsets: Some(vec![0, 50, 100]),
+            sample_dc_times: None,
             scope_namespace: String::new(),
         };
 
@@ -1401,6 +1422,7 @@ mod tests {
                 MetricAggregateSample::Numeric(3.0),
             ],
             sample_cycle_offsets: None,
+            sample_dc_times: None,
             scope_namespace: String::new(),
         };
 
@@ -1409,6 +1431,99 @@ mod tests {
         let expected = [0_i64, 100, 200];
         for (entry, exp) in out.iter().zip(expected.iter()) {
             assert_eq!(delta_ns_from(entry, dc_start), *exp);
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_dc_mode_uses_raw_dc_times_directly() {
+        // True-oversampling path: when sample_dc_times is Some the bridge
+        // MUST take each value as-is, NOT interpolate. This is the whole
+        // point of the DC-sample-ts wire flag — preserve each Observe's
+        // hardware clock reading so the backend can distinguish them.
+        use tc_otel_ads::diagnostics::{MetricAggregateSample, MetricBodySchema};
+
+        let dc_start: i64 = 5_000_000;
+        let dc_times = vec![
+            dc_start + 17_i64,
+            dc_start + 423,
+            dc_start + 1_999,
+            dc_start + 2_001,
+            dc_start + 9_876,
+        ];
+
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 42,
+            task_index: 1,
+            flags: 0,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            // Same cycle for every sample — the regression case that motivated
+            // the DC flag. With cycle-offset reconstruction every sample
+            // would collapse onto dc_start; with DC times the bridge has
+            // to honor the per-sample values.
+            cycle_count_start: 5000,
+            cycle_count_end: 5000,
+            dc_time_start: dc_start,
+            dc_time_end: dc_start + 9_876,
+            name: "motor.cycles".to_string(),
+            unit: "{count}".to_string(),
+            trace_id: None,
+            span_id: None,
+            samples: (1..=5)
+                .map(|v| MetricAggregateSample::Numeric(v as f64))
+                .collect(),
+            sample_cycle_offsets: None,
+            sample_dc_times: Some(dc_times.clone()),
+            scope_namespace: String::new(),
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 5);
+        for (entry, expected_dc) in out.iter().zip(dc_times.iter()) {
+            assert_eq!(delta_ns_from(entry, dc_start), expected_dc - dc_start);
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_dc_mode_passes_duplicate_dc_through_unchanged() {
+        // Honesty contract: when the hardware DC tick is coarser than the
+        // inner-loop call rate the PLC emits duplicate dc_times. The bridge
+        // must NOT mutate them to synthesize uniqueness — that would lie
+        // about when the observation happened. The duplicate is handed to
+        // the exporter / backend as-is.
+        use tc_otel_ads::diagnostics::{MetricAggregateSample, MetricBodySchema};
+
+        let dc: i64 = 7_500_000;
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 1,
+            task_index: 1,
+            flags: 0,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            cycle_count_start: 100,
+            cycle_count_end: 100,
+            dc_time_start: dc,
+            dc_time_end: dc,
+            name: "x".to_string(),
+            unit: "".to_string(),
+            trace_id: None,
+            span_id: None,
+            samples: vec![
+                MetricAggregateSample::Numeric(1.0),
+                MetricAggregateSample::Numeric(2.0),
+                MetricAggregateSample::Numeric(3.0),
+            ],
+            sample_cycle_offsets: None,
+            sample_dc_times: Some(vec![dc, dc, dc]),
+            scope_namespace: String::new(),
+        };
+
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 3);
+        for entry in &out {
+            assert_eq!(delta_ns_from(entry, dc), 0);
         }
     }
 }

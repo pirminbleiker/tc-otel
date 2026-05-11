@@ -62,11 +62,18 @@ VAR CONSTANT
        and runs through the body — no MEMCPY of either region on flush.
 
        Header max observed size (v2 frame + 24 B trace_ctx + 63 B name + 15 B
-       unit) is ~154 B; 256 B is generous padding. Body stays at 8 KB per
-       half. Total per-half = HDR_RESERVE + BODY_CAPACITY = 8448 B. *)
-    HDR_RESERVE         : UDINT := 256;
-    BODY_CAPACITY       : UDINT := 8192;
-    FRAME_SIZE          : UDINT := 8448;              // HDR_RESERVE + BODY_CAPACITY
+       unit) is ~154 B; 256 B is generous padding. Body is 32 KB per half so
+       a true-oversampling DC-timestamp burst (16 B / Numeric slot) fits
+       ~2048 samples before mid-window autoflush kicks in. Total per-half =
+       HDR_RESERVE + BODY_CAPACITY = 33024 B.
+
+       Autoflush high-water mark: when _nBodyOffset crosses 4/5 of
+       BODY_CAPACITY the next append triggers _DoFlush, swapping halves
+       mid-window so the burst keeps streaming. *)
+    HDR_RESERVE             : UDINT := 256;
+    BODY_CAPACITY           : UDINT := 32768;
+    BODY_HIGH_WATER         : UDINT := 26214;         // BODY_CAPACITY * 4 / 5
+    FRAME_SIZE              : UDINT := 33024;         // HDR_RESERVE + BODY_CAPACITY
 END_VAR
 VAR
     (* Identification *)
@@ -87,8 +94,8 @@ VAR
        whichever half is ACTIVE; the pending half stays frozen while the
        sender ships it via ADSWRITE with SRCADDR pointing directly here.
        No MEMCPY of the body on flush. *)
-    _aFrameA            : ARRAY[0..8447] OF BYTE;
-    _aFrameB            : ARRAY[0..8447] OF BYTE;
+    _aFrameA            : ARRAY[0..33023] OF BYTE;
+    _aFrameB            : ARRAY[0..33023] OF BYTE;
     _eActiveBuf         : USINT;                      // 0 = A is active, 1 = B is active
 
     (* Active-half mutable state. Reset on flush when the active half flips. *)
@@ -164,7 +171,18 @@ VAR
        _nCycleStart). _CheckFlush caps the push window at 0xFFFF cycles to
        keep u16 safe; receiver-side decoders gate on the matching header flag
        METRIC_FLAG_HAS_SAMPLE_TS (0x04). *)
-    _bRecordSampleTimes : BOOL;
+    _bRecordSampleTimes   : BOOL;
+
+    (* High-resolution per-sample timestamps for true oversampling. When TRUE
+       each body slot is prefixed with an 8-byte little-endian i64 absolute
+       DC time — the raw F_GetActualDcTime64() reading at the Observe call.
+       Mutually exclusive with _bRecordSampleTimes; setting both is a
+       programming error. Receiver-side decoders gate on the matching header
+       flag METRIC_FLAG_HAS_SAMPLE_TS_DC (0x10). Slot stride becomes
+       _nSampleSize + 8. No tiebreaker — duplicate DC reads inside one task
+       cycle stay duplicate so emitted timestamps don't lie about the
+       hardware clock. *)
+    _bRecordSampleTimesDc : BOOL;
 
     (* Phase 2 scope-resolver: instance path of the owning FB.
        FB_Init strips the library + application + variable-name
@@ -386,6 +404,9 @@ VAR_INPUT
        when _bRecordSampleTimes is TRUE; ignored otherwise. Callers pass 0
        when they don't care. *)
     nCycleOff : UINT;
+    (* Absolute DC time for this sample (raw F_GetActualDcTime64). Only
+       written when _bRecordSampleTimesDc is TRUE; ignored otherwise. *)
+    nDcSample : LINT;
 END_VAR
 VAR
     pDst    : POINTER TO BYTE;
@@ -399,6 +420,8 @@ END_VAR
         <ST><![CDATA[nStride := _nSampleSize;
 IF _bRecordSampleTimes THEN
     nStride := nStride + 2;
+ELSIF _bRecordSampleTimesDc THEN
+    nStride := nStride + 8;
 END_IF
 IF (_nBodyOffset + nStride) > BODY_CAPACITY THEN
     _AppendAggregated := FALSE;
@@ -409,6 +432,9 @@ pDst    := _ActiveBodyPtr() + _nBodyOffset;
 IF _bRecordSampleTimes THEN
     Tc2_System.MEMCPY(pDst, ADR(nCycleOff), 2);
     pDst := pDst + 2;
+ELSIF _bRecordSampleTimesDc THEN
+    Tc2_System.MEMCPY(pDst, ADR(nDcSample), 8);
+    pDst := pDst + 8;
 END_IF
 nOffset := 0;
 
@@ -462,6 +488,9 @@ VAR_INPUT
        when _bRecordSampleTimes is TRUE; ignored otherwise. Callers pass 0
        when they don't care. *)
     nCycleOff : UINT;
+    (* Absolute DC time for this sample (raw F_GetActualDcTime64). Only
+       written when _bRecordSampleTimesDc is TRUE; ignored otherwise. *)
+    nDcSample : LINT;
 END_VAR
 VAR
     fLreal     : LREAL;
@@ -476,6 +505,8 @@ END_VAR
         <ST><![CDATA[nStride := _nSampleSize;
 IF _bRecordSampleTimes THEN
     nStride := nStride + 2;
+ELSIF _bRecordSampleTimesDc THEN
+    nStride := nStride + 8;
 END_IF
 IF (_nBodyOffset + nStride) > BODY_CAPACITY THEN
     _AppendSample := FALSE;
@@ -486,6 +517,9 @@ pDst := _ActiveBodyPtr() + _nBodyOffset;
 IF _bRecordSampleTimes THEN
     Tc2_System.MEMCPY(pDst, ADR(nCycleOff), 2);
     pDst := pDst + 2;
+ELSIF _bRecordSampleTimesDc THEN
+    Tc2_System.MEMCPY(pDst, ADR(nDcSample), 8);
+    pDst := pDst + 8;
 END_IF
 
 CASE _eBodySchema OF
@@ -681,6 +715,9 @@ IF __ISVALIDREF(refSpan) THEN
 END_IF
 IF _bRecordSampleTimes THEN
     stHeader.nFlags := stHeader.nFlags OR 16#04;    (* bit2 = has_sample_ts *)
+END_IF
+IF _bRecordSampleTimesDc THEN
+    stHeader.nFlags := stHeader.nFlags OR 16#10;    (* bit4 = has_sample_ts_dc *)
 END_IF
 nNsLen := Tc2_Utilities.LEN2(ADR(_sLogger));
 IF nNsLen > 127 THEN
@@ -1369,14 +1406,14 @@ IF bAggMode THEN
        _AppendAggregated falls through to FALSE only on body overflow — bail
        early in that case, the old aggregator state would be wrong to keep
        around for the next snapshot anyway. *)
-    IF NOT _AppendAggregated(nCycleOff) THEN
+    IF NOT _AppendAggregated(nCycleOff, nDcNow) THEN
         _bOverflow   := TRUE;
         _nDropAppend := _nDropAppend + 1;
     END_IF
     _AggReset();
 ELSE
     (* Raw append (single value per sample tick). *)
-    IF NOT _AppendSample(stArg, nCycleOff) THEN
+    IF NOT _AppendSample(stArg, nCycleOff, nDcNow) THEN
         _bOverflow   := TRUE;
         _nDropAppend := _nDropAppend + 1;
     END_IF
@@ -1393,6 +1430,25 @@ END_IF
 
 _nLastSampleCycle := nNowCycle;
 _bLastSampleSet   := TRUE;
+
+(* Mid-window autoflush: when the body crosses the high-water mark we
+   swap halves immediately rather than wait for _CheckFlush's push-
+   interval tick. Keeps oversampling bursts streaming when one push
+   window otherwise wouldn't fit.
+
+   Critical guard — only fire when the pending half is FREE. If the
+   sender is still shipping the previous frame, _DoFlush would see
+   _bPending=TRUE, reset the entire active half to empty, and bump
+   _nDropWindow — throwing away every sample we accumulated in the
+   burst. That makes the case autoflush was designed for strictly
+   worse than just letting the body hit 100 % and dropping one
+   sample at a time via _nDropAppend. So: when pending is busy we
+   hold off and keep filling. If we reach 100 % before pending
+   drains, _AppendSample returns FALSE and we lose one sample — not
+   the whole window. *)
+IF _nBodyOffset >= BODY_HIGH_WATER AND NOT _bPending THEN
+    _DoFlush();
+END_IF
 
 _CheckFlush();
 
@@ -1588,7 +1644,64 @@ END_VAR
 ]]></Declaration>
       <Implementation>
         <ST><![CDATA[_bRecordSampleTimes := bEnable;
+IF bEnable THEN
+    (* The two sample-ts modes are mutually exclusive — the wire format
+       carries them in separate flag bits but only one prefix layout per
+       slot. Turning u16-offset mode on forces DC-mode off. *)
+    _bRecordSampleTimesDc := FALSE;
+END_IF
 SetRecordSampleTimes := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetRecordSampleTimesDc" Id="{c2d3e4f5-1234-5678-9abc-def012345678}">
+      <Declaration><![CDATA[(*
+:Description: Enable / disable per-sample i64 absolute DC time emission (default FALSE).
+
+Use this for **true oversampling** — when `Observe` is called more than once
+per task cycle and every observation must reach the backend as its own
+distinct datapoint. The u16-offset mode (``SetRecordSampleTimes``) collapses
+all same-cycle samples onto one offset value; this mode emits the raw
+``F_GetActualDcTime64()`` reading instead so the receiver can resolve them.
+
+When TRUE every body slot is prefixed with an 8-byte little-endian i64
+absolute DC time, and the wire header carries
+``flags.bit4 = METRIC_FLAG_HAS_SAMPLE_TS_DC (0x10)``. The receiver uses
+``dc_time[i]`` directly as the per-sample timestamp — no interpolation,
+no dependency on ``cycle_count_*``.
+
+**Honest timestamps, no synthetic tiebreaker**: if two consecutive
+``Observe`` calls inside one task cycle happen faster than the hardware
+DC clock ticks, the emitted DC times can be identical. Those duplicates
+are real and may be deduplicated by storage backends with last-value-
+wins semantics on identical timestamps. The PLC deliberately does *not*
+fabricate a fake monotonic increment because that would lie about when
+the observation actually happened.
+
+**Mutually exclusive with ``SetRecordSampleTimes``** — calling
+``SetRecordSampleTimesDc(TRUE)`` while u16-offset mode is on forces
+u16-offset off, and vice versa.
+
+**Cost** per sample when active: 8 B prefix. Bool (1 B) body grows to
+9 B, Numeric (8 B) to 16 B, NumericAggregated with full stat mask
+(48 B) to 56 B. Zero overhead when disabled.
+
+**Buffer impact**: with 16 B Numeric stride the 32 KB body holds ~2048
+samples per half before mid-window autoflush kicks in (at the 80 %
+high-water mark). Pair with a push interval ≤ 200 ms for sustained
+oversampling so the sender keeps draining between bursts.
+*)
+METHOD PUBLIC SetRecordSampleTimesDc : BOOL
+VAR_INPUT
+    bEnable : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[_bRecordSampleTimesDc := bEnable;
+IF bEnable THEN
+    _bRecordSampleTimes := FALSE;
+END_IF
+SetRecordSampleTimesDc := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

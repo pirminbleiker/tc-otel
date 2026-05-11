@@ -179,6 +179,74 @@ the flag is not set.
 **Enabling from PLC**: `FB_Metrics.SetRecordSampleTimes(TRUE)`. Opt-in only —
 default behavior is unchanged.
 
+## Aggregate batch: high-resolution DC sample timestamps (oversampling)
+
+When the PLC calls `Observe` **multiple times per task cycle** (true
+oversampling — e.g. inner method called repeatedly in one PLC tick) the
+`u16 cycle_offset` mode above collapses every same-cycle sample onto the
+same offset, so the receiver reconstructs identical timestamps and the
+backend deduplicates them away. To preserve every observation as a
+distinct datapoint the PLC can emit a **per-sample i64 absolute DC time**
+instead of a cycle offset.
+
+**Header flag**: `flags.bit4 = METRIC_FLAG_HAS_SAMPLE_TS_DC = 0x10`.
+
+**Mutually exclusive with `0x04`**: a frame must set at most one of the
+two `has_sample_ts*` bits. The decoder rejects frames where both are set.
+
+**Body layout when set**: each sample slot is preceded by an `i64`
+little-endian `dc_time` (absolute, same epoch as the header
+`dc_time_start`/`dc_time_end`). Slot stride becomes `sample_size + 8`.
+
+**Reconstructing DC time**: trivially — `ts_sample_i = dc_time[i]`. No
+interpolation, no division, no dependency on `cycle_count_*`.
+
+**Honest timestamps, no synthetic tiebreaker**: the emitted `dc_time` is
+always the raw `F_GetActualDcTime64()` reading at the moment `Observe`
+ran. If the hardware DC tick is coarser than the inner-loop call rate
+two consecutive `Observe` calls **can** produce identical `dc_time`
+values; those duplicates are real and will be deduplicated by storage
+backends with last-value-wins semantics on identical timestamps. The PLC
+deliberately does **not** synthesize fake monotonic offsets, because
+that would lie about when the observation happened. If the user needs
+strict per-sample distinguishability beyond what the hardware clock
+provides they must space their `Observe` calls or aggregate.
+
+**Body capacity**: increased from `8192 B` to `32768 B` per half-frame in
+the same PLC release. With 16 B Numeric stride that gives ~2048 samples
+per half — enough for a 1 ms task running 100 inner Observe calls over a
+20 ms push window before mid-window autoflush kicks in.
+
+**Mid-window autoflush**: when the body crosses ~80 % capacity AND the
+pending half is free, `Observe` triggers `_DoFlush` to swap halves
+immediately rather than wait for the push-interval timer. Prevents
+drop-on-overflow under bursts, at the cost of one extra ADS Write per
+burst. **Guarded** against firing while the previous frame is still in
+flight — flushing into a busy pending half would reset the entire
+active buffer and bump `_nDropWindow`, throwing away the very samples
+the autoflush was supposed to preserve. When pending is busy the body
+keeps filling toward 100 %; if it reaches the cap before pending drains
+`_AppendSample` drops one sample at a time via `_nDropAppend` instead.
+
+**Cost**: `+8 B` per sample when active (vs `+2 B` for u16 offset).
+Numeric (8 B → 16 B, +100 %). NumericAggregated full mask (48 B → 56 B,
++17 %). Bool (1 B → 9 B, +800 %, rarely useful in this mode — Bool
+oversampling within a cycle is uncommon).
+
+**Enabling from PLC**: `FB_Metrics.SetRecordSampleTimesDc(TRUE)`. Opt-in
+only; setting both `SetRecordSampleTimes(TRUE)` and
+`SetRecordSampleTimesDc(TRUE)` is a programming error — the last call
+wins.
+
+**Use this mode when**: multiple `Observe` calls happen inside one task
+cycle and every observation must reach the backend as its own datapoint
+(e.g. a motor cycle that ticks faster than the PLC scheduler, or an
+inner FSM that fires several state transitions per scan).
+
+**Don't use this mode when**: one `Observe` per cycle is enough — the
+existing `0x04` u16-offset mode is cheaper (10 B vs 16 B per Numeric
+sample) and equally accurate at that rate.
+
 ## Versioning and Compatibility
 
 - **Wire version = 1**: Stable metric batch format. Future breaking changes will
