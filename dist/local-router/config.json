@@ -63,7 +63,7 @@
     }
   },
   "service": {
-    "channel_capacity": 50000,
+    "channel_capacity": 200000,
     "display_name": "tc-otel - TwinCAT OpenTelemetry Service (local AMS router)",
     "name": "tc-otel",
     "shutdown_timeout_secs": 30,

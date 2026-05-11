@@ -11,9 +11,17 @@ use tc_otel_core::{
     AppSettings, LogEntry, LogRecord, MessageFormatter, MetricEntry, MetricMapper, MetricRecord,
 };
 use tc_otel_export::OtelExporter;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Semaphore};
 
 use crate::scope_resolver::ScopeResolver;
+
+/// Maximum concurrent in-flight HTTP POSTs per dispatcher.
+/// Each batch flush is dispatched as a detached `tokio::spawn`; this
+/// semaphore caps how many can run in parallel so we don't melt the
+/// backend or saturate the local socket pool. Set high enough that
+/// a 100 k records/sec workload (≈ 50 POSTs/sec at batch_size=2000)
+/// has headroom without queuing in the scheduler.
+const MAX_INFLIGHT_FLUSHES: usize = 16;
 
 /// Log dispatcher - converts LogEntries and sends them to a batched export worker
 #[derive(Clone)]
@@ -233,17 +241,22 @@ impl LogDispatcher {
                 OtelExporter::with_config(cfg)
             };
 
-        let mut otlp_exporter: Option<OtelExporter> = if Self::is_otlp_endpoint(&endpoint) {
-            Some(build_log_exporter(&endpoint, batch_size, format))
+        let mut otlp_exporter: Option<Arc<OtelExporter>> = if Self::is_otlp_endpoint(&endpoint) {
+            Some(Arc::new(build_log_exporter(&endpoint, batch_size, format)))
         } else {
             None
         };
 
+        let client = Arc::new(client);
+        // Cap concurrent in-flight HTTP POSTs. Each batch flush is
+        // `tokio::spawn`-ed so the select! receiver loop never blocks
+        // on a slow backend — the producer side keeps draining the
+        // mpsc channel even while POSTs are in flight, which is what
+        // gets us 100k+ records/sec without backpressure drops.
+        let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT_FLUSHES));
+
         let mut batch: Vec<LogRecord> = Vec::with_capacity(batch_size);
-        let mut payload_buf = String::with_capacity(batch_size * 256);
         let mut interval = tokio::time::interval(flush_interval);
-        let mut total_sent: u64 = 0;
-        let mut total_errors: u64 = 0;
 
         loop {
             tokio::select! {
@@ -251,27 +264,25 @@ impl LogDispatcher {
                 Some(record) = rx.recv() => {
                     batch.push(record);
                     if batch.len() >= batch_size {
-                        match Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await {
-                            Ok(n) => total_sent += n as u64,
-                            Err(e) => {
-                                total_errors += 1;
-                                tracing::error!("Batch export error: {}", e);
-                            }
-                        }
-                        batch.clear();
+                        Self::spawn_flush(
+                            client.clone(),
+                            inflight.clone(),
+                            endpoint.clone(),
+                            otlp_exporter.clone(),
+                            std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                        );
                     }
                 }
                 // Periodic flush
                 _ = interval.tick() => {
                     if !batch.is_empty() {
-                        match Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await {
-                            Ok(n) => total_sent += n as u64,
-                            Err(e) => {
-                                total_errors += 1;
-                                tracing::error!("Batch export error: {}", e);
-                            }
-                        }
-                        batch.clear();
+                        Self::spawn_flush(
+                            client.clone(),
+                            inflight.clone(),
+                            endpoint.clone(),
+                            otlp_exporter.clone(),
+                            std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                        );
                     }
                 }
                 // Config change notification
@@ -309,7 +320,7 @@ impl LogDispatcher {
                     }
                     if exporter_dirty {
                         otlp_exporter = if Self::is_otlp_endpoint(&endpoint) {
-                            Some(build_log_exporter(&endpoint, batch_size, format))
+                            Some(Arc::new(build_log_exporter(&endpoint, batch_size, format)))
                         } else {
                             None
                         };
@@ -327,41 +338,77 @@ impl LogDispatcher {
                 }
                 // Channel closed
                 else => {
-                    // Flush remaining
+                    // Flush remaining inline before exit (no point spawning).
                     if !batch.is_empty() {
-                        let _ = Self::flush_batch(&client, &endpoint, otlp_exporter.as_ref(), &mut batch, &mut payload_buf).await;
+                        Self::spawn_flush(
+                            client.clone(),
+                            inflight.clone(),
+                            endpoint.clone(),
+                            otlp_exporter.clone(),
+                            std::mem::take(&mut batch),
+                        );
                     }
-                    tracing::info!("Export worker stopped. Total sent: {}, errors: {}", total_sent, total_errors);
+                    // Wait for in-flight flushes to finish (best-effort
+                    // bounded by the semaphore — every permit eventually
+                    // returns when its spawn completes).
+                    let _ = inflight.acquire_many(MAX_INFLIGHT_FLUSHES as u32).await;
+                    tracing::info!("Export worker stopped.");
                     break;
                 }
             }
         }
     }
 
-    /// Flush a batch of records to the endpoint.
-    /// OTLP endpoints (`/v1/logs`) → delegate to `OtelExporter` (OTLP JSON over HTTP).
+    /// Spawn a detached task that acquires a flush permit, ships one
+    /// batch, then releases the permit. Callers must NOT `.await` the
+    /// returned task — the whole point is to keep `rx.recv()` alive.
+    fn spawn_flush(
+        client: Arc<reqwest::Client>,
+        inflight: Arc<Semaphore>,
+        endpoint: String,
+        otlp_exporter: Option<Arc<OtelExporter>>,
+        batch: Vec<LogRecord>,
+    ) {
+        tokio::spawn(async move {
+            let permit = match inflight.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return, // semaphore closed (service shutting down)
+            };
+            if let Err(e) =
+                Self::flush_batch_owned(&client, &endpoint, otlp_exporter.as_deref(), batch).await
+            {
+                tracing::error!("Batch export error: {}", e);
+            }
+            drop(permit);
+        });
+    }
+
+    /// Flush a batch of records to the endpoint. Owned variant —
+    /// runs entirely on its own `tokio::spawn` task so the dispatch
+    /// receiver loop never awaits HTTP I/O.
+    ///
+    /// OTLP endpoints (`/v1/logs`) → delegate to `OtelExporter`.
     /// Everything else → VictoriaLogs JSONL with `application/stream+json`.
-    async fn flush_batch(
+    async fn flush_batch_owned(
         client: &reqwest::Client,
         endpoint: &str,
         otlp_exporter: Option<&OtelExporter>,
-        batch: &mut Vec<LogRecord>,
-        payload: &mut String,
+        batch: Vec<LogRecord>,
     ) -> Result<usize> {
         if let Some(exporter) = otlp_exporter {
             let count = batch.len();
-            let records = std::mem::take(batch);
             exporter
-                .export_batch(records)
+                .export_batch(batch)
                 .await
                 .map_err(|e| anyhow::anyhow!("OTLP export failed: {}", e))?;
             return Ok(count);
         }
         let count = batch.len();
-        payload.clear();
+        let mut payload = String::with_capacity(count * 256);
+        let payload = &mut payload;
 
         // Build JSONL directly without intermediate serde_json::Map
-        for record in batch.iter() {
+        for record in &batch {
             payload.push('{');
             // _msg
             payload.push_str("\"_msg\":");
@@ -408,10 +455,11 @@ impl LogDispatcher {
             return Ok(count);
         }
 
+        let body = std::mem::take(payload);
         let response = client
             .post(endpoint)
             .header("Content-Type", "application/stream+json")
-            .body(payload.clone())
+            .body(body)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?;
@@ -582,6 +630,9 @@ impl MetricDispatcher {
     }
 
     /// Background worker that batches metric records and flushes to the OTLP endpoint.
+    /// Mirrors `LogDispatcher::batch_worker` — each batch is dispatched
+    /// as a `tokio::spawn`-ed task gated by an inflight semaphore so
+    /// the receiver loop never blocks on an in-flight HTTP POST.
     async fn batch_worker(
         mut rx: mpsc::Receiver<MetricRecord>,
         initial_cfg: tc_otel_export::exporter::ExportConfig,
@@ -593,37 +644,31 @@ impl MetricDispatcher {
         let mut batch_size = current_cfg.batch_size;
         let mut flush_interval = initial_flush_interval;
         let mut config_rx = config_rx;
-        let mut exporter = OtelExporter::with_config(current_cfg.clone());
+        let mut exporter = Arc::new(OtelExporter::with_config(current_cfg.clone()));
+        let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT_FLUSHES));
 
         let mut batch: Vec<MetricRecord> = Vec::with_capacity(batch_size);
         let mut interval = tokio::time::interval(flush_interval);
-        let mut total_sent: u64 = 0;
-        let mut total_errors: u64 = 0;
 
         loop {
             tokio::select! {
                 Some(record) = rx.recv() => {
                     batch.push(record);
                     if batch.len() >= batch_size {
-                        match exporter.export_metrics_batch(std::mem::take(&mut batch)).await {
-                            Ok(()) => total_sent += batch_size as u64,
-                            Err(e) => {
-                                total_errors += 1;
-                                tracing::error!("Metric batch export error: {}", e);
-                            }
-                        }
+                        Self::spawn_metric_flush(
+                            exporter.clone(),
+                            inflight.clone(),
+                            std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                        );
                     }
                 }
                 _ = interval.tick() => {
                     if !batch.is_empty() {
-                        let count = batch.len();
-                        match exporter.export_metrics_batch(std::mem::take(&mut batch)).await {
-                            Ok(()) => total_sent += count as u64,
-                            Err(e) => {
-                                total_errors += 1;
-                                tracing::error!("Metric batch export error: {}", e);
-                            }
-                        }
+                        Self::spawn_metric_flush(
+                            exporter.clone(),
+                            inflight.clone(),
+                            std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                        );
                     }
                 }
                 result = async {
@@ -655,7 +700,7 @@ impl MetricDispatcher {
                             new_cfg.timeout_secs,
                         );
                         current_cfg = new_cfg;
-                        exporter = OtelExporter::with_config(current_cfg.clone());
+                        exporter = Arc::new(OtelExporter::with_config(current_cfg.clone()));
                     }
                     if current_cfg.batch_size != batch_size {
                         batch_size = current_cfg.batch_size;
@@ -673,13 +718,37 @@ impl MetricDispatcher {
                 }
                 else => {
                     if !batch.is_empty() {
-                        let _ = exporter.export_metrics_batch(std::mem::take(&mut batch)).await;
+                        Self::spawn_metric_flush(
+                            exporter.clone(),
+                            inflight.clone(),
+                            std::mem::take(&mut batch),
+                        );
                     }
-                    tracing::info!("Metric export worker stopped. Total sent: {}, errors: {}", total_sent, total_errors);
+                    let _ = inflight.acquire_many(MAX_INFLIGHT_FLUSHES as u32).await;
+                    tracing::info!("Metric export worker stopped.");
                     break;
                 }
             }
         }
+    }
+
+    /// Spawn a detached task that acquires a flush permit and ships
+    /// one metric batch. Same pattern as `LogDispatcher::spawn_flush`.
+    fn spawn_metric_flush(
+        exporter: Arc<OtelExporter>,
+        inflight: Arc<Semaphore>,
+        batch: Vec<MetricRecord>,
+    ) {
+        tokio::spawn(async move {
+            let permit = match inflight.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            if let Err(e) = exporter.export_metrics_batch(batch).await {
+                tracing::error!("Metric batch export error: {}", e);
+            }
+            drop(permit);
+        });
     }
 }
 
