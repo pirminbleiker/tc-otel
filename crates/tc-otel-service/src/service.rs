@@ -298,12 +298,24 @@ impl TcOtelService {
             shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
         };
 
-        // Create the AdsRouter with channels and registry
+        // Create the AdsRouter with channels and registry.
+        //
+        // Trace + push channels are sized off `service.channel_capacity`
+        // — same budget as the log/metric paths. The previous fixed
+        // 256-slot cap saturated in <10 ms under burst at 25 k+
+        // wire events/sec, dropping SPAN_END frames between Begin+End
+        // pairs and forcing 10 s TTL eviction (visible as
+        // `Span timed out after 0s` warnings) even when the PLC was
+        // RT-stable. Wire events here are small (32–256 B per event)
+        // so memory cost of the larger buffer is bounded.
         let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
-        let (push_tx, mut push_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
+        let chan_cap = self.settings.service.channel_capacity;
+        let (push_tx, mut push_rx) = mpsc::channel::<(
+            tc_otel_ads::AmsNetId,
+            tc_otel_ads::diagnostics::DiagEvent,
+        )>(chan_cap);
         let (trace_tx, mut trace_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(256);
+            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(chan_cap);
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,
