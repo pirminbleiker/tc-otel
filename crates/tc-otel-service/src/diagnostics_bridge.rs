@@ -180,6 +180,7 @@ pub fn diag_event_to_metrics(
             dc_time_end,
             name,
             unit,
+            scope_namespace,
             trace_id,
             span_id,
             samples,
@@ -197,6 +198,7 @@ pub fn diag_event_to_metrics(
             dc_time_end,
             &name,
             &unit,
+            &scope_namespace,
             trace_id,
             span_id,
             &samples,
@@ -238,6 +240,7 @@ fn metric_aggregate_to_entries(
     dc_time_end: i64,
     name: &str,
     unit: &str,
+    scope_namespace: &str,
     trace_id: Option<[u8; 16]>,
     span_id: Option<[u8; 8]>,
     samples: &[MetricAggregateSample],
@@ -304,6 +307,7 @@ fn metric_aggregate_to_entries(
                     body_schema,
                     sample_size,
                     overflow_flag,
+                    scope_namespace,
                     trace_id,
                     span_id,
                 ));
@@ -335,6 +339,7 @@ fn metric_aggregate_to_entries(
         entry.ams_net_id = net_id.to_string();
         entry.task_index = task_index as i32;
         entry.source = local_source_address().to_string();
+        entry.scope_namespace = scope_namespace.to_string();
 
         entry.attributes.insert(
             "metric_id".into(),
@@ -384,6 +389,7 @@ fn build_aggregate_entry(
     body_schema: MetricBodySchema,
     sample_size: u32,
     overflow_flag: bool,
+    scope_namespace: &str,
     trace_id: Option<[u8; 16]>,
     span_id: Option<[u8; 8]>,
 ) -> MetricEntry {
@@ -393,6 +399,7 @@ fn build_aggregate_entry(
     entry.ams_net_id = net_id.to_string();
     entry.task_index = task_index as i32;
     entry.source = local_source_address().to_string();
+    entry.scope_namespace = scope_namespace.to_string();
 
     entry.attributes.insert(
         "metric_id".into(),
@@ -1243,6 +1250,7 @@ mod tests {
                 values: vec![-1.0, 1.0, 0.0], // min, max, mean
             }],
             sample_cycle_offsets: None,
+            scope_namespace: String::new(),
         };
 
         let out = diag_event_to_metrics(net(), ev, &HashMap::new());
@@ -1310,6 +1318,7 @@ mod tests {
                 MetricAggregateSample::Numeric(23.1),
             ],
             sample_cycle_offsets: Some(vec![0, 100, 250]),
+            scope_namespace: String::new(),
         };
 
         let out = diag_event_to_metrics(net(), ev, &HashMap::new());
@@ -1352,6 +1361,7 @@ mod tests {
                 MetricAggregateSample::Numeric(3.0),
             ],
             sample_cycle_offsets: Some(vec![0, 50, 100]),
+            scope_namespace: String::new(),
         };
 
         let out = diag_event_to_metrics(net(), ev, &HashMap::new());
@@ -1391,6 +1401,7 @@ mod tests {
                 MetricAggregateSample::Numeric(3.0),
             ],
             sample_cycle_offsets: None,
+            scope_namespace: String::new(),
         };
 
         let out = diag_event_to_metrics(net(), ev, &HashMap::new());

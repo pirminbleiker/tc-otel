@@ -68,6 +68,13 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 const AMS_HEADER_LEN: usize = 32;
+/// Max ADS payload (raw bytes after AMS header). Matches the PLC-side
+/// `Config.nBufferLen` ceiling for `FB_LogBuffer` (16 MiB).
+pub(crate) const MAX_AMS_PAYLOAD: usize = 16 * 1024 * 1024;
+/// Max wire frame = AMS header + payload. Receive caps must use this — a
+/// payload at `MAX_AMS_PAYLOAD` ships with a 32-byte AMS header, so a cap
+/// of just `MAX_AMS_PAYLOAD` rejects fully-loaded frames by 32 bytes.
+pub(crate) const MAX_AMS_FRAME: usize = AMS_HEADER_LEN + MAX_AMS_PAYLOAD;
 /// State-flags bit indicating a reply, per Beckhoff AMS spec. Set on all
 /// responses and on all notification "command=8" frames.
 const AMS_STATE_RESPONSE: u16 = 0x0001;
@@ -294,7 +301,7 @@ impl AmsDispatcher {
 
         let mut opts = MqttOptions::new(client_id, broker_host, broker_port);
         opts.set_keep_alive(Duration::from_secs(60));
-        opts.set_max_packet_size(16 * 1024 * 1024, 16 * 1024 * 1024);
+        opts.set_max_packet_size(MAX_AMS_FRAME, MAX_AMS_FRAME);
 
         let (client, mut event_loop) = AsyncClient::new(opts, 64);
 
@@ -583,7 +590,7 @@ async fn run_tcp_reader(
             }
         }
         let total_len = u32::from_le_bytes([prefix[2], prefix[3], prefix[4], prefix[5]]) as usize;
-        if total_len == 0 || total_len > 16 * 1024 * 1024 {
+        if total_len == 0 || total_len > MAX_AMS_FRAME {
             tracing::warn!(%target, total_len, "tcp reader: bogus frame length, closing");
             break;
         }

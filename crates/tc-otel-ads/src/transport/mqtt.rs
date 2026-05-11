@@ -17,6 +17,7 @@ use tokio::time::Duration;
 
 use super::AmsTransport;
 use crate::ams::AmsNetId;
+use crate::dispatcher::MAX_AMS_FRAME;
 use crate::router::AdsRouter;
 use crate::AdsError;
 use tc_otel_core::config::MqttTlsConfig;
@@ -115,8 +116,10 @@ impl AmsTransport for MqttAmsTransport {
         mqtt_options.set_keep_alive(Duration::from_secs(60));
 
         // Raise packet-size limit — AMS WRITE frames with batched log entries
-        // can exceed rumqttc's 10KB default.
-        mqtt_options.set_max_packet_size(16 * 1024 * 1024, 16 * 1024 * 1024);
+        // can exceed rumqttc's 10KB default. Cap must include the 32-byte AMS
+        // header on top of `MAX_AMS_PAYLOAD`, otherwise fully-loaded frames
+        // get rejected by exactly the header size.
+        mqtt_options.set_max_packet_size(MAX_AMS_FRAME, MAX_AMS_FRAME);
 
         // Set credentials if provided
         if let (Some(username), Some(password)) = (&self.config.username, &self.config.password) {

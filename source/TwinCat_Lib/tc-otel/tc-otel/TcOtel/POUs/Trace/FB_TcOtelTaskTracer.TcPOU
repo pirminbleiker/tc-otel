@@ -563,9 +563,11 @@ VAR
     pDst             : POINTER TO BYTE;
     nNameLen         : UDINT;
     nTpLen           : UDINT;
+    nNsLen           : UDINT;
     nTotalLen        : UDINT;
     nTailOffset      : UDINT;
     byTpLen          : BYTE;
+    byNsLen          : BYTE;
     bExternalValid   : BOOL;
     abExternalSpanId : ARRAY[0..7] OF BYTE;
 END_VAR
@@ -611,10 +613,27 @@ IF Tc2_Utilities.LEN2(ADR(sTraceParent)) > 0 THEN
     END_IF;
 END_IF;
 
-(* Total size: 24B hdr + 16B trace_id + 8B span_id + name + [tp_len(1)+tp if external] *)
+(* Phase 2 scope-resolver wire bump: the span's owning FB instance
+   path. Set by FB_Span.FB_Init via the 3-stage strip on its own
+   {attribute 'instance-path'}. Flag bit 0x04 advertises presence;
+   pre-bump consumers ignore the flag and read no tail. *)
+nNsLen := 0;
+IF Tc2_Utilities.LEN2(ADR(pSpan._sLogger)) > 0 THEN
+    nNsLen := Tc2_Utilities.LEN2(ADR(pSpan._sLogger));
+    IF nNsLen > 127 THEN
+        nNsLen := 127;
+    END_IF;
+END_IF;
+
+(* Total size: 24B hdr + 16B trace_id + 8B span_id + name
+                + [tp_len(1)+tp if external]
+                + [ns_len(1)+namespace if flag_has_namespace] *)
 nTotalLen := SIZEOF(stHdr) + 16 + 8 + nNameLen;
 IF nTpLen > 0 THEN
     nTotalLen := nTotalLen + 1 + nTpLen;
+END_IF;
+IF nNsLen > 0 THEN
+    nTotalLen := nTotalLen + 1 + nNsLen;
 END_IF;
 
 pBuffer REF= PRG_TaskLog.TaskLogger.WriteBuffer;
@@ -626,10 +645,12 @@ END_IF;
 stHdr.nEventType  := nEventTypeBegin;
 stHdr.nLocalId    := _nNextLocalId;
 stHdr.nTaskIdx    := TO_USINT(Tc2_Utilities.GETCURTASKINDEXEX());
+stHdr.nFlags := 0;
 IF nTpLen > 0 THEN
-    stHdr.nFlags  := 2;   (* flag_has_external_parent *)
-ELSE
-    stHdr.nFlags  := 0;
+    stHdr.nFlags := stHdr.nFlags OR 2;   (* flag_has_external_parent *)
+END_IF;
+IF nNsLen > 0 THEN
+    stHdr.nFlags := stHdr.nFlags OR 4;   (* flag_has_namespace *)
 END_IF;
 stHdr.nDcTime     := _NowDcTime();
 Tc2_System.MEMCPY(ADR(stHdr.abParentSpanId[0]), ADR(abParentSpanId[0]), 8);
@@ -662,6 +683,16 @@ IF nTpLen > 0 THEN
     byTpLen := TO_BYTE(nTpLen);
     Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen,     ADR(byTpLen),       1);
     Tc2_System.MEMCPY(pDst + nTailOffset + nNameLen + 1, ADR(sTraceParent),  nTpLen);
+    nTailOffset := nTailOffset + nNameLen + 1 + nTpLen;
+ELSE
+    nTailOffset := nTailOffset + nNameLen;
+END_IF;
+
+IF nNsLen > 0 THEN
+    (* Phase 2 scope-resolver: ns_len(1) + namespace(ns_len). *)
+    byNsLen := TO_BYTE(nNsLen);
+    Tc2_System.MEMCPY(pDst + nTailOffset,     ADR(byNsLen),         1);
+    Tc2_System.MEMCPY(pDst + nTailOffset + 1, ADR(pSpan._sLogger),  nNsLen);
 END_IF;
 
 pBuffer.DataAdded(nTotalLen);

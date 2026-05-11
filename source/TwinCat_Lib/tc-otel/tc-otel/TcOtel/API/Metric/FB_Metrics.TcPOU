@@ -49,6 +49,7 @@ are shipped raw at their native size.
     fbMotorTemp.Observe(rTemperature);          // every cycle is fine
     PRG_TaskLog.Call();                         // pumps the per-task sender
 *)
+{attribute 'reflection'}
 FUNCTION_BLOCK FB_Metrics
 VAR_INPUT
 END_VAR
@@ -164,6 +165,17 @@ VAR
        keep u16 safe; receiver-side decoders gate on the matching header flag
        METRIC_FLAG_HAS_SAMPLE_TS (0x04). *)
     _bRecordSampleTimes : BOOL;
+
+    (* Phase 2 scope-resolver: instance path of the owning FB.
+       FB_Init strips the library + application + variable-name
+       segments, leaving (e.g.) ``PRG_Foo.fbBar`` in ``_sLogger``.
+       Emitted as the trailing namespace string on the metric
+       aggregate frame when non-empty; tc-otel's ScopeResolver
+       maps it to the owning FB's TYPE for ``scope.name``. *)
+    {attribute 'instance-path'}
+    {attribute 'noinit'}
+    _sInstancePath      : T_MaxString;
+    _sLogger            : T_MaxString;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -618,10 +630,12 @@ when the transfer completes. The body buffer is never MEMCPY'd.
 METHOD PRIVATE _DoFlush
 VAR
     stHeader    : ST_PushMetricAggHeader;
-    abyHdr      : ARRAY[0..255] OF BYTE;   // header(52) + trace(24) + name(63) + unit(15) ≤ 154
+    abyHdr      : ARRAY[0..255] OF BYTE;   // header(52) + trace(24) + name(63) + unit(15) + ns_len(1) + ns(127) ≤ 282
     nHdrLen     : UDINT;
     nNameLen    : UDINT;
     nUnitLen    : UDINT;
+    nNsLen      : UDINT;
+    byNsLen     : BYTE;
     refSender   : REFERENCE TO FB_TcOtelTaskMetrics;
     refSpan     : REFERENCE TO FB_Span;
     pActiveBase : POINTER TO BYTE;
@@ -668,6 +682,13 @@ END_IF
 IF _bRecordSampleTimes THEN
     stHeader.nFlags := stHeader.nFlags OR 16#04;    (* bit2 = has_sample_ts *)
 END_IF
+nNsLen := Tc2_Utilities.LEN2(ADR(_sLogger));
+IF nNsLen > 127 THEN
+    nNsLen := 127;
+END_IF
+IF nNsLen > 0 THEN
+    stHeader.nFlags := stHeader.nFlags OR 16#08;    (* bit3 = has_namespace *)
+END_IF
 stHeader.eBodySchema      := _eBodySchema;
 stHeader.nSampleSize      := _nSampleSize;
 stHeader.nSampleCount     := _nSampleCount;
@@ -710,6 +731,13 @@ END_IF
 IF nUnitLen > 0 THEN
     Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen, ADR(_sUnit), nUnitLen);
     nHdrLen := nHdrLen + nUnitLen;
+END_IF
+IF nNsLen > 0 THEN
+    (* Phase 2 scope-resolver: ns_len(1) + namespace(ns_len). *)
+    byNsLen := TO_BYTE(nNsLen);
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen,     ADR(byNsLen),   1);
+    Tc2_System.MEMCPY(ADR(abyHdr) + nHdrLen + 1, ADR(_sLogger),  nNsLen);
+    nHdrLen := nHdrLen + 1 + nNsLen;
 END_IF
 
 (* Defensive clamp: the header reserve is HDR_RESERVE bytes. Oversized
@@ -1075,6 +1103,49 @@ END_VAR
    instances in memory; flushing here would double-emit if the new
    instance also flushes. *)
 FB_exit := TRUE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FB_Init" Id="{e3a156b7-76d5-47aa-8d12-5217e8858370}">
+      <Declaration><![CDATA[// Phase 2 scope-resolver: derive _sLogger from the FB's instance
+// path. Strips library + application + variable-name segments,
+// leaving (e.g.) ``PRG_TestSimpleApi.fbMotor`` so the OTel
+// ScopeResolver maps the frame to the OWNING FB's type for
+// ``InstrumentationScope.name``. Mirrors FB_Log.FB_Init.
+METHOD FB_Init: BOOL
+VAR_INPUT
+    bInitRetains: BOOL;
+    bInCopyCode: BOOL;
+END_VAR
+VAR
+    nFindIdx : INT;
+    i        : INT;
+    nLastDot : INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nFindIdx := Tc2_Standard.FIND(_sInstancePath, '.');
+IF nFindIdx > 0 THEN
+    _sInstancePath := Tc2_Standard.DELETE(_sInstancePath, nFindIdx + 1, 0);
+    nFindIdx := Tc2_Standard.FIND(_sInstancePath, '.');
+    IF nFindIdx > 0 THEN
+        _sInstancePath := Tc2_Standard.DELETE(_sInstancePath, nFindIdx + 1, 0);
+        nLastDot := 0;
+        FOR i := Tc2_Standard.LEN(_sInstancePath) TO 1 BY -1 DO
+            IF Tc2_Standard.MID(_sInstancePath, 1, i) = '.' THEN
+                nLastDot := i;
+                EXIT;
+            END_IF
+        END_FOR
+        IF nLastDot > 1 THEN
+            _sLogger := Tc2_Standard.LEFT(_sInstancePath, nLastDot - 1);
+        ELSE
+            _sLogger := _sInstancePath;
+        END_IF
+    END_IF
+END_IF
+
+FB_Init := TRUE;
 ]]></ST>
       </Implementation>
     </Method>

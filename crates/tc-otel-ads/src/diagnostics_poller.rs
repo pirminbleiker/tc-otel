@@ -19,6 +19,7 @@ use crate::diagnostics::{
     RT_USAGE_LEN, TASK_STATS_LEN,
 };
 use crate::diagnostics_observer::DiagnosticsObserver;
+use crate::dispatcher::MAX_AMS_FRAME;
 use crate::error::Result;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use std::collections::HashMap;
@@ -334,7 +335,7 @@ impl DiagnosticsPoller {
             self.config.broker_port,
         );
         opts.set_keep_alive(Duration::from_secs(60));
-        opts.set_max_packet_size(16 * 1024 * 1024, 16 * 1024 * 1024);
+        opts.set_max_packet_size(MAX_AMS_FRAME, MAX_AMS_FRAME);
 
         let (client, mut event_loop) = AsyncClient::new(opts, 10);
 

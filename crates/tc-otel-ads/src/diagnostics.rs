@@ -107,6 +107,13 @@ pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 /// window. Emitted when the PLC calls `FB_Metrics.SetRecordSampleTimes(TRUE)`.
 pub const METRIC_FLAG_HAS_SAMPLE_TS: u8 = 1 << 2;
 
+/// FB_Metrics flag: header section is followed by `ns_len(u8) +
+/// namespace(ns_len)` after the unit. Set by the PLC when the
+/// FB_Metrics' FB_Init has derived a non-empty owning-FB instance
+/// path (Phase 2 scope-resolver). Pre-bump firmware leaves this
+/// flag clear and writes no trailing namespace.
+pub const METRIC_FLAG_HAS_NAMESPACE: u8 = 1 << 3;
+
 /// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS` is set.
 pub const METRIC_SAMPLE_TS_SIZE: usize = 2;
 
@@ -333,6 +340,11 @@ pub enum DiagEvent {
         name: String,
         /// Metric unit (UTF-8, ≤ 15 bytes; empty when unitless).
         unit: String,
+        /// PLC-side namespace (owning FB's instance path after the
+        /// FB_Init strip). Present when `flags &
+        /// METRIC_FLAG_HAS_NAMESPACE != 0`. Empty when the PLC
+        /// firmware predates the Phase 2 wire bump.
+        scope_namespace: String,
         /// Optional trace context for OTel exemplar attachment. `None` when
         /// `flags & METRIC_FLAG_HAS_TRACE_CTX == 0`.
         trace_id: Option<[u8; 16]>,

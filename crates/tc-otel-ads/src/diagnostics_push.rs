@@ -19,7 +19,8 @@
 
 use crate::diagnostics::{
     DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor, MetricSample,
-    METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_TRACE_CTX, METRIC_SAMPLE_TS_SIZE,
+    METRIC_FLAG_HAS_NAMESPACE, METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_TRACE_CTX,
+    METRIC_SAMPLE_TS_SIZE,
     PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES,
     PUSH_METRIC_AGG_EVENT_TYPE, PUSH_METRIC_AGG_HEADER_SIZE, PUSH_METRIC_AGG_TRACE_SIZE,
     PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
@@ -425,6 +426,24 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     let unit = String::from_utf8(bytes[offset..offset + unit_len].to_vec()).ok()?;
     offset += unit_len;
 
+    // Optional namespace (Phase 2 scope-resolver). Flag-gated so old
+    // PLC firmware that doesn't emit the field is silently accepted.
+    let scope_namespace = if flags & METRIC_FLAG_HAS_NAMESPACE != 0 {
+        if bytes.len() < offset + 1 {
+            return None;
+        }
+        let ns_len = bytes[offset] as usize;
+        offset += 1;
+        if bytes.len() < offset + ns_len {
+            return None;
+        }
+        let ns = String::from_utf8(bytes[offset..offset + ns_len].to_vec()).ok()?;
+        offset += ns_len;
+        ns
+    } else {
+        String::new()
+    };
+
     // Body — sample_count * slot_stride bytes. When METRIC_FLAG_HAS_SAMPLE_TS
     // is set each slot is prefixed with a 2-byte little-endian u16 cycle
     // offset; the value bytes still span sample_size.
@@ -515,6 +534,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
         dc_time_end,
         name,
         unit,
+        scope_namespace,
         trace_id,
         span_id,
         samples,
