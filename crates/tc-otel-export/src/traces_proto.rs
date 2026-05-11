@@ -52,30 +52,70 @@ pub fn build_request(records: &[TraceRecord]) -> ExportTraceServiceRequest {
         };
     }
 
-    let scope = InstrumentationScope {
-        name: SCOPE_NAME.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        attributes: Vec::new(),
-        dropped_attributes_count: 0,
-    };
+    let crate_version = env!("CARGO_PKG_VERSION").to_string();
 
     let resource_spans = group_records_by_resource(records, |r| &r.resource_attributes)
         .into_iter()
         .map(|(resource_attrs, bucket)| {
-            let spans = bucket.into_iter().map(build_span).collect();
+            // Within one resource, bucket again by scope_name so each
+            // distinct FB type (or PRG/literal fallback) gets its
+            // own `ScopeSpans` block. Empty string falls back to the
+            // crate-default scope name (`tc-otel`).
+            let scope_spans = group_records_by_scope(&bucket)
+                .into_iter()
+                .map(|(scope_name, scoped)| {
+                    let name = if scope_name.is_empty() {
+                        SCOPE_NAME.to_string()
+                    } else {
+                        scope_name
+                    };
+                    let scope = InstrumentationScope {
+                        name,
+                        version: crate_version.clone(),
+                        attributes: Vec::new(),
+                        dropped_attributes_count: 0,
+                    };
+                    let spans = scoped.into_iter().map(build_span).collect();
+                    ScopeSpans {
+                        scope: Some(scope),
+                        spans,
+                        schema_url: String::new(),
+                    }
+                })
+                .collect();
             ResourceSpans {
                 resource: Some(build_resource(resource_attrs)),
-                scope_spans: vec![ScopeSpans {
-                    scope: Some(scope.clone()),
-                    spans,
-                    schema_url: String::new(),
-                }],
+                scope_spans,
                 schema_url: String::new(),
             }
         })
         .collect();
 
     ExportTraceServiceRequest { resource_spans }
+}
+
+/// Group records by their `scope_name`. Stable order: first-seen scope
+/// name wins.
+fn group_records_by_scope<'a>(
+    records: &[&'a TraceRecord],
+) -> Vec<(String, Vec<&'a TraceRecord>)> {
+    use std::collections::HashMap;
+    let mut order: Vec<String> = Vec::new();
+    let mut buckets: HashMap<String, Vec<&'a TraceRecord>> = HashMap::new();
+    for r in records {
+        let key = r.scope_name.clone();
+        if !buckets.contains_key(&key) {
+            order.push(key.clone());
+        }
+        buckets.entry(key).or_default().push(*r);
+    }
+    order
+        .into_iter()
+        .map(|k| {
+            let v = buckets.remove(&k).unwrap();
+            (k, v)
+        })
+        .collect()
 }
 
 fn build_span(record: &TraceRecord) -> Span {

@@ -231,6 +231,10 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
     let description_len = bytes[6] as usize;
     let attr_count = bytes[7] as usize;
     let histogram_bucket_count = bytes[8] as usize;
+    // Phase 2 wire bump: byte 9 = scope_namespace length. PLC firmware
+    // before the bump always writes 0 here (formerly reserved), so old
+    // frames decode as empty namespace = Raw fallback in the resolver.
+    let scope_namespace_len = bytes[9] as usize;
 
     if attr_count > 8 {
         return None;
@@ -300,6 +304,21 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         None
     };
 
+    // Read scope_namespace (Phase 2). Trailing field so old parsers
+    // ignored it; old PLC writes scope_namespace_len = 0 so this
+    // branch is a no-op for pre-bump frames.
+    let scope_namespace = if scope_namespace_len > 0 {
+        if offset + scope_namespace_len > bytes.len() {
+            return None;
+        }
+        let ns =
+            String::from_utf8(bytes[offset..offset + scope_namespace_len].to_vec()).ok()?;
+        offset += scope_namespace_len;
+        ns
+    } else {
+        String::new()
+    };
+
     let descriptor = MetricDescriptor {
         metric_id,
         kind,
@@ -307,7 +326,7 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         name,
         unit,
         description,
-        scope_namespace: String::new(),
+        scope_namespace,
         attributes,
         histogram_bounds,
     };
@@ -777,6 +796,30 @@ mod tests {
         attributes: &[(String, String)],
         histogram_bounds: Option<&[f32]>,
     ) -> Vec<u8> {
+        metric_descriptor_bytes_with_namespace(
+            metric_id,
+            kind,
+            flags,
+            name,
+            unit,
+            description,
+            attributes,
+            histogram_bounds,
+            "",
+        )
+    }
+
+    fn metric_descriptor_bytes_with_namespace(
+        metric_id: u16,
+        kind: u8,
+        flags: u8,
+        name: &str,
+        unit: &str,
+        description: &str,
+        attributes: &[(String, String)],
+        histogram_bounds: Option<&[f32]>,
+        scope_namespace: &str,
+    ) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(&metric_id.to_le_bytes());
         v.push(kind);
@@ -787,8 +830,9 @@ mod tests {
         v.push(attributes.len() as u8);
         let bucket_count = histogram_bounds.as_ref().map(|b| b.len()).unwrap_or(0) as u8;
         v.push(bucket_count);
-        v.push(0); // reserved
-        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved
+        // Byte 9 = Phase 2 scope_namespace_len.
+        v.push(scope_namespace.len() as u8);
+        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved (bytes 10-11)
         v.extend_from_slice(name.as_bytes());
         v.extend_from_slice(unit.as_bytes());
         v.extend_from_slice(description.as_bytes());
@@ -803,6 +847,7 @@ mod tests {
                 v.extend_from_slice(&bound.to_le_bytes());
             }
         }
+        v.extend_from_slice(scope_namespace.as_bytes());
         v
     }
 
@@ -1026,6 +1071,53 @@ mod tests {
         frame.extend_from_slice(&metric_sample_bytes(10, 0, 1000, 42.0));
         // Missing second sample
         assert!(decode_metric_batch(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_batch_reads_scope_namespace() {
+        // Phase 2 wire bump: descriptor byte 9 carries the
+        // scope_namespace length; the UTF-8 bytes follow histogram
+        // bounds (or attributes when no histogram).
+        let mut frame = metric_batch_header(1, 0, 100, 1000, 0, 0);
+        let desc = metric_descriptor_bytes_with_namespace(
+            10,
+            0, // gauge
+            0,
+            "temperature",
+            "Cel",
+            "",
+            &[],
+            None,
+            "PRG_TestSimpleApi.fbMotor",
+        );
+        frame.extend_from_slice(&desc);
+        let ev = decode_metric_batch(&frame).expect("namespace descriptor decodes");
+        match ev {
+            DiagEvent::MetricBatch { descriptors, .. } => {
+                assert_eq!(descriptors.len(), 1);
+                assert_eq!(
+                    descriptors[0].scope_namespace,
+                    "PRG_TestSimpleApi.fbMotor"
+                );
+            }
+            _ => panic!("expected MetricBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_batch_namespace_absent_when_len_zero() {
+        // Pre-bump firmware: byte 9 = 0, no trailing string. The
+        // decoded descriptor's scope_namespace must be empty.
+        let mut frame = metric_batch_header(1, 0, 100, 1000, 0, 0);
+        let desc = metric_descriptor_bytes(10, 0, 0, "rpm", "", "", &[], None);
+        frame.extend_from_slice(&desc);
+        let ev = decode_metric_batch(&frame).expect("plain descriptor decodes");
+        match ev {
+            DiagEvent::MetricBatch { descriptors, .. } => {
+                assert!(descriptors[0].scope_namespace.is_empty());
+            }
+            _ => panic!("expected MetricBatch"),
+        }
     }
 
     #[test]

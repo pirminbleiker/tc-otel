@@ -460,6 +460,11 @@ impl OtelExporter {
                     }
                 };
 
+                let scope_name = if record.scope_name.is_empty() {
+                    "tc-otel"
+                } else {
+                    record.scope_name.as_str()
+                };
                 json!({
                     "resource": {
                         "attributes": Self::to_otlp_attributes(&record.resource_attributes)
@@ -467,7 +472,7 @@ impl OtelExporter {
                     "scopeMetrics": [
                         {
                             "scope": {
-                                "name": "tc-otel"
+                                "name": scope_name
                             },
                             "metrics": [metric]
                         }
@@ -641,6 +646,11 @@ impl OtelExporter {
                     "events": events
                 });
 
+                let scope_name = if record.scope_name.is_empty() {
+                    "tc-otel"
+                } else {
+                    record.scope_name.as_str()
+                };
                 json!({
                     "resource": {
                         "attributes": Self::to_otlp_attributes(&record.resource_attributes)
@@ -648,7 +658,7 @@ impl OtelExporter {
                     "scopeSpans": [
                         {
                             "scope": {
-                                "name": "tc-otel",
+                                "name": scope_name,
                                 "attributes": Self::to_otlp_attributes(&record.scope_attributes)
                             },
                             "spans": [span]

@@ -440,12 +440,26 @@ pub struct MetricDispatcher {
     /// Local IPC hostname from `gethostname` — backfilled into every
     /// MetricEntry whose `hostname` is empty before encoding.
     host_name: Arc<String>,
+    /// Shared with `LogDispatcher` and `TraceDispatcher` — same
+    /// per-(net_id, namespace) cache, same OCC-driven invalidation.
+    scope_resolver: ScopeResolver,
 }
 
 impl MetricDispatcher {
     pub async fn new(
         settings: &AppSettings,
         config_rx: Option<watch::Receiver<AppSettings>>,
+    ) -> Result<Self> {
+        Self::with_scope_resolver(settings, config_rx, ScopeResolver::noop()).await
+    }
+
+    /// Build a metric dispatcher with the process-wide ScopeResolver
+    /// so user metrics (FB_Metrics) bucket by FB type the same way
+    /// logs do.
+    pub async fn with_scope_resolver(
+        settings: &AppSettings,
+        config_rx: Option<watch::Receiver<AppSettings>>,
+        scope_resolver: ScopeResolver,
     ) -> Result<Self> {
         let initial_cfg = Self::build_export_config(settings);
         let flush_interval = Duration::from_millis(settings.metrics.export_flush_interval_ms);
@@ -480,6 +494,7 @@ impl MetricDispatcher {
             mapper,
             default_service_name,
             host_name,
+            scope_resolver,
         })
     }
 
@@ -538,7 +553,26 @@ impl MetricDispatcher {
         if entry.hostname.is_empty() {
             entry.hostname = (*self.host_name).clone();
         }
-        let record = MetricRecord::from_metric_entry(entry);
+        // Capture before `entry` moves into `from_metric_entry` — used
+        // by the ScopeResolver to pick the right PLC runtime.
+        let net_id = entry.ams_net_id.clone();
+        let app_port = entry.ams_app_port;
+        let mut record = MetricRecord::from_metric_entry(entry);
+        if !net_id.is_empty() && !record.scope_name.is_empty() && app_port != 0 {
+            let outcome = self
+                .scope_resolver
+                .resolve(&net_id, &record.scope_name, app_port)
+                .await;
+            // Hit → bucket by FB type, attach the instance path so
+            // two instances of the same type stay distinguishable.
+            if let Some(path) = outcome.instance_path {
+                record.attributes.insert(
+                    "plc.instance_path".to_string(),
+                    serde_json::Value::String(path),
+                );
+            }
+            record.scope_name = outcome.scope_name;
+        }
 
         if self.export_tx.try_send(record).is_err() {
             tracing::warn!("Metric export channel full, dropping metric");

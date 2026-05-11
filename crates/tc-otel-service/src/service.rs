@@ -220,7 +220,12 @@ impl TcOtelService {
         };
 
         let metric_dispatcher = if metrics_export_enabled {
-            let dispatcher = MetricDispatcher::new(&self.settings, config_rx.clone()).await?;
+            let dispatcher = MetricDispatcher::with_scope_resolver(
+                &self.settings,
+                config_rx.clone(),
+                scope_resolver.clone(),
+            )
+            .await?;
             Some(dispatcher)
         } else {
             tracing::info!("Metrics export disabled");
@@ -271,7 +276,9 @@ impl TcOtelService {
         let traces_export_enabled = self.settings.traces.enabled;
         #[allow(unused_variables)]
         let trace_dispatcher = if traces_export_enabled {
-            let dispatcher = TraceDispatcher::new(&self.settings).await?;
+            let dispatcher =
+                TraceDispatcher::with_scope_resolver(&self.settings, scope_resolver.clone())
+                    .await?;
             Some(dispatcher)
         } else {
             tracing::info!("Traces export disabled");

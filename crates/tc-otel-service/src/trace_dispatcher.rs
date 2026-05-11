@@ -5,6 +5,8 @@ use tc_otel_core::{AppSettings, TraceRecord};
 use tc_otel_export::OtelExporter;
 use tokio::sync::mpsc;
 
+use crate::scope_resolver::ScopeResolver;
+
 /// Dispatcher that batches trace records and exports them to OTLP
 pub struct TraceDispatcher {
     #[allow(dead_code)]
@@ -12,8 +14,21 @@ pub struct TraceDispatcher {
 }
 
 impl TraceDispatcher {
-    /// Create a new trace dispatcher
+    /// Create a new trace dispatcher with a no-op ScopeResolver
+    /// (used by unit tests; the service wires the shared resolver).
     pub async fn new(settings: &AppSettings) -> tc_otel_core::error::Result<Self> {
+        Self::with_scope_resolver(settings, ScopeResolver::noop()).await
+    }
+
+    /// Build a dispatcher with the process-wide `ScopeResolver`. The
+    /// batch worker resolves each record's `scope_name` (which the
+    /// `SpanDispatcher` set to the raw PLC namespace) to the owning
+    /// FB's type name via the symbol table — same lookup the log
+    /// path runs, so logs / traces of the same FB share a scope.
+    pub async fn with_scope_resolver(
+        settings: &AppSettings,
+        scope_resolver: ScopeResolver,
+    ) -> tc_otel_core::error::Result<Self> {
         let batch_size = settings.traces.export.batch_size;
         let flush_interval_ms = settings.traces.export.flush_interval_ms;
 
@@ -54,7 +69,8 @@ impl TraceDispatcher {
 
             loop {
                 tokio::select! {
-                    Some(record) = output.recv() => {
+                    Some(mut record) = output.recv() => {
+                        resolve_scope(&scope_resolver, &mut record).await;
                         batch.push(record);
                         if batch.len() >= batch_size {
                             if let Err(e) = exporter.export_traces_batch(batch.clone()).await {
@@ -91,6 +107,39 @@ impl TraceDispatcher {
     pub fn sender(&self) -> mpsc::Sender<TraceRecord> {
         self.input.clone()
     }
+}
+
+/// Map the record's raw PLC namespace (`record.scope_name`) to the
+/// owning FB's type via the symbol-table lookup. On a hit the span
+/// also gains `plc.instance_path` so two instances of the same FB
+/// type (e.g. fbMotor vs fbMotorB) stay distinguishable inside the
+/// shared `InstrumentationScope`.
+async fn resolve_scope(resolver: &ScopeResolver, record: &mut TraceRecord) {
+    if record.scope_name.is_empty() {
+        return;
+    }
+    let net_id = record
+        .resource_attributes
+        .get("plc.ams_net_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let app_port = record
+        .resource_attributes
+        .get("plc.ams_app_port")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u16;
+    if net_id.is_empty() || app_port == 0 {
+        return;
+    }
+    let outcome = resolver.resolve(&net_id, &record.scope_name, app_port).await;
+    if let Some(path) = outcome.instance_path {
+        record.span_attributes.insert(
+            "plc.instance_path".to_string(),
+            serde_json::Value::String(path),
+        );
+    }
+    record.scope_name = outcome.scope_name;
 }
 
 #[cfg(test)]

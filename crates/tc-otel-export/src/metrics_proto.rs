@@ -66,24 +66,47 @@ pub fn build_request(records: &[MetricRecord]) -> ExportMetricsServiceRequest {
         };
     }
 
-    let scope = InstrumentationScope {
-        name: SCOPE_NAME.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        attributes: Vec::new(),
-        dropped_attributes_count: 0,
-    };
+    let crate_version = env!("CARGO_PKG_VERSION").to_string();
 
     let resource_metrics = group_records_by_resource(records, |r| &r.resource_attributes)
         .into_iter()
         .map(|(resource_attrs, bucket)| {
-            let metrics = bucket.into_iter().map(build_metric).collect();
+            // Inner: bucket by `scope_name` so FB-type aggregation
+            // mirrors the log encoder. Empty falls back to crate
+            // default.
+            let mut scope_buckets: Vec<(String, Vec<&MetricRecord>)> = Vec::new();
+            for rec in &bucket {
+                let key = if rec.scope_name.is_empty() {
+                    SCOPE_NAME.to_string()
+                } else {
+                    rec.scope_name.clone()
+                };
+                if let Some((_, b)) = scope_buckets.iter_mut().find(|(n, _)| n == &key) {
+                    b.push(*rec);
+                } else {
+                    scope_buckets.push((key, vec![*rec]));
+                }
+            }
+            let scope_metrics = scope_buckets
+                .into_iter()
+                .map(|(scope_name, scoped)| {
+                    let scope = InstrumentationScope {
+                        name: scope_name,
+                        version: crate_version.clone(),
+                        attributes: Vec::new(),
+                        dropped_attributes_count: 0,
+                    };
+                    let metrics = scoped.into_iter().map(build_metric).collect();
+                    ScopeMetrics {
+                        scope: Some(scope),
+                        metrics,
+                        schema_url: String::new(),
+                    }
+                })
+                .collect();
             ResourceMetrics {
                 resource: Some(build_resource(resource_attrs)),
-                scope_metrics: vec![ScopeMetrics {
-                    scope: Some(scope.clone()),
-                    metrics,
-                    schema_url: String::new(),
-                }],
+                scope_metrics,
                 schema_url: String::new(),
             }
         })
