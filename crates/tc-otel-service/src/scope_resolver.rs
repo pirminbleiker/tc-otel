@@ -35,7 +35,7 @@
 
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tc_otel_ads::{AdsClient, AmsNetId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -409,13 +409,19 @@ struct Inner {
     /// `(net_id, namespace) → ScopeValue`. Both positive and negative
     /// outcomes share the cache; the consumer only sees the final
     /// scope-name string and doesn't care which branch produced it.
-    cache: RwLock<HashMap<(String, String), ScopeValue>>,
+    ///
+    /// Synchronous `std::sync::RwLock` — the cache itself does no
+    /// I/O, so an async lock would add per-record overhead on the
+    /// hot path (every TraceRecord touches this lock at 50 k+/sec).
+    /// The async ADS round-trip on a miss happens *outside* the
+    /// lock window.
+    cache: StdRwLock<HashMap<(String, String), ScopeValue>>,
     /// Per-net_id last-seen `OnlineChangeCnt`. On mismatch the cache
     /// for that net_id is dropped — covers Online Change, Full
     /// Activate Configuration, Cold Reset, and tc-otel restart in
     /// one rule (the PLC's `FB_TcOtelTask` re-registers with the
     /// updated counter in all those cases).
-    occ_seen: RwLock<HashMap<String, u32>>,
+    occ_seen: StdRwLock<HashMap<String, u32>>,
     lookup: Arc<dyn ScopeLookup>,
 }
 
@@ -427,8 +433,8 @@ impl ScopeResolver {
     pub fn new(lookup: Arc<dyn ScopeLookup>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                cache: RwLock::new(HashMap::new()),
-                occ_seen: RwLock::new(HashMap::new()),
+                cache: StdRwLock::new(HashMap::new()),
+                occ_seen: StdRwLock::new(HashMap::new()),
                 lookup,
             }),
         }
@@ -462,7 +468,7 @@ impl ScopeResolver {
             };
         }
         let key = (net_id.to_string(), namespace.to_string());
-        if let Some(v) = self.inner.cache.read().await.get(&key) {
+        if let Some(v) = self.inner.cache.read().unwrap().get(&key) {
             return v.clone().into_outcome();
         }
         let value = match self
@@ -485,7 +491,11 @@ impl ScopeResolver {
                 };
             }
         };
-        self.inner.cache.write().await.insert(key, value.clone());
+        self.inner
+            .cache
+            .write()
+            .unwrap()
+            .insert(key, value.clone());
         value.into_outcome()
     }
 
@@ -498,9 +508,9 @@ impl ScopeResolver {
         self.inner
             .cache
             .write()
-            .await
+            .unwrap()
             .retain(|(n, _), _| n != net_id);
-        self.inner.occ_seen.write().await.remove(net_id);
+        self.inner.occ_seen.write().unwrap().remove(net_id);
         self.inner.lookup.invalidate(net_id).await;
     }
 
@@ -515,44 +525,43 @@ impl ScopeResolver {
     /// valid (symbols are the same). One rule covers both cases.
     pub async fn observe_occ(&self, net_id: &str, occ: u32) {
         // Fast path: read-lock, compare, return on match.
-        if let Some(&prev) = self.inner.occ_seen.read().await.get(net_id) {
+        if let Some(&prev) = self.inner.occ_seen.read().unwrap().get(net_id) {
             if prev == occ {
                 return;
             }
         }
         // Mismatch (or first sighting): take write locks, double-check
         // under the lock, and either record the first sighting or
-        // drop+update.
-        let mut occ_map = self.inner.occ_seen.write().await;
-        match occ_map.get(net_id) {
-            Some(&prev) if prev == occ => {
-                // A concurrent caller updated to the same value
-                // between our read-check and write-lock — nothing
-                // to do.
+        // drop+update. Holding the sync lock across the async
+        // invalidate would block the scheduler, so capture the
+        // decision then release before awaiting.
+        let needs_invalidate = {
+            let mut occ_map = self.inner.occ_seen.write().unwrap();
+            match occ_map.get(net_id) {
+                Some(&prev) if prev == occ => false,
+                Some(_) => {
+                    self.inner
+                        .cache
+                        .write()
+                        .unwrap()
+                        .retain(|(n, _), _| n != net_id);
+                    occ_map.insert(net_id.to_string(), occ);
+                    true
+                }
+                None => {
+                    occ_map.insert(net_id.to_string(), occ);
+                    false
+                }
             }
-            Some(_) => {
-                // Genuine mismatch — drop cache and the lookup's
-                // own per-net_id state (e.g. AdsScopeLookup's
-                // cached symbol table) for this net_id.
-                self.inner
-                    .cache
-                    .write()
-                    .await
-                    .retain(|(n, _), _| n != net_id);
-                self.inner.lookup.invalidate(net_id).await;
-                occ_map.insert(net_id.to_string(), occ);
-            }
-            None => {
-                // First time we see this net_id; record without
-                // touching the cache.
-                occ_map.insert(net_id.to_string(), occ);
-            }
+        };
+        if needs_invalidate {
+            self.inner.lookup.invalidate(net_id).await;
         }
     }
 
     #[cfg(test)]
     pub async fn cache_len(&self) -> usize {
-        self.inner.cache.read().await.len()
+        self.inner.cache.read().unwrap().len()
     }
 }
 

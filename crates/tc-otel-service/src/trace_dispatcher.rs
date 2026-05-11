@@ -8,9 +8,22 @@ use tokio::sync::{mpsc, Semaphore};
 
 use crate::scope_resolver::ScopeResolver;
 
-/// Max concurrent in-flight HTTP POSTs for trace export. Same
-/// rationale as `dispatcher::MAX_INFLIGHT_FLUSHES`.
-const MAX_INFLIGHT_FLUSHES: usize = 16;
+/// Max concurrent in-flight HTTP POSTs for trace export. Higher
+/// than the log/metric dispatcher cap because the trace pillar
+/// fans out one record per Begin/End pair and VictoriaTraces has
+/// historically higher per-POST latency than VictoriaLogs.
+const MAX_INFLIGHT_FLUSHES: usize = 32;
+
+/// Trace input channel capacity. The SpanDispatcher finalises one
+/// `TraceRecord` per Begin/End pair and pushes here via the sender
+/// `TraceDispatcher::sender()`. At 50 k+ spans/sec a 256-slot
+/// channel saturates in 5 ms, after which `try_send` drops End
+/// events — those then accumulate as pending spans on the
+/// SpanDispatcher side and eventually hit the TTL eviction path
+/// (visible as `Span timed out after 0s` warns). Sizing this large
+/// enough to absorb the worst-case burst between flushes keeps the
+/// Begin/End pair atomic from the receiver's point of view.
+const TRACE_INPUT_CAPACITY: usize = 50_000;
 
 /// Dispatcher that batches trace records and exports them to OTLP
 pub struct TraceDispatcher {
@@ -39,7 +52,7 @@ impl TraceDispatcher {
 
         // TODO(phase-2): hot reload for trace configuration
 
-        let (input, mut output) = mpsc::channel::<TraceRecord>(256);
+        let (input, mut output) = mpsc::channel::<TraceRecord>(TRACE_INPUT_CAPACITY);
 
         // Spawn batch worker task
         let endpoint = settings.traces.export.endpoint.clone();
