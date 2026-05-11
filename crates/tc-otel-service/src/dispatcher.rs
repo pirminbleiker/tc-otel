@@ -141,10 +141,26 @@ impl LogDispatcher {
         }
         let mut record = LogRecord::from_log_entry(entry);
         if !net_id.is_empty() && !record.scope_name.is_empty() && app_port != 0 {
-            record.scope_name = self
+            let outcome = self
                 .scope_resolver
                 .resolve(&net_id, &record.scope_name, app_port)
                 .await;
+            // Resolver collapsed instance path → FB type. Ship the
+            // concrete FB instance path it landed on as
+            // `plc.instance_path` so Motor 1 vs Motor 2 stays
+            // distinguishable when both bucket under
+            // `scope.name=FB_Motor`. (We deliberately store the FB
+            // instance, NOT the trailing FB_Log variable — the
+            // caller cares about the owning FB, not the framework
+            // wrap.) Raw fallback: no attribute, scope.name keeps
+            // the user's literal namespace.
+            if let Some(path) = outcome.instance_path {
+                record.log_attributes.insert(
+                    "plc.instance_path".to_string(),
+                    serde_json::Value::String(path),
+                );
+            }
+            record.scope_name = outcome.scope_name;
         }
         // Preserve the trace suffix that from_log_entry appended, if any,
         // so Grafana's derivedFields regex still finds trace_id in the body.

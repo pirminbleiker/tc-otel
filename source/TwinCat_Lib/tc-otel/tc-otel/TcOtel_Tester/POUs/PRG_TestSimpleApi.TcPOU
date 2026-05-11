@@ -19,7 +19,9 @@ VAR
 	wStr			: WSTRING := "fooöäaΘ𝄞";
 	tTime2			: TIME :=  T#1s;
 
-	logger			: FB_Log;	
+	logger			: FB_Log;
+	fbMotor			: FB_Motor;
+	fbMotorB		: FB_Motor;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -55,6 +57,9 @@ FOR nArg := 0 TO 1 DO
 		.WithAnyArg(eEnum)
 		.WithAnyArg(tTOD)
 		.CreateLog();
+
+	fbMotor.Cycle(nId := 1);
+	fbMotorB.Cycle(nId := 2);
 END_FOR
 
 END_IF]]></ST>

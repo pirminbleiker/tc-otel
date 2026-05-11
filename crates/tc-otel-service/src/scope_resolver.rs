@@ -37,38 +37,74 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tc_otel_ads::{AdsClient, AmsNetId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
-/// One resolution attempt's outcome — the value we cache and stamp
-/// onto the OTel `scope.name` field.
+/// One resolution attempt's outcome — what we cache and what we
+/// stamp onto the OTel `scope.name` field (plus optional
+/// `plc.instance_path` per-record attribute).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeValue {
-    /// ADS lookup found a matching symbol; use its **type name**
-    /// (e.g. `FB_Motor`) as the OTel scope. Records from any
-    /// instance of this type bucket together in the encoder.
-    Resolved(String),
+    /// ADS lookup found a matching FB type. `type_name` becomes
+    /// `scope.name` (e.g. `FB_Motor`); `instance_path` is the
+    /// concrete instance the resolver used (e.g.
+    /// `PRG_TestSimpleApi.fbMotor`), shipped as
+    /// `plc.instance_path` so Motor 1 vs Motor 2 stays
+    /// distinguishable when both bucket under the same type.
+    Resolved {
+        type_name: String,
+        instance_path: String,
+    },
     /// ADS lookup found nothing — likely a custom logger string
-    /// (e.g. `FB_Log('Drives.Motor')`). Use the namespace as-is so
-    /// the user-supplied label still rides through. Cached so we
-    /// don't re-query within one PLC app version.
+    /// (e.g. `F_Log().WithLogger('MyLabel')`) or a PRG-rooted path
+    /// without an enclosing FB. Use the namespace as-is so the
+    /// user-supplied label still rides through. No
+    /// `plc.instance_path` attribute is added.
     Raw(String),
 }
 
+/// What [`ScopeResolver::resolve`] returns to callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeOutcome {
+    /// Goes onto `InstrumentationScope.name`.
+    pub scope_name: String,
+    /// Set only when the resolver found an FB type. The dispatcher
+    /// emits this as the `plc.instance_path` record attribute.
+    pub instance_path: Option<String>,
+}
+
 impl ScopeValue {
-    /// Return the string we want as `LogRecord.scope_name` /
-    /// `TraceRecord.scope_name` / `MetricRecord.scope_name`.
-    pub fn into_scope_name(self) -> String {
+    fn into_outcome(self) -> ScopeOutcome {
         match self {
-            ScopeValue::Resolved(s) | ScopeValue::Raw(s) => s,
+            ScopeValue::Resolved {
+                type_name,
+                instance_path,
+            } => ScopeOutcome {
+                scope_name: type_name,
+                instance_path: Some(instance_path),
+            },
+            ScopeValue::Raw(s) => ScopeOutcome {
+                scope_name: s,
+                instance_path: None,
+            },
         }
     }
 }
 
-/// ADS-side abstraction. Implementors return the resolved type for
-/// a given `(net_id, parent_path)` pair — e.g. by looking up
-/// `parent_path` in a previously-fetched symbol table for that
-/// `net_id`. Returning `Ok(None)` means "no such symbol" and the
-/// resolver caches that as the negative-cache `Raw` value.
+
+/// ADS-side abstraction. Implementors take the namespace the PLC
+/// supplied (already an FB instance path — the PLC's FB_Log /
+/// FB_Tracer / FB_Metrics FB_Init strips its own variable suffix
+/// before sending) and look it up directly in the symbol table.
+///
+/// * **Hit** — return `(type_name, namespace)`. The type name
+///   becomes `scope.name`; the namespace itself is the
+///   instance path the dispatcher ships as `plc.instance_path`.
+/// * **Miss** — return `Ok(None)`. Resolver caches as
+///   `Raw(namespace)` so the user's literal string (custom label
+///   via `F_Log().WithLogger(...)`, or a PRG-rooted path that the
+///   symbol table doesn't enumerate) still rides through.
 ///
 /// Errors propagate: a transient ADS failure is *not* cached so
 /// the next record retries. Only definitive "no symbol" answers
@@ -88,9 +124,9 @@ pub trait ScopeLookup: Send + Sync {
     async fn resolve(
         &self,
         net_id: &str,
-        parent_path: &str,
+        namespace: &str,
         target_port: u16,
-    ) -> anyhow::Result<Option<String>>;
+    ) -> anyhow::Result<Option<(String, String)>>;
 
     async fn invalidate(&self, _net_id: &str) {
         // Default: stateless lookups have nothing to invalidate.
@@ -144,6 +180,51 @@ impl AdsScopeLookup {
         }
     }
 
+    /// AMS/TCP `PortConnect` handshake on a fresh socket. The local
+    /// AMS router rejects outbound ADS reads with
+    /// `ADSERR_DEVICE_PORTNOTCONNECTED (0x12)` when the source port
+    /// hasn't been registered. PortConnect registers our port and
+    /// returns the NetID + actual port the router assigned, which we
+    /// then use as `source_net_id` / `source_port` in the AMS frame
+    /// header so responses route back to this socket.
+    ///
+    /// Wire format (mirror of `LocalRouterAmsTransport::handshake`):
+    /// - Request:  6 B AMS/TCP header (`cmd=0x1000`, `len=2`) + 2 B
+    ///   `register_port: u16 LE`.
+    /// - Response: same 6 B header + ≥8 B payload = 6 B NetID + 2 B
+    ///   assigned `port: u16 LE`.
+    async fn port_connect(
+        stream: &mut TcpStream,
+        register_port: u16,
+    ) -> anyhow::Result<(AmsNetId, u16)> {
+        const AMS_TCP_CMD_PORT_CONNECT: u16 = 0x1000;
+        let mut req = Vec::with_capacity(8);
+        req.extend_from_slice(&AMS_TCP_CMD_PORT_CONNECT.to_le_bytes());
+        req.extend_from_slice(&2u32.to_le_bytes());
+        req.extend_from_slice(&register_port.to_le_bytes());
+        stream.write_all(&req).await?;
+
+        let mut hdr = [0u8; 6];
+        stream.read_exact(&mut hdr).await?;
+        let cmd = u16::from_le_bytes([hdr[0], hdr[1]]);
+        let len = u32::from_le_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]) as usize;
+        if cmd != AMS_TCP_CMD_PORT_CONNECT {
+            return Err(anyhow::anyhow!(
+                "PortConnect: unexpected response cmd 0x{cmd:04x}"
+            ));
+        }
+        if len < 8 {
+            return Err(anyhow::anyhow!(
+                "PortConnect: short response ({len} bytes)"
+            ));
+        }
+        let mut body = vec![0u8; len];
+        stream.read_exact(&mut body).await?;
+        let net_id = AmsNetId::from_bytes([body[0], body[1], body[2], body[3], body[4], body[5]]);
+        let assigned = u16::from_le_bytes([body[6], body[7]]);
+        Ok((net_id, assigned))
+    }
+
     /// Fetch (or return cached) symbol-table map for a PLC.
     async fn table_for(
         &self,
@@ -153,30 +234,111 @@ impl AdsScopeLookup {
         if let Some(t) = self.tables.read().await.get(net_id_str) {
             return Ok(t.clone());
         }
-        // Cache miss: connect + download. We hold the read lock
-        // already released; the write happens after the network
-        // round-trip so the lock contention window is short.
+        // Cache miss: connect + handshake + download. Read lock
+        // dropped before the network round-trip; the write happens
+        // after so the contention window is short. Each phase wrapped
+        // in a 10 s timeout so a misconfigured route doesn't silently
+        // stall the dispatcher.
+        let started = std::time::Instant::now();
+        tracing::info!(
+            net_id = %net_id_str,
+            target_port,
+            addr = %self.addr,
+            "AdsScopeLookup: cache miss, downloading symbol table"
+        );
         let target = AmsNetId::from_str_ref(net_id_str)
             .map_err(|e| anyhow::anyhow!("invalid net_id {net_id_str:?}: {e}"))?;
-        let mut client = AdsClient::connect(
-            &self.addr,
-            self.source_net_id,
-            self.source_port,
-            target,
-            target_port,
+
+        // Open the TCP socket and do PortConnect first — without it
+        // the AMS router rejects our outbound reads with
+        // ADSERR_DEVICE_PORTNOTCONNECTED (0x12).
+        let target_addr = format!("{}:48898", self.addr);
+        let mut stream = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            TcpStream::connect(&target_addr),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("ADS connect to {} for {net_id_str}: {e}", self.addr))?;
-        let symbols = client
-            .read_symbol_table()
-            .await
-            .map_err(|e| anyhow::anyhow!("ADS symbol upload for {net_id_str}: {e}"))?;
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::warn!(net_id = %net_id_str, error = %e,
+                    "AdsScopeLookup: TCP connect to AMS router failed");
+                return Err(anyhow::anyhow!(
+                    "ADS TCP connect to {target_addr}: {e}"
+                ));
+            }
+            Err(_) => {
+                tracing::warn!(net_id = %net_id_str,
+                    "AdsScopeLookup: TCP connect timed out after 10s");
+                return Err(anyhow::anyhow!(
+                    "ADS TCP connect to {target_addr} timed out"
+                ));
+            }
+        };
+        let _ = stream.set_nodelay(true);
+
+        let (assigned_net_id, assigned_port) = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Self::port_connect(&mut stream, self.source_port),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::warn!(net_id = %net_id_str, error = %e,
+                    "AdsScopeLookup: PortConnect handshake failed");
+                return Err(e);
+            }
+            Err(_) => {
+                tracing::warn!(net_id = %net_id_str,
+                    "AdsScopeLookup: PortConnect timed out after 5s");
+                return Err(anyhow::anyhow!("PortConnect timed out"));
+            }
+        };
+        // Use the router-assigned NetID + port as source so responses
+        // route back to *this* socket. `source_net_id` from the
+        // config is a fallback hint; the router's view of who we are
+        // is what actually matters for routing.
+        let _ = self.source_net_id; // suppress unused-field lint
+        let mut client = AdsClient::from_stream(
+            stream,
+            assigned_net_id,
+            assigned_port,
+            target,
+            target_port,
+        );
+        let symbols = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.read_symbol_table(),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::warn!(net_id = %net_id_str, error = %e,
+                    "AdsScopeLookup: symbol-table read failed (likely PortConnect missing — AMS router can't route response back)");
+                return Err(anyhow::anyhow!(
+                    "ADS symbol upload for {net_id_str}: {e}"
+                ));
+            }
+            Err(_) => {
+                tracing::warn!(net_id = %net_id_str,
+                    "AdsScopeLookup: symbol-table read timed out after 10s (likely PortConnect missing)");
+                return Err(anyhow::anyhow!(
+                    "ADS symbol upload for {net_id_str} timed out"
+                ));
+            }
+        };
+        let n = symbols.len();
         let map: HashMap<String, String> =
             symbols.into_iter().map(|s| (s.name, s.type_name)).collect();
+        tracing::info!(
+            net_id = %net_id_str,
+            symbols = n,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "AdsScopeLookup: symbol table downloaded"
+        );
         let arc = Arc::new(map);
-        // Race: a concurrent caller may have populated the map
-        // between our read and write — accept either snapshot since
-        // the symbol table is the same for one app version.
         let mut w = self.tables.write().await;
         let stored = w
             .entry(net_id_str.to_string())
@@ -191,23 +353,32 @@ impl ScopeLookup for AdsScopeLookup {
     async fn resolve(
         &self,
         net_id: &str,
-        parent_path: &str,
+        namespace: &str,
         target_port: u16,
-    ) -> anyhow::Result<Option<String>> {
-        if parent_path.is_empty() {
-            // No parent path = the whole namespace was a single
-            // segment (custom literal like `FB_Log('Drives.Motor')`).
-            // Falls through to the resolver's `Raw(namespace)`
-            // branch upstream.
+    ) -> anyhow::Result<Option<(String, String)>> {
+        if namespace.is_empty() {
             return Ok(None);
         }
         let table = self.table_for(net_id, target_port).await?;
-        Ok(table.get(parent_path).cloned())
+        Ok(lookup_in_table(&table, namespace))
     }
 
     async fn invalidate(&self, net_id: &str) {
         self.tables.write().await.remove(net_id);
     }
+}
+
+/// Direct lookup against an already-downloaded symbol table.
+/// PLC has already stripped the framework FB's own variable name
+/// (see `FB_Log.FB_Init`), so the namespace IS the FB instance
+/// path. Returns `(type_name, instance_path)` on hit.
+fn lookup_in_table(
+    table: &HashMap<String, String>,
+    namespace: &str,
+) -> Option<(String, String)> {
+    table
+        .get(namespace)
+        .map(|t| (t.clone(), namespace.to_string()))
 }
 
 /// Stub used while no real symbol-table lookup is wired in.
@@ -221,30 +392,10 @@ impl ScopeLookup for NoopLookup {
     async fn resolve(
         &self,
         _net_id: &str,
-        _parent_path: &str,
+        _namespace: &str,
         _target_port: u16,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<(String, String)>> {
         Ok(None)
-    }
-}
-
-/// Strip the trailing instance-path segment — the FB_Log /
-/// FB_Tracer / FB_Metrics variable that produced the record. The
-/// remainder is the parent FB's instance path, which is what we
-/// look up in the symbol table to get the parent's *type*.
-///
-/// Examples:
-/// - `Cell1.Axis1.Motor.fbLog` → `Cell1.Axis1.Motor`
-/// - `Drives.Motor`            → `Drives` (single trailing segment
-///   is unusual but well-defined)
-/// - `fbLog`                   → empty string (no parent path)
-/// - `Drives.Motor.`           → `Drives.Motor` (trailing dot
-///   tolerated)
-fn parent_path(namespace: &str) -> &str {
-    let trimmed = namespace.trim_end_matches('.');
-    match trimmed.rfind('.') {
-        Some(i) => &trimmed[..i],
-        None => "",
     }
 }
 
@@ -298,26 +449,44 @@ impl ScopeResolver {
     /// Returns the namespace itself (raw fallback) if the lookup
     /// errors transiently — the caller still gets a usable scope
     /// name, and the next record re-tries (errors are not cached).
-    pub async fn resolve(&self, net_id: &str, namespace: &str, target_port: u16) -> String {
+    pub async fn resolve(
+        &self,
+        net_id: &str,
+        namespace: &str,
+        target_port: u16,
+    ) -> ScopeOutcome {
         if namespace.is_empty() {
-            return String::new();
+            return ScopeOutcome {
+                scope_name: String::new(),
+                instance_path: None,
+            };
         }
         let key = (net_id.to_string(), namespace.to_string());
         if let Some(v) = self.inner.cache.read().await.get(&key) {
-            return v.clone().into_scope_name();
+            return v.clone().into_outcome();
         }
-        let parent = parent_path(namespace);
-        let value = match self.inner.lookup.resolve(net_id, parent, target_port).await {
-            Ok(Some(type_name)) => ScopeValue::Resolved(type_name),
+        let value = match self
+            .inner
+            .lookup
+            .resolve(net_id, namespace, target_port)
+            .await
+        {
+            Ok(Some((type_name, instance_path))) => ScopeValue::Resolved {
+                type_name,
+                instance_path,
+            },
             Ok(None) => ScopeValue::Raw(namespace.to_string()),
             Err(_) => {
                 // Transient failure: don't cache, return raw so the
                 // record still ships and the next call re-tries.
-                return namespace.to_string();
+                return ScopeOutcome {
+                    scope_name: namespace.to_string(),
+                    instance_path: None,
+                };
             }
         };
         self.inner.cache.write().await.insert(key, value.clone());
-        value.into_scope_name()
+        value.into_outcome()
     }
 
     /// Drop every cached entry for the given `net_id`. Exposed for
@@ -424,53 +593,68 @@ mod tests {
         async fn resolve(
             &self,
             net_id: &str,
-            parent_path: &str,
+            namespace: &str,
             _target_port: u16,
-        ) -> anyhow::Result<Option<String>> {
+        ) -> anyhow::Result<Option<(String, String)>> {
             self.calls
                 .lock()
                 .unwrap()
-                .push((net_id.to_string(), parent_path.to_string()));
-            Ok(self
+                .push((net_id.to_string(), namespace.to_string()));
+            // Mock mirrors the AdsScopeLookup direct-first +
+            // framework-strip-fallback strategy so resolver tests
+            // exercise the same semantics as the real lookup.
+            let by_net: HashMap<String, String> = self
                 .table
-                .get(&(net_id.to_string(), parent_path.to_string()))
-                .cloned())
+                .iter()
+                .filter(|((n, _), _)| n == net_id)
+                .map(|((_, p), t)| (p.clone(), t.clone()))
+                .collect();
+            Ok(lookup_in_table(&by_net, namespace))
         }
     }
 
-    #[test]
-    fn parent_path_strips_last_segment() {
-        assert_eq!(parent_path("Cell1.Axis1.Motor.fbLog"), "Cell1.Axis1.Motor");
-        assert_eq!(parent_path("Drives.Motor"), "Drives");
-        assert_eq!(parent_path("fbLog"), "");
-        assert_eq!(parent_path("Drives.Motor."), "Drives");
-        assert_eq!(parent_path(""), "");
-    }
-
-    #[tokio::test]
+#[tokio::test]
     async fn noop_lookup_returns_raw() {
         let r = ScopeResolver::noop();
-        assert_eq!(
-            r.resolve("net", "Drives.Motor.fbLog", 851).await,
-            "Drives.Motor.fbLog"
-        );
+        let out = r.resolve("net", "Drives.Motor.fbLog", 851).await;
+        assert_eq!(out.scope_name, "Drives.Motor.fbLog");
+        assert!(out.instance_path.is_none());
     }
 
     #[tokio::test]
     async fn empty_namespace_returns_empty() {
         let r = ScopeResolver::noop();
-        assert!(r.resolve("net", "", 851).await.is_empty());
+        let out = r.resolve("net", "", 851).await;
+        assert!(out.scope_name.is_empty());
+        assert!(out.instance_path.is_none());
     }
 
     #[tokio::test]
-    async fn positive_lookup_returns_type_name() {
+    async fn direct_hit_returns_type_and_instance_path() {
+        // PLC has already stripped the FB_Log variable suffix in
+        // FB_Init, so the namespace IS the FB instance path.
+        // Direct table hit → FB type + namespace as instance path.
         let mock = Arc::new(MockLookup::new([(
             ("net", "Cell1.Axis1.Motor"),
             "FB_Motor",
         )]));
         let r = ScopeResolver::new(mock.clone());
-        let scope = r.resolve("net", "Cell1.Axis1.Motor.fbLog", 851).await;
-        assert_eq!(scope, "FB_Motor");
+        let out = r.resolve("net", "Cell1.Axis1.Motor", 851).await;
+        assert_eq!(out.scope_name, "FB_Motor");
+        assert_eq!(out.instance_path.as_deref(), Some("Cell1.Axis1.Motor"));
+    }
+
+    #[tokio::test]
+    async fn prg_rooted_namespace_falls_through_to_raw() {
+        // FB_Log instantiated directly in a PRG → after PLC strip,
+        // namespace = PRG name. PRGs aren't enumerated as instance
+        // entries in the symbol table → miss → Raw(namespace), so
+        // every PRG buckets under its own scope name unchanged.
+        let mock = Arc::new(MockLookup::new([] as [((&str, &str), &str); 0]));
+        let r = ScopeResolver::new(mock.clone());
+        let out = r.resolve("net", "PRG_TestSimpleApi", 851).await;
+        assert_eq!(out.scope_name, "PRG_TestSimpleApi");
+        assert!(out.instance_path.is_none());
     }
 
     #[tokio::test]
@@ -479,12 +663,14 @@ mod tests {
         let r = ScopeResolver::new(mock.clone());
 
         // First call: miss → ADS lookup → None → cached as Raw.
-        let scope1 = r.resolve("net", "Custom.Logger", 851).await;
-        assert_eq!(scope1, "Custom.Logger");
+        let out1 = r.resolve("net", "Custom.Logger", 851).await;
+        assert_eq!(out1.scope_name, "Custom.Logger");
+        assert!(out1.instance_path.is_none());
 
         // Second call hits the cache; no extra lookup.
-        let scope2 = r.resolve("net", "Custom.Logger", 851).await;
-        assert_eq!(scope2, "Custom.Logger");
+        let out2 = r.resolve("net", "Custom.Logger", 851).await;
+        assert_eq!(out2.scope_name, "Custom.Logger");
+        assert!(out2.instance_path.is_none());
         assert_eq!(mock.calls().len(), 1, "cache should short-circuit");
     }
 
@@ -493,7 +679,9 @@ mod tests {
         let mock = Arc::new(MockLookup::new([(("net", "Cell1.Motor"), "FB_Motor")]));
         let r = ScopeResolver::new(mock.clone());
         for _ in 0..5 {
-            assert_eq!(r.resolve("net", "Cell1.Motor.fbLog", 851).await, "FB_Motor");
+            let out = r.resolve("net", "Cell1.Motor", 851).await;
+            assert_eq!(out.scope_name, "FB_Motor");
+            assert_eq!(out.instance_path.as_deref(), Some("Cell1.Motor"));
         }
         assert_eq!(mock.calls().len(), 1);
     }
@@ -505,16 +693,16 @@ mod tests {
             (("netB", "P"), "FB_B"),
         ]));
         let r = ScopeResolver::new(mock.clone());
-        r.resolve("netA", "P.fbLog", 851).await;
-        r.resolve("netB", "P.fbLog", 851).await;
+        r.resolve("netA", "P", 851).await;
+        r.resolve("netB", "P", 851).await;
         assert_eq!(r.cache_len().await, 2);
 
         r.invalidate("netA").await;
         assert_eq!(r.cache_len().await, 1);
 
         // netA re-queries; netB stays cached.
-        r.resolve("netA", "P.fbLog", 851).await;
-        r.resolve("netB", "P.fbLog", 851).await;
+        r.resolve("netA", "P", 851).await;
+        r.resolve("netB", "P", 851).await;
         assert_eq!(mock.calls().len(), 3);
     }
 
@@ -522,7 +710,7 @@ mod tests {
     async fn observe_occ_first_sighting_does_not_clear() {
         let mock = Arc::new(MockLookup::new([(("net", "P"), "FB_X")]));
         let r = ScopeResolver::new(mock);
-        r.resolve("net", "P.fbLog", 851).await;
+        r.resolve("net", "P", 851).await;
         assert_eq!(r.cache_len().await, 1);
 
         // First time we see this net_id's OCC: record without dropping.
@@ -535,7 +723,7 @@ mod tests {
         let mock = Arc::new(MockLookup::new([(("net", "P"), "FB_X")]));
         let r = ScopeResolver::new(mock);
         r.observe_occ("net", 5).await;
-        r.resolve("net", "P.fbLog", 851).await;
+        r.resolve("net", "P", 851).await;
         assert_eq!(r.cache_len().await, 1);
 
         r.observe_occ("net", 5).await; // same OCC → no-op
@@ -551,8 +739,8 @@ mod tests {
         let r = ScopeResolver::new(mock);
         r.observe_occ("netA", 3).await;
         r.observe_occ("netB", 9).await;
-        r.resolve("netA", "P.fbLog", 851).await;
-        r.resolve("netB", "P.fbLog", 851).await;
+        r.resolve("netA", "P", 851).await;
+        r.resolve("netB", "P", 851).await;
         assert_eq!(r.cache_len().await, 2);
 
         // OCC bump on netA only.
@@ -569,13 +757,20 @@ mod tests {
         struct ErroringLookup;
         #[async_trait]
         impl ScopeLookup for ErroringLookup {
-            async fn resolve(&self, _: &str, _: &str, _: u16) -> anyhow::Result<Option<String>> {
+            async fn resolve(
+                &self,
+                _: &str,
+                _: &str,
+                _: u16,
+            ) -> anyhow::Result<Option<(String, String)>> {
                 Err(anyhow::anyhow!("transport down"))
             }
         }
         let r = ScopeResolver::new(Arc::new(ErroringLookup));
         // Returns raw fallback…
-        assert_eq!(r.resolve("net", "X.fbLog", 851).await, "X.fbLog");
+        let out = r.resolve("net", "X", 851).await;
+        assert_eq!(out.scope_name, "X");
+        assert!(out.instance_path.is_none());
         // …but doesn't cache, so next call re-tries (we can't observe
         // the retry directly without a counter; cache_len is the
         // signal that the negative-cache path didn't fire).

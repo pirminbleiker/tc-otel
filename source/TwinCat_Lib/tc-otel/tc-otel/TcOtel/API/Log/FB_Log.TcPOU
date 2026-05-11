@@ -93,27 +93,63 @@ Fatal := F_Log(E_LogLevel.eFatal, sMessage)
       </Implementation>
     </Method>
     <Method Name="FB_Init" Id="{3f6c08e7-45a5-034e-2d6b-ca66c6bcddb0}">
-      <Declaration><![CDATA[//FB_Init is always available implicitly and it is used primarily for initialization.
-//The return value is not evaluated. For a specific influence, you can also declare the
-//methods explicitly and provide additional code there with the standard initialization
-//code. You can evaluate the return value.
+      <Declaration><![CDATA[// Auto-derive sLogger from the instance path so the OTel
+// resolver gets the *owning* FB's instance path, not this
+// FB_Log's variable path. Drops the last dot-segment (i.e. this
+// FB_Log's own variable name).
+//
+// Examples (assuming {attribute 'instance-path'} delivers the
+// path without the application prefix):
+//   PRG_TestSimpleApi.fbMotor.fbLog  →  PRG_TestSimpleApi.fbMotor
+//   PRG_TestSimpleApi.logger         →  PRG_TestSimpleApi
+//   fbLog                            →  fbLog (no dot → unchanged)
+//
+// The tc-otel ScopeResolver then does a direct symbol-table
+// lookup of sLogger to map the instance path to its FB type
+// (``FB_Motor``) or, for PRG-rooted loggers, falls through to
+// raw fallback (the PRG name itself).
 METHOD FB_Init: BOOL
 VAR_INPUT
     bInitRetains: BOOL; // TRUE: the retain variables are initialized (reset warm / reset cold)
-    bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)   
+    bInCopyCode: BOOL;  // TRUE: the instance will be copied to the copy code afterward (online change)
 END_VAR
 VAR
 	nFindIdx	: INT;
+	i			: INT;
+	nLastDot	: INT;
 END_VAR
 ]]></Declaration>
       <Implementation>
-        <ST><![CDATA[nFindIdx := Tc2_Standard.FIND(sInstancePath, '.');
+        <ST><![CDATA[// Strip library-namespace prefix (e.g. "tc_otel.").
+nFindIdx := Tc2_Standard.FIND(sInstancePath, '.');
 IF nFindIdx > 0 THEN
 	sInstancePath := Tc2_Standard.DELETE(sInstancePath, nFindIdx + 1, 0);
+
+	// Strip application-name prefix (e.g. "TcOtel_Tester.").
 	nFindIdx := Tc2_Standard.FIND(sInstancePath, '.');
 	IF nFindIdx > 0 THEN
 		sInstancePath := Tc2_Standard.DELETE(sInstancePath, nFindIdx + 1, 0);
-		sLogger := sInstancePath;
+
+		// Strip this FB_Log's own variable name (last segment), so
+		// what reaches the OTel resolver is the OWNING FB's instance
+		// path (e.g. ``PRG_TestSimpleApi.fbMotor``), not this
+		// FB_Log's path. Scan from the end to find the last '.'.
+		nLastDot := 0;
+		FOR i := Tc2_Standard.LEN(sInstancePath) TO 1 BY -1 DO
+			IF Tc2_Standard.MID(sInstancePath, 1, i) = '.' THEN
+				nLastDot := i;
+				EXIT;
+			END_IF
+		END_FOR
+
+		IF nLastDot > 1 THEN
+			sLogger := Tc2_Standard.LEFT(sInstancePath, nLastDot - 1);
+		ELSE
+			// FB_Log lives directly under a PRG/global → no further
+			// strip; resolver will land on Raw fallback with the
+			// PRG/global name as scope.
+			sLogger := sInstancePath;
+		END_IF
 	END_IF
 END_IF
 ]]></ST>
