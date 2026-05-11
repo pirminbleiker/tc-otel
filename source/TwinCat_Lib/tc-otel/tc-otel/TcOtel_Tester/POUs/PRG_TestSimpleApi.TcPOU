@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.17">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="PRG_TestSimpleApi" Id="{bcc7908d-3a35-4ae4-afd2-9b6ede60025b}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM PRG_TestSimpleApi
 VAR
@@ -30,7 +30,7 @@ IF ttime2 > T#1S OR bExecute OR bExecuteSingle THEN
 	bExecuteSingle := FALSE;
 	tTime2 := T#0s;
 
-FOR nArg := 0 TO 1 DO
+FOR nArg := 0 TO 9 DO
 	tTOD := Tc2_Utilities.FILETIME64_TO_TOD(Tc2_System.F_GetSystemTime());
 
 	F_Log(E_LogLevel.eInfo,

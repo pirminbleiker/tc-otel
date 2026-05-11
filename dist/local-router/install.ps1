@@ -128,10 +128,20 @@ if (-not $SkipTraces) {
 }
 
 # --- 5. Scheduled tasks -------------------------------------------------------
+# Use Register-ScheduledTask (not schtasks.exe) so ExecutionTimeLimit can be
+# set to 0 = unlimited. schtasks /Create defaults to 72h and would kill the
+# task after 3 days.
 Write-Step "Registering Scheduled Tasks"
 function Register-Task($name, $batPath) {
-    & schtasks /Create /TN $name /TR "cmd /c $batPath" `
-        /SC ONSTART /RU SYSTEM /RL HIGHEST /F | Out-Null
+    $action    = New-ScheduledTaskAction    -Execute "cmd.exe" -Argument "/c `"$batPath`""
+    $trigger   = New-ScheduledTaskTrigger   -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Force | Out-Null
 }
 Register-Task "VictoriaLogs"    "$VlDir\run.bat"
 if (-not $SkipMetrics) { Register-Task "VictoriaMetrics" "$VmDir\run.bat" }
