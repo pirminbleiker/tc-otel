@@ -19,7 +19,8 @@
 
 use crate::diagnostics::{
     DiagEvent, DiagSample, MetricAggregateSample, MetricBodySchema, MetricDescriptor, MetricSample,
-    METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_TRACE_CTX, METRIC_SAMPLE_TS_SIZE,
+    METRIC_FLAG_HAS_NAMESPACE, METRIC_FLAG_HAS_SAMPLE_TS, METRIC_FLAG_HAS_SAMPLE_TS_DC,
+    METRIC_FLAG_HAS_TRACE_CTX, METRIC_SAMPLE_TS_DC_SIZE, METRIC_SAMPLE_TS_SIZE,
     PUSH_BATCH_EVENT_TYPE, PUSH_BATCH_HEADER_SIZE, PUSH_BATCH_MAX_SAMPLES,
     PUSH_METRIC_AGG_EVENT_TYPE, PUSH_METRIC_AGG_HEADER_SIZE, PUSH_METRIC_AGG_TRACE_SIZE,
     PUSH_METRIC_EVENT_TYPE, PUSH_SAMPLE_SIZE, PUSH_WIRE_VERSION,
@@ -231,6 +232,10 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
     let description_len = bytes[6] as usize;
     let attr_count = bytes[7] as usize;
     let histogram_bucket_count = bytes[8] as usize;
+    // Phase 2 wire bump: byte 9 = scope_namespace length. PLC firmware
+    // before the bump always writes 0 here (formerly reserved), so old
+    // frames decode as empty namespace = Raw fallback in the resolver.
+    let scope_namespace_len = bytes[9] as usize;
 
     if attr_count > 8 {
         return None;
@@ -300,6 +305,20 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         None
     };
 
+    // Read scope_namespace (Phase 2). Trailing field so old parsers
+    // ignored it; old PLC writes scope_namespace_len = 0 so this
+    // branch is a no-op for pre-bump frames.
+    let scope_namespace = if scope_namespace_len > 0 {
+        if offset + scope_namespace_len > bytes.len() {
+            return None;
+        }
+        let ns = String::from_utf8(bytes[offset..offset + scope_namespace_len].to_vec()).ok()?;
+        offset += scope_namespace_len;
+        ns
+    } else {
+        String::new()
+    };
+
     let descriptor = MetricDescriptor {
         metric_id,
         kind,
@@ -307,6 +326,7 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         name,
         unit,
         description,
+        scope_namespace,
         attributes,
         histogram_bounds,
     };
@@ -405,12 +425,38 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     let unit = String::from_utf8(bytes[offset..offset + unit_len].to_vec()).ok()?;
     offset += unit_len;
 
+    // Optional namespace (Phase 2 scope-resolver). Flag-gated so old
+    // PLC firmware that doesn't emit the field is silently accepted.
+    let scope_namespace = if flags & METRIC_FLAG_HAS_NAMESPACE != 0 {
+        if bytes.len() < offset + 1 {
+            return None;
+        }
+        let ns_len = bytes[offset] as usize;
+        offset += 1;
+        if bytes.len() < offset + ns_len {
+            return None;
+        }
+        let ns = String::from_utf8(bytes[offset..offset + ns_len].to_vec()).ok()?;
+        offset += ns_len;
+        ns
+    } else {
+        String::new()
+    };
+
     // Body — sample_count * slot_stride bytes. When METRIC_FLAG_HAS_SAMPLE_TS
     // is set each slot is prefixed with a 2-byte little-endian u16 cycle
-    // offset; the value bytes still span sample_size.
+    // offset; with METRIC_FLAG_HAS_SAMPLE_TS_DC the prefix is an 8-byte
+    // little-endian i64 absolute DC time instead. The two flags are
+    // mutually exclusive — a frame setting both is malformed and rejected.
     let has_sample_ts = flags & METRIC_FLAG_HAS_SAMPLE_TS != 0;
+    let has_sample_ts_dc = flags & METRIC_FLAG_HAS_SAMPLE_TS_DC != 0;
+    if has_sample_ts && has_sample_ts_dc {
+        return None;
+    }
     let ts_prefix = if has_sample_ts {
         METRIC_SAMPLE_TS_SIZE
+    } else if has_sample_ts_dc {
+        METRIC_SAMPLE_TS_DC_SIZE
     } else {
         0
     };
@@ -433,12 +479,22 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
     } else {
         None
     };
+    let mut sample_dc_times: Option<Vec<i64>> = if has_sample_ts_dc {
+        Some(Vec::with_capacity(sample_count as usize))
+    } else {
+        None
+    };
     for i in 0..sample_count as usize {
         let slot_base = i * slot_stride;
         if has_sample_ts {
             let cycle_offset = u16::from_le_bytes([body[slot_base], body[slot_base + 1]]);
             if let Some(v) = sample_cycle_offsets.as_mut() {
                 v.push(cycle_offset);
+            }
+        } else if has_sample_ts_dc {
+            let dc = read_i64(body, slot_base);
+            if let Some(v) = sample_dc_times.as_mut() {
+                v.push(dc);
             }
         }
         let value_off = slot_base + ts_prefix;
@@ -495,10 +551,12 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
         dc_time_end,
         name,
         unit,
+        scope_namespace,
         trace_id,
         span_id,
         samples,
         sample_cycle_offsets,
+        sample_dc_times,
     })
 }
 
@@ -776,6 +834,31 @@ mod tests {
         attributes: &[(String, String)],
         histogram_bounds: Option<&[f32]>,
     ) -> Vec<u8> {
+        metric_descriptor_bytes_with_namespace(
+            metric_id,
+            kind,
+            flags,
+            name,
+            unit,
+            description,
+            attributes,
+            histogram_bounds,
+            "",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn metric_descriptor_bytes_with_namespace(
+        metric_id: u16,
+        kind: u8,
+        flags: u8,
+        name: &str,
+        unit: &str,
+        description: &str,
+        attributes: &[(String, String)],
+        histogram_bounds: Option<&[f32]>,
+        scope_namespace: &str,
+    ) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(&metric_id.to_le_bytes());
         v.push(kind);
@@ -786,8 +869,9 @@ mod tests {
         v.push(attributes.len() as u8);
         let bucket_count = histogram_bounds.as_ref().map(|b| b.len()).unwrap_or(0) as u8;
         v.push(bucket_count);
-        v.push(0); // reserved
-        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved
+        // Byte 9 = Phase 2 scope_namespace_len.
+        v.push(scope_namespace.len() as u8);
+        v.extend_from_slice(&0_u16.to_le_bytes()); // reserved (bytes 10-11)
         v.extend_from_slice(name.as_bytes());
         v.extend_from_slice(unit.as_bytes());
         v.extend_from_slice(description.as_bytes());
@@ -802,6 +886,7 @@ mod tests {
                 v.extend_from_slice(&bound.to_le_bytes());
             }
         }
+        v.extend_from_slice(scope_namespace.as_bytes());
         v
     }
 
@@ -1025,6 +1110,50 @@ mod tests {
         frame.extend_from_slice(&metric_sample_bytes(10, 0, 1000, 42.0));
         // Missing second sample
         assert!(decode_metric_batch(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_batch_reads_scope_namespace() {
+        // Phase 2 wire bump: descriptor byte 9 carries the
+        // scope_namespace length; the UTF-8 bytes follow histogram
+        // bounds (or attributes when no histogram).
+        let mut frame = metric_batch_header(1, 0, 100, 1000, 0, 0);
+        let desc = metric_descriptor_bytes_with_namespace(
+            10,
+            0, // gauge
+            0,
+            "temperature",
+            "Cel",
+            "",
+            &[],
+            None,
+            "PRG_TestSimpleApi.fbMotor",
+        );
+        frame.extend_from_slice(&desc);
+        let ev = decode_metric_batch(&frame).expect("namespace descriptor decodes");
+        match ev {
+            DiagEvent::MetricBatch { descriptors, .. } => {
+                assert_eq!(descriptors.len(), 1);
+                assert_eq!(descriptors[0].scope_namespace, "PRG_TestSimpleApi.fbMotor");
+            }
+            _ => panic!("expected MetricBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_batch_namespace_absent_when_len_zero() {
+        // Pre-bump firmware: byte 9 = 0, no trailing string. The
+        // decoded descriptor's scope_namespace must be empty.
+        let mut frame = metric_batch_header(1, 0, 100, 1000, 0, 0);
+        let desc = metric_descriptor_bytes(10, 0, 0, "rpm", "", "", &[], None);
+        frame.extend_from_slice(&desc);
+        let ev = decode_metric_batch(&frame).expect("plain descriptor decodes");
+        match ev {
+            DiagEvent::MetricBatch { descriptors, .. } => {
+                assert!(descriptors[0].scope_namespace.is_empty());
+            }
+            _ => panic!("expected MetricBatch"),
+        }
     }
 
     #[test]
@@ -1636,5 +1765,138 @@ mod tests {
             }
             _ => panic!("expected MetricAggregateBatch"),
         }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_dc_round_trip() {
+        // METRIC_FLAG_HAS_SAMPLE_TS_DC set → each body slot is
+        // [i64 dc_time | 8 B value]. The decoder emits sample_dc_times in
+        // capture order and leaves sample_cycle_offsets clear.
+        let mut frame = agg_header(
+            METRIC_FLAG_HAS_SAMPLE_TS_DC,
+            2,
+            8,
+            3,
+            0,
+            0,
+            1000,
+            1010, // cycles are irrelevant for DC mode but kept for header sanity
+            100_000,
+            120_000,
+            4,
+            0,
+        );
+        frame.extend_from_slice(b"temp");
+
+        for (dc, val) in [(101_000_i64, 21.0_f64), (101_500, 22.5), (118_750, 23.1)] {
+            frame.extend_from_slice(&dc.to_le_bytes());
+            frame.extend_from_slice(&val.to_le_bytes());
+        }
+
+        let ev = decode_metric_aggregate(&frame).expect("dc sample-ts decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                flags,
+                samples,
+                sample_cycle_offsets,
+                sample_dc_times,
+                ..
+            } => {
+                assert_eq!(
+                    flags & METRIC_FLAG_HAS_SAMPLE_TS_DC,
+                    METRIC_FLAG_HAS_SAMPLE_TS_DC
+                );
+                assert_eq!(samples.len(), 3);
+                assert!(sample_cycle_offsets.is_none());
+                assert_eq!(sample_dc_times, Some(vec![101_000_i64, 101_500, 118_750]));
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_dc_preserves_duplicates() {
+        // True-oversampling case: two consecutive Observe calls read the same
+        // hardware DC tick. The PLC deliberately does NOT synthesize a fake
+        // tiebreaker — the duplicate DC values must round-trip as-is so the
+        // caller (bridge / backend) can decide how to handle them.
+        let mut frame = agg_header(
+            METRIC_FLAG_HAS_SAMPLE_TS_DC,
+            2,
+            8,
+            3,
+            0,
+            0,
+            500,
+            500,
+            50_000,
+            50_000,
+            4,
+            0,
+        );
+        frame.extend_from_slice(b"temp");
+
+        for (dc, val) in [(50_000_i64, 10.0_f64), (50_000, 11.0), (50_000, 12.0)] {
+            frame.extend_from_slice(&dc.to_le_bytes());
+            frame.extend_from_slice(&val.to_le_bytes());
+        }
+
+        let ev = decode_metric_aggregate(&frame).expect("duplicate-dc frame decodes");
+        match ev {
+            DiagEvent::MetricAggregateBatch {
+                samples,
+                sample_dc_times,
+                ..
+            } => {
+                assert_eq!(samples.len(), 3);
+                assert_eq!(sample_dc_times, Some(vec![50_000_i64, 50_000, 50_000]),);
+            }
+            _ => panic!("expected MetricAggregateBatch"),
+        }
+    }
+
+    #[test]
+    fn decode_metric_aggregate_rejects_both_sample_ts_flags() {
+        // Wire spec: METRIC_FLAG_HAS_SAMPLE_TS (0x04) and
+        // METRIC_FLAG_HAS_SAMPLE_TS_DC (0x10) are mutually exclusive. A frame
+        // that sets both has an ambiguous slot prefix and the decoder must
+        // reject it instead of guessing a layout.
+        let frame = agg_header(
+            METRIC_FLAG_HAS_SAMPLE_TS | METRIC_FLAG_HAS_SAMPLE_TS_DC,
+            2,
+            8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert!(decode_metric_aggregate(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_metric_aggregate_sample_ts_dc_truncated_body_rejected() {
+        // Header claims 2 samples × (8 + 8) = 32 B of body, but we ship 20 B.
+        // Decoder must reject — slot stride math accounts for the i64 prefix.
+        let mut frame = agg_header(
+            METRIC_FLAG_HAS_SAMPLE_TS_DC,
+            2,
+            8,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        frame.extend_from_slice(&[0_u8; 20]);
+        assert!(decode_metric_aggregate(&frame).is_none());
     }
 }

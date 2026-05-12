@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use crate::config_watcher::ConfigWatcher;
 use crate::cycle_time::CycleTimeTracker;
 use crate::dispatcher::{LogDispatcher, MetricDispatcher};
+use crate::scope_resolver::{AdsScopeLookup, ScopeResolver};
 use crate::span_dispatcher::SpanDispatcher;
 use crate::system_metrics::PlcSystemMetricsCollector;
 use crate::trace_dispatcher::TraceDispatcher;
@@ -90,6 +91,13 @@ fn backfill_metrics_from_registry(
     }
 }
 
+/// AMS source port for outbound symbol-table reads issued by
+/// `AdsScopeLookup`. Distinct from `receiver.ads_port` (16150 — the
+/// inbound register port the local-router transport uses) so the
+/// AMS router can route responses back to us on the resolver's own
+/// TCP socket instead of mixing them with incoming PLC writes.
+const SCOPE_RESOLVER_SOURCE_PORT: u16 = 30150;
+
 /// Main TC-OTel Service
 pub struct TcOtelService {
     settings: AppSettings,
@@ -157,8 +165,50 @@ impl TcOtelService {
             (None, None)
         };
 
+        // Parse the configured AMS NetID once up-front; the
+        // scope-resolver wiring (below) needs it for `AdsScopeLookup`,
+        // and the AMS transports further down reuse the same value.
+        let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
+            .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
+
+        // Build the process-wide `ScopeResolver`. For local-router
+        // setups (tc-otel runs on the same IPC as the PLC) we plug
+        // in `AdsScopeLookup` so `entry.logger` resolves to the
+        // FB's actual *type name* via the PLC's symbol table — see
+        // `docs/plans/scope-name-via-ads-symbol-resolution.md`. For
+        // TCP / MQTT transports the lookup stays no-op for now;
+        // those need a separate route to issue ADS reads back to
+        // the PLC and aren't in scope for this PR.
+        let scope_resolver = match &self.settings.receiver.transport {
+            TransportConfig::LocalRouter(lr_cfg) => {
+                tracing::info!(
+                    "ScopeResolver: ADS-backed via local router at {} (source NetID {}, source port {})",
+                    lr_cfg.router_host,
+                    net_id,
+                    SCOPE_RESOLVER_SOURCE_PORT,
+                );
+                let lookup = AdsScopeLookup::new(
+                    lr_cfg.router_host.clone(),
+                    net_id,
+                    SCOPE_RESOLVER_SOURCE_PORT,
+                );
+                ScopeResolver::new(Arc::new(lookup))
+            }
+            _ => {
+                tracing::info!(
+                    "ScopeResolver: no-op (transport != local-router; symbol-table lookup not wired)"
+                );
+                ScopeResolver::noop()
+            }
+        };
+
         // Create log dispatcher with config watch receiver for hot-reload
-        let log_dispatcher = LogDispatcher::new(&self.settings, config_rx.clone()).await?;
+        let log_dispatcher = LogDispatcher::with_scope_resolver(
+            &self.settings,
+            config_rx.clone(),
+            scope_resolver.clone(),
+        )
+        .await?;
 
         // Create metric dispatcher and channel (if metrics export is enabled)
         let metrics_export_enabled = self.settings.metrics.export_enabled;
@@ -170,7 +220,12 @@ impl TcOtelService {
         };
 
         let metric_dispatcher = if metrics_export_enabled {
-            let dispatcher = MetricDispatcher::new(&self.settings, config_rx.clone()).await?;
+            let dispatcher = MetricDispatcher::with_scope_resolver(
+                &self.settings,
+                config_rx.clone(),
+                scope_resolver.clone(),
+            )
+            .await?;
             Some(dispatcher)
         } else {
             tracing::info!("Metrics export disabled");
@@ -221,16 +276,17 @@ impl TcOtelService {
         let traces_export_enabled = self.settings.traces.enabled;
         #[allow(unused_variables)]
         let trace_dispatcher = if traces_export_enabled {
-            let dispatcher = TraceDispatcher::new(&self.settings).await?;
+            let dispatcher =
+                TraceDispatcher::with_scope_resolver(&self.settings, scope_resolver.clone())
+                    .await?;
             Some(dispatcher)
         } else {
             tracing::info!("Traces export disabled");
             None
         };
 
-        // Start AMS transport (TCP or MQTT based on configuration)
-        let net_id = AmsNetId::from_str(&self.settings.receiver.ams_net_id)
-            .map_err(|e| anyhow::anyhow!("Invalid AMS Net ID: {}", e))?;
+        // Start AMS transport (TCP or MQTT based on configuration).
+        // `net_id` was parsed earlier (above the scope-resolver wiring).
 
         let conn_config = ConnectionConfig {
             max_connections: self.settings.receiver.max_connections,
@@ -242,12 +298,22 @@ impl TcOtelService {
             shutdown_timeout_secs: self.settings.service.shutdown_timeout_secs,
         };
 
-        // Create the AdsRouter with channels and registry
+        // Create the AdsRouter with channels and registry.
+        //
+        // Trace + push channels are sized off `service.channel_capacity`
+        // — same budget as the log/metric paths. The previous fixed
+        // 256-slot cap saturated in <10 ms under burst at 25 k+
+        // wire events/sec, dropping SPAN_END frames between Begin+End
+        // pairs and forcing 10 s TTL eviction (visible as
+        // `Span timed out after 0s` warnings) even when the PLC was
+        // RT-stable. Wire events here are small (32–256 B per event)
+        // so memory cost of the larger buffer is bounded.
         let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
+        let chan_cap = self.settings.service.channel_capacity;
         let (push_tx, mut push_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(256);
+            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(chan_cap);
         let (trace_tx, mut trace_rx) =
-            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(256);
+            mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(chan_cap);
         let ads_router = Arc::new(
             AdsRouter::new(
                 self.settings.receiver.ads_port,

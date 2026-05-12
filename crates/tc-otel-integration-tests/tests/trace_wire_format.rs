@@ -289,6 +289,7 @@ fn test_dispatcher_lifecycle() {
             traceparent: None,
             trace_id: [0; 16],
             span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -397,6 +398,7 @@ fn test_nested_spans_parent_child() {
             traceparent: None,
             trace_id,
             span_id: parent_span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -414,6 +416,7 @@ fn test_nested_spans_parent_child() {
             traceparent: None,
             trace_id,
             span_id: child_span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -591,6 +594,7 @@ async fn test_span_dispatcher_honours_pregenerated_ids() {
             traceparent: None,
             trace_id: expected_trace,
             span_id: expected_span,
+            scope_namespace: String::new(),
         },
     );
     dispatcher.on_event(
@@ -647,6 +651,7 @@ async fn test_external_traceparent_overrides_pregenerated_trace_id() {
             traceparent: Some(traceparent),
             trace_id: pregen_trace,
             span_id: pregen_span,
+            scope_namespace: String::new(),
         },
     );
     dispatcher.on_event(
@@ -710,6 +715,7 @@ async fn test_span_dispatcher_indexes_pregenerated_span_ids() {
             traceparent: None,
             trace_id: pregenerated_trace_id,
             span_id: pregenerated_span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -745,6 +751,7 @@ async fn test_span_dispatcher_span_id_index_end_cleanup() {
             traceparent: None,
             trace_id: [0; 16],
             span_id: pregenerated_span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -801,6 +808,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
             traceparent: None,
             trace_id: [0; 16],
             span_id: span_id_1,
+            scope_namespace: String::new(),
         },
     );
 
@@ -818,6 +826,7 @@ async fn test_span_dispatcher_parallel_indexed_spans() {
             traceparent: None,
             trace_id: [0; 16],
             span_id: span_id_2,
+            scope_namespace: String::new(),
         },
     );
 

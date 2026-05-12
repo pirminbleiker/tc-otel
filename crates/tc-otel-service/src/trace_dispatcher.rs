@@ -1,9 +1,29 @@
 //! Trace record dispatcher — batches and exports spans to OTLP
 
+use std::sync::Arc;
 use std::time::Duration;
 use tc_otel_core::{AppSettings, TraceRecord};
 use tc_otel_export::OtelExporter;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
+
+use crate::scope_resolver::ScopeResolver;
+
+/// Max concurrent in-flight HTTP POSTs for trace export. Higher
+/// than the log/metric dispatcher cap because the trace pillar
+/// fans out one record per Begin/End pair and VictoriaTraces has
+/// historically higher per-POST latency than VictoriaLogs.
+const MAX_INFLIGHT_FLUSHES: usize = 32;
+
+/// Trace input channel capacity. The SpanDispatcher finalises one
+/// `TraceRecord` per Begin/End pair and pushes here via the sender
+/// `TraceDispatcher::sender()`. At 50 k+ spans/sec a 256-slot
+/// channel saturates in 5 ms, after which `try_send` drops End
+/// events — those then accumulate as pending spans on the
+/// SpanDispatcher side and eventually hit the TTL eviction path
+/// (visible as `Span timed out after 0s` warns). Sizing this large
+/// enough to absorb the worst-case burst between flushes keeps the
+/// Begin/End pair atomic from the receiver's point of view.
+const TRACE_INPUT_CAPACITY: usize = 50_000;
 
 /// Dispatcher that batches trace records and exports them to OTLP
 pub struct TraceDispatcher {
@@ -12,14 +32,28 @@ pub struct TraceDispatcher {
 }
 
 impl TraceDispatcher {
-    /// Create a new trace dispatcher
+    /// Create a new trace dispatcher with a no-op ScopeResolver
+    /// (used by unit tests; the service wires the shared resolver).
+    #[allow(dead_code)]
     pub async fn new(settings: &AppSettings) -> tc_otel_core::error::Result<Self> {
+        Self::with_scope_resolver(settings, ScopeResolver::noop()).await
+    }
+
+    /// Build a dispatcher with the process-wide `ScopeResolver`. The
+    /// batch worker resolves each record's `scope_name` (which the
+    /// `SpanDispatcher` set to the raw PLC namespace) to the owning
+    /// FB's type name via the symbol table — same lookup the log
+    /// path runs, so logs / traces of the same FB share a scope.
+    pub async fn with_scope_resolver(
+        settings: &AppSettings,
+        scope_resolver: ScopeResolver,
+    ) -> tc_otel_core::error::Result<Self> {
         let batch_size = settings.traces.export.batch_size;
         let flush_interval_ms = settings.traces.export.flush_interval_ms;
 
         // TODO(phase-2): hot reload for trace configuration
 
-        let (input, mut output) = mpsc::channel::<TraceRecord>(256);
+        let (input, mut output) = mpsc::channel::<TraceRecord>(TRACE_INPUT_CAPACITY);
 
         // Spawn batch worker task
         let endpoint = settings.traces.export.endpoint.clone();
@@ -40,7 +74,8 @@ impl TraceDispatcher {
                 .unwrap_or_else(|| "http://localhost:4318/v1/traces".to_string()),
             ..Default::default()
         };
-        let exporter = OtelExporter::with_config(export_cfg);
+        let exporter = Arc::new(OtelExporter::with_config(export_cfg));
+        let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT_FLUSHES));
 
         tokio::spawn(async move {
             if endpoint.is_none() {
@@ -48,27 +83,30 @@ impl TraceDispatcher {
                 return;
             }
 
-            let mut batch = Vec::with_capacity(batch_size);
+            let mut batch: Vec<TraceRecord> = Vec::with_capacity(batch_size);
             let mut flush_interval =
                 tokio::time::interval(Duration::from_millis(flush_interval_ms));
 
             loop {
                 tokio::select! {
-                    Some(record) = output.recv() => {
+                    Some(mut record) = output.recv() => {
+                        resolve_scope(&scope_resolver, &mut record).await;
                         batch.push(record);
                         if batch.len() >= batch_size {
-                            if let Err(e) = exporter.export_traces_batch(batch.clone()).await {
-                                tracing::error!("Failed to export trace batch: {}", e);
-                            }
-                            batch.clear();
+                            spawn_trace_flush(
+                                exporter.clone(),
+                                inflight.clone(),
+                                std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                            );
                         }
                     }
                     _ = flush_interval.tick() => {
                         if !batch.is_empty() {
-                            if let Err(e) = exporter.export_traces_batch(batch.clone()).await {
-                                tracing::error!("Failed to export trace batch: {}", e);
-                            }
-                            batch.clear();
+                            spawn_trace_flush(
+                                exporter.clone(),
+                                inflight.clone(),
+                                std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                            );
                         }
                     }
                 }
@@ -91,6 +129,69 @@ impl TraceDispatcher {
     pub fn sender(&self) -> mpsc::Sender<TraceRecord> {
         self.input.clone()
     }
+}
+
+/// Bounded detached HTTP POST — mirrors `LogDispatcher::spawn_flush`.
+/// `try_acquire_owned` keeps the spawn queue capped; under sustained
+/// backend slowness we drop with a warning rather than pile up
+/// `Vec<TraceRecord>` allocations across spawned futures.
+fn spawn_trace_flush(
+    exporter: Arc<OtelExporter>,
+    inflight: Arc<Semaphore>,
+    batch: Vec<TraceRecord>,
+) {
+    let permit = match inflight.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!(
+                "Trace flush dropped: {} records — {} concurrent POSTs in flight",
+                batch.len(),
+                MAX_INFLIGHT_FLUSHES,
+            );
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        if let Err(e) = exporter.export_traces_batch(batch).await {
+            tracing::error!("Failed to export trace batch: {}", e);
+        }
+        drop(permit);
+    });
+}
+
+/// Map the record's raw PLC namespace (`record.scope_name`) to the
+/// owning FB's type via the symbol-table lookup. On a hit the span
+/// also gains `plc.instance_path` so two instances of the same FB
+/// type (e.g. fbMotor vs fbMotorB) stay distinguishable inside the
+/// shared `InstrumentationScope`.
+async fn resolve_scope(resolver: &ScopeResolver, record: &mut TraceRecord) {
+    if record.scope_name.is_empty() {
+        return;
+    }
+    let net_id = record
+        .resource_attributes
+        .get("plc.ams_net_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let app_port = record
+        .resource_attributes
+        .get("plc.ams_app_port")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u16;
+    if net_id.is_empty() || app_port == 0 {
+        return;
+    }
+    let outcome = resolver
+        .resolve(&net_id, &record.scope_name, app_port)
+        .await;
+    if let Some(path) = outcome.instance_path {
+        record.span_attributes.insert(
+            "plc.instance_path".to_string(),
+            serde_json::Value::String(path),
+        );
+    }
+    record.scope_name = outcome.scope_name;
 }
 
 #[cfg(test)]

@@ -646,6 +646,26 @@ impl AdsParser {
                     None
                 };
 
+                // Phase 2 wire-bump: flag_has_namespace = 0x04. The
+                // PLC's FB_Tracer FB_Init strips its own instance
+                // segment and appends the result here so the OTel
+                // ScopeResolver can map it to an FB type
+                // (`InstrumentationScope.name`).
+                let scope_namespace = if (flags & 0x04) != 0 {
+                    let ns_len = reader.read_u8()? as usize;
+                    if ns_len > 127 {
+                        return Err(AdsError::ParseError(
+                            "SPAN_BEGIN: namespace length exceeds 127".to_string(),
+                        ));
+                    }
+                    let ns_bytes = reader.read_bytes(ns_len)?;
+                    String::from_utf8(ns_bytes.to_vec()).map_err(|_| {
+                        AdsError::ParseError("SPAN_BEGIN: invalid UTF-8 in namespace".to_string())
+                    })?
+                } else {
+                    String::new()
+                };
+
                 Ok(TraceWireEvent::Begin {
                     local_id,
                     task_index,
@@ -657,6 +677,7 @@ impl AdsParser {
                     traceparent,
                     trace_id,
                     span_id,
+                    scope_namespace,
                 })
             }
             6 => {
@@ -2644,6 +2665,85 @@ mod tests {
             assert_eq!(traceparent.as_deref(), Some(tp));
             assert_eq!(*trace_id, trace_bytes);
             assert_eq!(*span_id, span_bytes);
+        } else {
+            panic!("Expected Begin");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_parse_begin_reads_scope_namespace_when_flag_set() {
+        // Phase 2 wire bump: flag 0x04 = has_namespace. Frame
+        // appends ns_len(u8) + utf8(ns_len) after the name (or
+        // after the traceparent when flag 0x02 is also set).
+        use crate::protocol::TraceWireEvent;
+
+        let trace_bytes: [u8; 16] = [0x33; 16];
+        let span_bytes: [u8; 8] = [0x44; 8];
+        let parent_span_id: [u8; 8] = [0; 8];
+        let namespace = "PRG_TestSimpleApi.fbMotor";
+
+        let mut data = Vec::new();
+        data.push(5u8); // event_type
+        data.push(1); // local_id
+        data.push(1); // task_index
+        data.push(0x04); // flags: has_namespace, no external parent
+        data.extend_from_slice(&1_000i64.to_le_bytes());
+        data.extend_from_slice(&parent_span_id);
+        data.push(0); // kind = Internal
+        data.push(2); // name_len
+        data.extend_from_slice(&[0u8; 2]); // reserved
+        data.extend_from_slice(&trace_bytes);
+        data.extend_from_slice(&span_bytes);
+        data.extend_from_slice(b"op");
+        data.push(namespace.len() as u8);
+        data.extend_from_slice(namespace.as_bytes());
+
+        let result = AdsParser::parse_all(&data).unwrap();
+        assert_eq!(result.trace_events.len(), 1);
+        if let TraceWireEvent::Begin {
+            scope_namespace,
+            traceparent,
+            ..
+        } = &result.trace_events[0]
+        {
+            assert_eq!(scope_namespace, namespace);
+            assert!(traceparent.is_none());
+        } else {
+            panic!("Expected Begin");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_parse_begin_no_namespace_when_flag_clear() {
+        // Old PLC firmware (flag 0x04 unused) → parser must leave
+        // scope_namespace empty without consuming any tail bytes.
+        use crate::protocol::TraceWireEvent;
+
+        let trace_bytes: [u8; 16] = [0x55; 16];
+        let span_bytes: [u8; 8] = [0x66; 8];
+
+        let mut data = Vec::new();
+        data.push(5u8);
+        data.push(1);
+        data.push(1);
+        data.push(0); // no flags
+        data.extend_from_slice(&1_000i64.to_le_bytes());
+        data.extend_from_slice(&[0u8; 8]); // parent_span_id
+        data.push(0);
+        data.push(2);
+        data.extend_from_slice(&[0u8; 2]);
+        data.extend_from_slice(&trace_bytes);
+        data.extend_from_slice(&span_bytes);
+        data.extend_from_slice(b"op");
+
+        let result = AdsParser::parse_all(&data).unwrap();
+        if let TraceWireEvent::Begin {
+            scope_namespace, ..
+        } = &result.trace_events[0]
+        {
+            assert!(scope_namespace.is_empty());
         } else {
             panic!("Expected Begin");
         }

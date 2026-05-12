@@ -1,0 +1,78 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_Motor" Id="{fb6d8bde-3d9a-4b16-a0b1-2bfd3b2b8f5e}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+:Description: Test FB to exercise ScopeResolver FB-type resolution
+on all three OTel pillars (logs, traces, metrics).
+
+Contains one embedded instance of each framework FB. When this FB
+is instantiated inside a PRG (e.g. ``fbMotor : FB_Motor;`` in
+``PRG_TestSimpleApi``), each framework FB's auto-derived sLogger
+becomes ``PRG_TestSimpleApi.fbMotor`` (lib + app + variable
+segments stripped). The tc-otel ScopeResolver looks up
+``PRG_TestSimpleApi.fbMotor`` in the PLC symbol table, finds type
+``FB_Motor``, and uses that as ``InstrumentationScope.name`` on
+all three pillars.
+
+Two instances of FB_Motor in the same PRG share ``scope.name =
+FB_Motor`` while staying distinguishable via ``plc.instance_path``
+(=``PRG_TestSimpleApi.fbMotor`` vs ``…fbMotorB``).
+*)
+FUNCTION_BLOCK FB_Motor
+VAR
+    fbLog        : FB_Log;
+    fbTrace      : FB_Trace;
+    fbSpan       : FB_Span(fbTrace);
+    fbMetric     : FB_Metrics;
+    nCycles      : DINT;
+    nMotorId     : INT;
+    bInitialized : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="Cycle" Id="{8b54ff24-e356-4ba3-a876-58818af0ac8c}">
+      <Declaration><![CDATA[// Emits one INFO log + WARN every 5th + one span + one metric
+// sample per call. All three carry namespace
+// ``PRG_TestSimpleApi.fbMotor`` over the wire; the resolver maps
+// it to ``FB_Motor`` for InstrumentationScope.name.
+METHOD Cycle : BOOL
+VAR_INPUT
+    nId : INT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nMotorId := nId;
+nCycles := nCycles + 1;
+
+IF NOT bInitialized THEN
+    fbSpan.BindTracer(fbTrace);
+    fbMetric.Init('motor.cycles', '{count}');
+	fbMetric.SetRecordSampleTimesDc(TRUE);
+    bInitialized := TRUE;
+END_IF
+
+fbLog.Info('Motor {0} cycle {1}')
+    .WithAnyArg(nMotorId)
+    .WithAnyArg(nCycles)
+    .CreateLog();
+
+IF nCycles MOD 5 = 0 THEN
+    fbLog.Warn('Motor {0} hit cycle {1} (every 5th)')
+        .WithAnyArg(nMotorId)
+        .WithAnyArg(nCycles)
+        .CreateLog();
+END_IF
+
+fbSpan.Begin('motor.cycle');
+fbSpan.AddInt('motor_id', nMotorId);
+fbSpan.AddLInt('cycle', nCycles);
+fbSpan.End();
+
+//fbMetric.Observe(nCycles);
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

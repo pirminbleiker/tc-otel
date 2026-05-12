@@ -258,6 +258,7 @@ async fn test_span_dispatcher_processes_begin_event() {
         traceparent: None,
         trace_id: [0; 16],
         span_id,
+        scope_namespace: String::new(),
     };
 
     dispatcher.on_event(net_id, 0, begin_event);
@@ -307,6 +308,7 @@ async fn test_span_dispatcher_full_lifecycle() {
             traceparent: None,
             trace_id: [0; 16],
             span_id,
+            scope_namespace: String::new(),
         },
     );
 
@@ -378,6 +380,7 @@ fn test_otlp_payload_construction() {
         status_code: 1,
         status_message: "success".to_string(),
         resource_attributes: HashMap::new(),
+        scope_name: String::new(),
         scope_attributes: HashMap::new(),
         span_attributes: {
             let mut m = HashMap::new();

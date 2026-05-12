@@ -23,7 +23,7 @@ import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "172.18.129.178"
+HOST = "172.21.229.252"
 USER = "Administrator"
 PASS = "1"
 TC_OTEL_LOCAL  = r"D:\cargo-target\log4tc\release\tc-otel.exe"

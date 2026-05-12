@@ -107,8 +107,29 @@ pub const METRIC_FLAG_RING_OVERFLOWED: u8 = 1 << 1;
 /// window. Emitted when the PLC calls `FB_Metrics.SetRecordSampleTimes(TRUE)`.
 pub const METRIC_FLAG_HAS_SAMPLE_TS: u8 = 1 << 2;
 
+/// FB_Metrics flag: header section is followed by `ns_len(u8) +
+/// namespace(ns_len)` after the unit. Set by the PLC when the
+/// FB_Metrics' FB_Init has derived a non-empty owning-FB instance
+/// path (Phase 2 scope-resolver). Pre-bump firmware leaves this
+/// flag clear and writes no trailing namespace.
+pub const METRIC_FLAG_HAS_NAMESPACE: u8 = 1 << 3;
+
+/// FB_Metrics flag: each body slot is preceded by an 8-byte little-endian
+/// `i64` absolute DC time — the raw `F_GetActualDcTime64()` reading at the
+/// `Observe` call site. Body slot stride becomes `sample_size + 8`. Used
+/// for **true oversampling** when `Observe` is called more than once per
+/// task cycle and every observation must reach the backend as a distinct
+/// datapoint. Emitted when the PLC calls
+/// `FB_Metrics.SetRecordSampleTimesDc(TRUE)`. Mutually exclusive with
+/// [`METRIC_FLAG_HAS_SAMPLE_TS`] — a frame setting both bits is rejected
+/// by the decoder.
+pub const METRIC_FLAG_HAS_SAMPLE_TS_DC: u8 = 1 << 4;
+
 /// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS` is set.
 pub const METRIC_SAMPLE_TS_SIZE: usize = 2;
+
+/// Bytes of per-sample prefix when `METRIC_FLAG_HAS_SAMPLE_TS_DC` is set.
+pub const METRIC_SAMPLE_TS_DC_SIZE: usize = 8;
 
 /// FB_Metrics aggregation stat bits. The PLC-side ``E_MetricStat`` enum
 /// encodes the same values; ``stat_mask`` in the wire header is the OR
@@ -333,6 +354,11 @@ pub enum DiagEvent {
         name: String,
         /// Metric unit (UTF-8, ≤ 15 bytes; empty when unitless).
         unit: String,
+        /// PLC-side namespace (owning FB's instance path after the
+        /// FB_Init strip). Present when `flags &
+        /// METRIC_FLAG_HAS_NAMESPACE != 0`. Empty when the PLC
+        /// firmware predates the Phase 2 wire bump.
+        scope_namespace: String,
         /// Optional trace context for OTel exemplar attachment. `None` when
         /// `flags & METRIC_FLAG_HAS_TRACE_CTX == 0`.
         trace_id: Option<[u8; 16]>,
@@ -346,6 +372,13 @@ pub enum DiagEvent {
         /// which case the receiver falls back to linear interpolation across
         /// `[dc_time_start, dc_time_end]`.
         sample_cycle_offsets: Option<Vec<u16>>,
+        /// Optional per-sample absolute DC times (raw `F_GetActualDcTime64`
+        /// readings, ns since DC epoch 2000-01-01). `Some(v)` when
+        /// `flags & METRIC_FLAG_HAS_SAMPLE_TS_DC != 0`, with
+        /// `v.len() == samples.len()`. Mutually exclusive with
+        /// `sample_cycle_offsets` — the decoder rejects frames where both
+        /// flags are set.
+        sample_dc_times: Option<Vec<i64>>,
     },
 }
 
@@ -421,6 +454,12 @@ pub struct MetricDescriptor {
     pub attributes: Vec<(String, String)>,
     /// For Histogram kind: bucket boundaries (f32). Empty for other kinds.
     pub histogram_bounds: Option<Vec<f32>>,
+    /// PLC-side namespace (owning FB's instance path after the
+    /// FB_Init strip). Sent in the descriptor frame after
+    /// histogram_bounds. tc-otel's ScopeResolver maps this to an
+    /// FB type for `InstrumentationScope.name`. Empty when the
+    /// PLC firmware predates the Phase 2 wire bump.
+    pub scope_namespace: String,
 }
 
 /// Metric sample — a single value point.
