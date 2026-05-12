@@ -96,9 +96,7 @@ pub fn build_request(records: &[TraceRecord]) -> ExportTraceServiceRequest {
 
 /// Group records by their `scope_name`. Stable order: first-seen scope
 /// name wins.
-fn group_records_by_scope<'a>(
-    records: &[&'a TraceRecord],
-) -> Vec<(String, Vec<&'a TraceRecord>)> {
+fn group_records_by_scope<'a>(records: &[&'a TraceRecord]) -> Vec<(String, Vec<&'a TraceRecord>)> {
     use std::collections::HashMap;
     let mut order: Vec<String> = Vec::new();
     let mut buckets: HashMap<String, Vec<&'a TraceRecord>> = HashMap::new();

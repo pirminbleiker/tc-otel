@@ -310,10 +310,8 @@ impl TcOtelService {
         // so memory cost of the larger buffer is bounded.
         let task_registry = Arc::new(tc_otel_ads::registry::TaskRegistry::new());
         let chan_cap = self.settings.service.channel_capacity;
-        let (push_tx, mut push_rx) = mpsc::channel::<(
-            tc_otel_ads::AmsNetId,
-            tc_otel_ads::diagnostics::DiagEvent,
-        )>(chan_cap);
+        let (push_tx, mut push_rx) =
+            mpsc::channel::<(tc_otel_ads::AmsNetId, tc_otel_ads::diagnostics::DiagEvent)>(chan_cap);
         let (trace_tx, mut trace_rx) =
             mpsc::channel::<(tc_otel_ads::AmsNetId, u16, tc_otel_ads::TraceWireEvent)>(chan_cap);
         let ads_router = Arc::new(

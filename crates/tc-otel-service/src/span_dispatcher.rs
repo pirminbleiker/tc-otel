@@ -232,7 +232,7 @@ impl SpanDispatcher {
         &mut self,
         net_id: AmsNetId,
         ams_source_port: u16,
-        local_id: u8,
+        _local_id: u8,
         task_index: u8,
         dc_time: i64,
         parent_span_id: [u8; 8],

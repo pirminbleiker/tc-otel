@@ -283,9 +283,7 @@ fn metric_aggregate_to_entries(
             dc
         } else {
             match (sample_cycle_offsets, cycle_time_ns) {
-                (Some(offs), Some(cns)) if i < offs.len() => {
-                    dc_time_start + (offs[i] as i64) * cns
-                }
+                (Some(offs), Some(cns)) if i < offs.len() => dc_time_start + (offs[i] as i64) * cns,
                 _ => {
                     if samples.len() == 1 {
                         dc_time_start

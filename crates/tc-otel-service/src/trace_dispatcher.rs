@@ -34,6 +34,7 @@ pub struct TraceDispatcher {
 impl TraceDispatcher {
     /// Create a new trace dispatcher with a no-op ScopeResolver
     /// (used by unit tests; the service wires the shared resolver).
+    #[allow(dead_code)]
     pub async fn new(settings: &AppSettings) -> tc_otel_core::error::Result<Self> {
         Self::with_scope_resolver(settings, ScopeResolver::noop()).await
     }
@@ -181,7 +182,9 @@ async fn resolve_scope(resolver: &ScopeResolver, record: &mut TraceRecord) {
     if net_id.is_empty() || app_port == 0 {
         return;
     }
-    let outcome = resolver.resolve(&net_id, &record.scope_name, app_port).await;
+    let outcome = resolver
+        .resolve(&net_id, &record.scope_name, app_port)
+        .await;
     if let Some(path) = outcome.instance_path {
         record.span_attributes.insert(
             "plc.instance_path".to_string(),

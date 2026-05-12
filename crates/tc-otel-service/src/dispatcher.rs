@@ -509,6 +509,7 @@ pub struct MetricDispatcher {
 }
 
 impl MetricDispatcher {
+    #[allow(dead_code)]
     pub async fn new(
         settings: &AppSettings,
         config_rx: Option<watch::Receiver<AppSettings>>,

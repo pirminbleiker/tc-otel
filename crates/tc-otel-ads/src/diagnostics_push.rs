@@ -312,8 +312,7 @@ fn parse_descriptor(bytes: &[u8]) -> Option<(MetricDescriptor, usize)> {
         if offset + scope_namespace_len > bytes.len() {
             return None;
         }
-        let ns =
-            String::from_utf8(bytes[offset..offset + scope_namespace_len].to_vec()).ok()?;
+        let ns = String::from_utf8(bytes[offset..offset + scope_namespace_len].to_vec()).ok()?;
         offset += scope_namespace_len;
         ns
     } else {
@@ -848,6 +847,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn metric_descriptor_bytes_with_namespace(
         metric_id: u16,
         kind: u8,
@@ -1134,10 +1134,7 @@ mod tests {
         match ev {
             DiagEvent::MetricBatch { descriptors, .. } => {
                 assert_eq!(descriptors.len(), 1);
-                assert_eq!(
-                    descriptors[0].scope_namespace,
-                    "PRG_TestSimpleApi.fbMotor"
-                );
+                assert_eq!(descriptors[0].scope_namespace, "PRG_TestSimpleApi.fbMotor");
             }
             _ => panic!("expected MetricBatch"),
         }
@@ -1791,11 +1788,7 @@ mod tests {
         );
         frame.extend_from_slice(b"temp");
 
-        for (dc, val) in [
-            (101_000_i64, 21.0_f64),
-            (101_500, 22.5),
-            (118_750, 23.1),
-        ] {
+        for (dc, val) in [(101_000_i64, 21.0_f64), (101_500, 22.5), (118_750, 23.1)] {
             frame.extend_from_slice(&dc.to_le_bytes());
             frame.extend_from_slice(&val.to_le_bytes());
         }
@@ -1815,10 +1808,7 @@ mod tests {
                 );
                 assert_eq!(samples.len(), 3);
                 assert!(sample_cycle_offsets.is_none());
-                assert_eq!(
-                    sample_dc_times,
-                    Some(vec![101_000_i64, 101_500, 118_750])
-                );
+                assert_eq!(sample_dc_times, Some(vec![101_000_i64, 101_500, 118_750]));
             }
             _ => panic!("expected MetricAggregateBatch"),
         }
@@ -1846,11 +1836,7 @@ mod tests {
         );
         frame.extend_from_slice(b"temp");
 
-        for (dc, val) in [
-            (50_000_i64, 10.0_f64),
-            (50_000, 11.0),
-            (50_000, 12.0),
-        ] {
+        for (dc, val) in [(50_000_i64, 10.0_f64), (50_000, 11.0), (50_000, 12.0)] {
             frame.extend_from_slice(&dc.to_le_bytes());
             frame.extend_from_slice(&val.to_le_bytes());
         }
@@ -1863,10 +1849,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(samples.len(), 3);
-                assert_eq!(
-                    sample_dc_times,
-                    Some(vec![50_000_i64, 50_000, 50_000]),
-                );
+                assert_eq!(sample_dc_times, Some(vec![50_000_i64, 50_000, 50_000]),);
             }
             _ => panic!("expected MetricAggregateBatch"),
         }

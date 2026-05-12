@@ -92,7 +92,6 @@ impl ScopeValue {
     }
 }
 
-
 /// ADS-side abstraction. Implementors take the namespace the PLC
 /// supplied (already an FB instance path — the PLC's FB_Log /
 /// FB_Tracer / FB_Metrics FB_Init strips its own variable suffix
@@ -214,9 +213,7 @@ impl AdsScopeLookup {
             ));
         }
         if len < 8 {
-            return Err(anyhow::anyhow!(
-                "PortConnect: short response ({len} bytes)"
-            ));
+            return Err(anyhow::anyhow!("PortConnect: short response ({len} bytes)"));
         }
         let mut body = vec![0u8; len];
         stream.read_exact(&mut body).await?;
@@ -263,9 +260,7 @@ impl AdsScopeLookup {
             Ok(Err(e)) => {
                 tracing::warn!(net_id = %net_id_str, error = %e,
                     "AdsScopeLookup: TCP connect to AMS router failed");
-                return Err(anyhow::anyhow!(
-                    "ADS TCP connect to {target_addr}: {e}"
-                ));
+                return Err(anyhow::anyhow!("ADS TCP connect to {target_addr}: {e}"));
             }
             Err(_) => {
                 tracing::warn!(net_id = %net_id_str,
@@ -300,13 +295,8 @@ impl AdsScopeLookup {
         // config is a fallback hint; the router's view of who we are
         // is what actually matters for routing.
         let _ = self.source_net_id; // suppress unused-field lint
-        let mut client = AdsClient::from_stream(
-            stream,
-            assigned_net_id,
-            assigned_port,
-            target,
-            target_port,
-        );
+        let mut client =
+            AdsClient::from_stream(stream, assigned_net_id, assigned_port, target, target_port);
         let symbols = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
             client.read_symbol_table(),
@@ -317,9 +307,7 @@ impl AdsScopeLookup {
             Ok(Err(e)) => {
                 tracing::warn!(net_id = %net_id_str, error = %e,
                     "AdsScopeLookup: symbol-table read failed (likely PortConnect missing — AMS router can't route response back)");
-                return Err(anyhow::anyhow!(
-                    "ADS symbol upload for {net_id_str}: {e}"
-                ));
+                return Err(anyhow::anyhow!("ADS symbol upload for {net_id_str}: {e}"));
             }
             Err(_) => {
                 tracing::warn!(net_id = %net_id_str,
@@ -372,10 +360,7 @@ impl ScopeLookup for AdsScopeLookup {
 /// PLC has already stripped the framework FB's own variable name
 /// (see `FB_Log.FB_Init`), so the namespace IS the FB instance
 /// path. Returns `(type_name, instance_path)` on hit.
-fn lookup_in_table(
-    table: &HashMap<String, String>,
-    namespace: &str,
-) -> Option<(String, String)> {
+fn lookup_in_table(table: &HashMap<String, String>, namespace: &str) -> Option<(String, String)> {
     table
         .get(namespace)
         .map(|t| (t.clone(), namespace.to_string()))
@@ -455,12 +440,7 @@ impl ScopeResolver {
     /// Returns the namespace itself (raw fallback) if the lookup
     /// errors transiently — the caller still gets a usable scope
     /// name, and the next record re-tries (errors are not cached).
-    pub async fn resolve(
-        &self,
-        net_id: &str,
-        namespace: &str,
-        target_port: u16,
-    ) -> ScopeOutcome {
+    pub async fn resolve(&self, net_id: &str, namespace: &str, target_port: u16) -> ScopeOutcome {
         if namespace.is_empty() {
             return ScopeOutcome {
                 scope_name: String::new(),
@@ -491,11 +471,7 @@ impl ScopeResolver {
                 };
             }
         };
-        self.inner
-            .cache
-            .write()
-            .unwrap()
-            .insert(key, value.clone());
+        self.inner.cache.write().unwrap().insert(key, value.clone());
         value.into_outcome()
     }
 
@@ -622,7 +598,7 @@ mod tests {
         }
     }
 
-#[tokio::test]
+    #[tokio::test]
     async fn noop_lookup_returns_raw() {
         let r = ScopeResolver::noop();
         let out = r.resolve("net", "Drives.Motor.fbLog", 851).await;
