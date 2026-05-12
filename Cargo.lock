@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-ads"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2703,7 +2703,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-benches"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "chrono",
@@ -2718,7 +2718,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "chrono",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-export"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-integration-tests"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "chrono",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "tc-otel-service"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
