@@ -74,18 +74,18 @@ IF stArg4.eType = E_ArgType.ARGTYPE_BOOL THEN
 	stArg4 := F_BYTE(aBoolToByte[4]);
 END_IF
 
+sOutputStr := CONCAT(sOutputStr, sMessageFmt);
 
 fbFormatStr(
-	sFormat := sMessageFmt,
+	sFormat := sOutputStr,
 	arg1 	:= stArg1,
 	arg2	:= stArg2,
 	arg3	:= stArg3,
 	arg4	:= stArg4,
 );
 
-sOutputStr := CONCAT(sOutputStr, fbFormatStr.sOut);
 
-ADSLOGSTR(nMask, sOutputStr, '');
+ADSLOGSTR(nMask, fbFormatStr.sOut, '');
 
 ]]></ST>
     </Implementation>
