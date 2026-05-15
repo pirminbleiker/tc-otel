@@ -77,7 +77,7 @@ parking_lot = "0.12"
 gethostname = "0.5"
 # Used to enumerate local interface IPs for OTel sem-conv `source.address`
 # without relying on a default-route / Internet UDP-connect probe.
-if-addrs = "0.13"
+if-addrs = "0.15"
 
 # Testing
 mockall = "0.14"
