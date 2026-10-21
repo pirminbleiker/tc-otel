@@ -355,6 +355,8 @@ pub fn convert_request_to_entries(request: &ExportLogsServiceRequest) -> Vec<Log
 // ─── Tonic gRPC Service ───
 
 /// The LogsService trait — handler for OTLP log export RPC.
+// async_trait's generated methods trip clippy::double_must_use (Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[tonic::async_trait]
 pub trait LogsService: Send + Sync + 'static {
     async fn export(

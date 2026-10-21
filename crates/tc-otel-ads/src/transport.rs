@@ -7,6 +7,8 @@ use crate::ams::AmsNetId;
 use async_trait::async_trait;
 
 /// AMS transport abstraction for pluggable frame delivery
+// async_trait's generated methods trip clippy::double_must_use (Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AmsTransport: Send + Sync + 'static {
     /// Start the transport (listen for connections/subscribe to topics).

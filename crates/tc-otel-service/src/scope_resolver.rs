@@ -118,6 +118,8 @@ impl ScopeValue {
 /// runtime, 852 for the second, …). Threaded through from the
 /// log/trace/metric record's `ams_app_port` so the resolver
 /// connects to the right runtime when the PLC has more than one.
+// async_trait's generated methods trip clippy::double_must_use (Rust 1.99).
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ScopeLookup: Send + Sync {
     async fn resolve(

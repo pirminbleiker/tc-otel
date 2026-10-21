@@ -515,8 +515,10 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
             MetricBodySchema::Wstring => {
                 // 2 bytes per char, UTF-16LE, trim trailing zero u16s.
                 let mut units: Vec<u16> = slot
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
                     .collect();
                 while units.last() == Some(&0) {
                     units.pop();
