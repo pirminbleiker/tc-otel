@@ -28,6 +28,7 @@ http-body = "1.0"
 reqwest.workspace = true
 chrono.workspace = true
 regex = "1.10"
+base64 = "0.22"
 
 [dev-dependencies]
 mockall.workspace = true

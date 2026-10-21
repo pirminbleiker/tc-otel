@@ -7,7 +7,8 @@
 //! - **Outbound** OTLP/HTTP export for logs, metrics, traces.
 //!   Default wire format is OTLP-Protobuf (`Content-Type:
 //!   application/x-protobuf`); JSON is opt-in via `format = "json"`.
-//! - **Inbound** OTLP/gRPC receiver on port 4317 — **logs only**.
+//! - **Inbound** OTLP/gRPC receiver on port 4317 and OTLP/HTTP receiver
+//!   (`POST /v1/logs`, protobuf or JSON) on port 4318 — **logs only**.
 //!   `MetricsServiceServer` and `TraceServiceServer` are intentionally
 //!   not implemented (D4 in the OTel-conformance audit): tc-otel
 //!   produces metrics and traces from PLC ADS frames, never ingests
@@ -22,6 +23,7 @@ pub mod grpc;
 pub mod logs_proto;
 pub mod mapping;
 pub mod metrics_proto;
+pub mod otlp_json;
 pub mod proto_common;
 pub mod receiver;
 pub mod traces_proto;
