@@ -36,7 +36,7 @@ tonic = "0.14"
 tonic-build = "0.14"
 prost = "0.14"
 prost-types = "0.14"
-opentelemetry-proto = { version = "0.31", default-features = false, features = [
+opentelemetry-proto = { version = "0.32", default-features = false, features = [
     "gen-tonic-messages",
     "trace",
     "metrics",
@@ -74,10 +74,10 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 bytes = "1.5"
 parking_lot = "0.12"
-gethostname = "0.5"
+gethostname = "1.1"
 # Used to enumerate local interface IPs for OTel sem-conv `source.address`
 # without relying on a default-route / Internet UDP-connect probe.
-if-addrs = "0.13"
+if-addrs = "0.15"
 
 # Testing
 mockall = "0.14"

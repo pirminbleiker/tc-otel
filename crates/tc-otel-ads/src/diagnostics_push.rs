@@ -518,7 +518,7 @@ pub fn decode_metric_aggregate(bytes: &[u8]) -> Option<DiagEvent> {
                     .as_chunks::<2>()
                     .0
                     .iter()
-                    .map(|c| u16::from_le_bytes(*c))
+                    .map(|&c| u16::from_le_bytes(c))
                     .collect();
                 while units.last() == Some(&0) {
                     units.pop();
