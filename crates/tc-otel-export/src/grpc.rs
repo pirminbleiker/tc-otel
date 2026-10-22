@@ -228,6 +228,15 @@ pub fn severity_to_log_level(severity_number: i32) -> LogLevel {
 
 /// Convert an OTLP ExportLogsServiceRequest into a vector of LogEntry.
 pub fn convert_request_to_entries(request: &ExportLogsServiceRequest) -> Vec<LogEntry> {
+    convert_request_to_entries_with_source(request, "otel-grpc")
+}
+
+/// Convert an OTLP ExportLogsServiceRequest into a vector of LogEntry,
+/// using `default_source` for records without a `source.address` attribute.
+pub fn convert_request_to_entries_with_source(
+    request: &ExportLogsServiceRequest,
+    default_source: &str,
+) -> Vec<LogEntry> {
     let mut entries = Vec::new();
 
     for resource_logs in &request.resource_logs {
@@ -291,7 +300,7 @@ pub fn convert_request_to_entries(request: &ExportLogsServiceRequest) -> Vec<Log
 
                 let mut entry = LogEntry::new(
                     if source.is_empty() {
-                        "otel-grpc".to_string()
+                        default_source.to_string()
                     } else {
                         source
                     },
