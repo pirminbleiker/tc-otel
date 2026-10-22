@@ -80,6 +80,7 @@ pub fn json_to_any_value(value: &serde_json::Value) -> Option<AnyValue> {
                         json_to_any_value(v).map(|av| KeyValue {
                             key: k.clone(),
                             value: Some(av),
+                            ..Default::default()
                         })
                     })
                     .collect();
@@ -98,6 +99,7 @@ pub fn build_attributes(attrs: &HashMap<String, serde_json::Value>) -> Vec<KeyVa
             json_to_any_value(v).map(|av| KeyValue {
                 key: k.clone(),
                 value: Some(av),
+                ..Default::default()
             })
         })
         .collect()
