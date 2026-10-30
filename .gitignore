@@ -35,7 +35,6 @@ NUL
 *.log
 
 # Local development and session state (must not be committed)
-.beads/
 .runtime/
 captures/
 
@@ -76,3 +75,11 @@ tests/*
 .dolt/
 *.db
 .beads-credential-key
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/
+*.gate.lock*
+
+# Gas City
+.beads/*
+!.beads/identity.toml
