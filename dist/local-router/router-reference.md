@@ -35,7 +35,7 @@ Send:  [00 10] [02 00 00 00] [16 3F]
 ↓
 Recv:  [00 10] [08 00 00 00] [AC 1C 29 25 01 01] [16 3F]
        └─cmd──┘ └──length──┘ └────NetId 6B────┘ └port─┘
-       0x1000   8 bytes      172.28.41.37.1.1   16150
+       0x1000   8 bytes      192.0.2.10.1.1   16150
 ↓
 Frame loop: every subsequent inbound packet is cmd 0x0000 with a
             32-byte AMS header + ADS payload, addressed to the

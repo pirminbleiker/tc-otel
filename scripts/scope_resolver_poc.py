@@ -17,7 +17,7 @@ Usage::
 
     pip install pyads
     python scripts/scope_resolver_poc.py
-    python scripts/scope_resolver_poc.py --net-id 172.28.41.37.1.1 --port 852
+    python scripts/scope_resolver_poc.py --net-id 192.0.2.10.1.1 --port 852
     python scripts/scope_resolver_poc.py --query "Cell1.Axis1.Motor"
 
 Why this exists: validating the resolver idea against the full
@@ -32,20 +32,28 @@ The script intentionally has *no* dependency on tc-otel itself.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from collections import Counter
 from typing import Iterable
 
-try:
-    import pyads
-except ImportError:
-    sys.stderr.write(
-        "pyads is required: pip install pyads\n"
-        "(On Windows the TwinCAT ADS DLL must also be installed; on Linux "
-        "the Beckhoff Linux ADS library.)\n"
-    )
-    sys.exit(2)
+pyads = None
+
+
+def load_pyads() -> None:
+    """Import pyads lazily so ``--help`` works without it installed."""
+    global pyads
+    try:
+        import pyads as _pyads
+    except ImportError:
+        sys.stderr.write(
+            "pyads is required: pip install pyads\n"
+            "(On Windows the TwinCAT ADS DLL must also be installed; on Linux "
+            "the Beckhoff Linux ADS library.)\n"
+        )
+        sys.exit(2)
+    pyads = _pyads
 
 
 def parent_path(namespace: str) -> str:
@@ -146,8 +154,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument(
         "--net-id",
-        default="127.0.0.1.1.1",
-        help="Target AMS Net ID (default: local 127.0.0.1.1.1)",
+        default=os.environ.get("TC_OTEL_NET_ID", "127.0.0.1.1.1"),
+        help="Target AMS Net ID (env TC_OTEL_NET_ID, default: local 127.0.0.1.1.1)",
     )
     p.add_argument(
         "--port",
@@ -165,6 +173,7 @@ def main() -> None:
         ),
     )
     args = p.parse_args()
+    load_pyads()
 
     print(f"[ads] connecting to {args.net_id}:{args.port}")
     symbols = fetch_symbols(args.net_id, args.port)
