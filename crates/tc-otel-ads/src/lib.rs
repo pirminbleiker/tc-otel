@@ -43,6 +43,7 @@ pub use diagnostics::{
     SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_FIRST_CYCLE, SAMPLE_FLAG_OVERFLOW,
     SAMPLE_FLAG_RT_VIOLATION,
 };
+pub use dispatcher::{MAX_AMS_FRAME, MAX_AMS_PAYLOAD};
 pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;
