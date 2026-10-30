@@ -1,8 +1,9 @@
 //! ADS Router - transport-agnostic ADS protocol dispatch
 use crate::ams::{
-    AdsWriteRequest, AmsHeader, ADSERR_DEVICE_SRVNOTSUPP, ADS_CMD_ADD_NOTIFICATION,
-    ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION, ADS_CMD_READ, ADS_CMD_READ_DEVICE_INFO,
-    ADS_CMD_READ_STATE, ADS_CMD_READ_WRITE, ADS_CMD_WRITE, ADS_CMD_WRITE_CONTROL,
+    len_u32, AdsWriteRequest, AmsHeader, ADSERR_DEVICE_INVALIDSIZE, ADSERR_DEVICE_SRVNOTSUPP,
+    ADS_CMD_ADD_NOTIFICATION, ADS_CMD_DEL_NOTIFICATION, ADS_CMD_NOTIFICATION, ADS_CMD_READ,
+    ADS_CMD_READ_DEVICE_INFO, ADS_CMD_READ_STATE, ADS_CMD_READ_WRITE, ADS_CMD_WRITE,
+    ADS_CMD_WRITE_CONTROL,
 };
 use crate::diagnostics::{DiagEvent, IG_PUSH_DIAG, IO_PUSH_BATCH, IO_PUSH_METRIC_AGG};
 use crate::parser::AdsParser;
@@ -11,6 +12,11 @@ use crate::registry::TaskRegistry;
 use std::sync::Arc;
 use tc_otel_core::{local_source_address, LogEntry, MetricEntry};
 use tokio::sync::mpsc;
+
+/// Largest ADS READ length the router will serve. PLCs issue small READs;
+/// larger requests are answered with `ADSERR_DEVICE_INVALIDSIZE` instead of
+/// allocating a caller-controlled buffer.
+pub const MAX_READ_LEN: u32 = 64 * 1024;
 
 pub struct AdsRouter {
     ads_port: u16,
@@ -101,11 +107,7 @@ impl AdsRouter {
                 } else {
                     0
                 };
-                let mut p = Vec::new();
-                p.extend_from_slice(&0u32.to_le_bytes());
-                p.extend_from_slice(&read_len.to_le_bytes());
-                p.resize(p.len() + read_len as usize, 0);
-                Some(Self::build_response(&header, p))
+                Some(Self::build_response(&header, Self::read_response(read_len)))
             }
             ADS_CMD_WRITE => {
                 // Build ACK response FIRST and return it before any parsing /
@@ -219,9 +221,26 @@ impl AdsRouter {
         Ok(response)
     }
 
+    /// Payload for an ADS READ answer: result(4) + length(4) + zeroed data, or
+    /// `ADSERR_DEVICE_INVALIDSIZE` with an empty body above `MAX_READ_LEN`.
+    fn read_response(read_len: u32) -> Vec<u8> {
+        let mut p = Vec::new();
+        if read_len > MAX_READ_LEN {
+            p.extend_from_slice(&ADSERR_DEVICE_INVALIDSIZE.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes());
+            return p;
+        }
+        let total = 8usize.saturating_add(read_len as usize);
+        p.reserve(total);
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&read_len.to_le_bytes());
+        p.resize(total, 0);
+        p
+    }
+
     fn build_response(header: &AmsHeader, payload: Vec<u8>) -> Vec<u8> {
         let mut rh = header.make_response(0);
-        rh.data_length = payload.len() as u32;
+        rh.data_length = len_u32(payload.len());
         rh.state_flags = 0x0005;
         let mut r = rh.serialize();
         r.extend_from_slice(&payload);
@@ -541,6 +560,60 @@ mod tests {
         assert_eq!(length, 16);
         assert_eq!(resp.len(), 32 + 4 + 4 + 16);
         assert!(resp[40..].iter().all(|&b| b == 0));
+    }
+
+    async fn read_with_len(read_len: u32) -> (AmsHeader, Vec<u8>) {
+        let router = make_router();
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&read_len.to_le_bytes());
+        let (req, frame) = make_request_frame(ADS_CMD_READ, &body);
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
+        (req, resp)
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_read_u32_max_is_rejected_with_invalidsize() {
+        let (req, resp) = read_with_len(u32::MAX).await;
+        assert_valid_response(&req, &resp);
+        assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_INVALIDSIZE);
+        assert!(resp.len() <= 40);
+        assert_eq!(
+            u32::from_le_bytes([resp[36], resp[37], resp[38], resp[39]]),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_read_at_cap_is_served() {
+        let (req, resp) = read_with_len(MAX_READ_LEN).await;
+        assert_valid_response(&req, &resp);
+        assert_eq!(parse_result_code(&resp), 0);
+        assert_eq!(resp.len(), 32 + 8 + MAX_READ_LEN as usize);
+        assert!(resp[40..].iter().all(|&b| b == 0));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_read_above_cap_is_rejected() {
+        let (req, resp) = read_with_len(MAX_READ_LEN + 1).await;
+        assert_valid_response(&req, &resp);
+        assert_eq!(parse_result_code(&resp), ADSERR_DEVICE_INVALIDSIZE);
+        assert_eq!(resp.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_read_zero_len_and_short_body() {
+        let (req, resp) = read_with_len(0).await;
+        assert_valid_response(&req, &resp);
+        assert_eq!(parse_result_code(&resp), 0);
+        assert_eq!(resp.len(), 40);
+
+        let router = make_router();
+        let (req, frame) = make_request_frame(ADS_CMD_READ, &[0u8; 8]);
+        let resp = router.dispatch(&frame, None).await.unwrap().unwrap();
+        assert_valid_response(&req, &resp);
+        assert_eq!(resp.len(), 40);
     }
 
     #[tokio::test]

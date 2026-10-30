@@ -30,8 +30,8 @@ pub use ads_client::{
     build_read_request_frame, build_read_response_frame, AdsClient, AdsReadRequest, AdsReadResponse,
 };
 pub use ams::{
-    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_READ, ADS_CMD_WRITE,
-    ADS_LOG_PORT, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
+    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADSERR_DEVICE_INVALIDSIZE,
+    ADS_CMD_READ, ADS_CMD_WRITE, ADS_LOG_PORT, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
 pub use ams_server::AmsTcpServer;
 pub use connection_manager::{
@@ -53,6 +53,7 @@ pub use protocol::{
     RegistrationKey, RegistrationMessage, TaskMetadata, TraceWireEvent,
 };
 pub use registry::TaskRegistry;
+pub use router::MAX_READ_LEN;
 pub use symbol::{
     parse_symbol_table, AdsSymbolEntry, AdsSymbolUploadInfo, ADSIGRP_SYM_UPLOAD,
     ADSIGRP_SYM_UPLOADINFO,
