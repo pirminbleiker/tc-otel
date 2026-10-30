@@ -202,7 +202,9 @@ fn extract_int_attr(attrs: &[KeyValue], key: &str) -> i32 {
         .find(|kv| kv.key == key)
         .and_then(|kv| kv.value.as_ref())
         .and_then(|av| match &av.value {
-            Some(any_value::Value::IntValue(i)) => Some(*i as i32),
+            Some(any_value::Value::IntValue(i)) => {
+                Some(i32::try_from(*i).unwrap_or(if *i < 0 { i32::MIN } else { i32::MAX }))
+            }
             _ => None,
         })
         .unwrap_or(0)
@@ -1071,5 +1073,17 @@ mod tests {
 
         let resp = svc.export(req).await.unwrap();
         assert!(resp.into_inner().partial_success.is_none());
+    }
+
+    #[test]
+    fn extract_int_attr_saturates_out_of_range_values() {
+        let attrs = [
+            kv_int("max", i64::MAX),
+            kv_int("min", i64::MIN),
+            kv_int("ok", 42),
+        ];
+        assert_eq!(extract_int_attr(&attrs, "max"), i32::MAX);
+        assert_eq!(extract_int_attr(&attrs, "min"), i32::MIN);
+        assert_eq!(extract_int_attr(&attrs, "ok"), 42);
     }
 }

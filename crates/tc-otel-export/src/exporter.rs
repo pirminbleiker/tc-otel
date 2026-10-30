@@ -630,7 +630,7 @@ impl OtelExporter {
                     })
                     .collect();
 
-                let span = json!({
+                let mut span = json!({
                     "traceId": record.trace_id,
                     "spanId": record.span_id,
                     "parentSpanId": record.parent_span_id,
@@ -645,6 +645,13 @@ impl OtelExporter {
                     },
                     "events": events
                 });
+                // OTLP/JSON: dropped counts are omitted when zero.
+                if record.dropped_events_count > 0 {
+                    span["droppedEventsCount"] = json!(record.dropped_events_count);
+                }
+                if record.dropped_attributes_count > 0 {
+                    span["droppedAttributesCount"] = json!(record.dropped_attributes_count);
+                }
 
                 let scope_name = if record.scope_name.is_empty() {
                     "tc-otel"
@@ -1254,6 +1261,29 @@ mod tests {
             .find(|a| a["key"] == "axis.position")
             .unwrap();
         assert_eq!(pos_attr["value"]["doubleValue"], 150.5);
+    }
+
+    #[test]
+    fn test_build_traces_payload_dropped_counts() {
+        let exporter = OtelExporter::new("http://localhost:4318/v1/logs".to_string(), 100, 3);
+        let entry = tc_otel_core::SpanEntry::new([1u8; 16], [2u8; 8], "test".to_string());
+
+        let mut record = tc_otel_core::TraceRecord::from_span_entry(entry);
+        let payload_str = exporter
+            .build_otel_traces_payload(std::slice::from_ref(&record))
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert!(span.get("droppedEventsCount").is_none());
+        assert!(span.get("droppedAttributesCount").is_none());
+
+        record.dropped_events_count = 872;
+        record.dropped_attributes_count = 36;
+        let payload_str = exporter.build_otel_traces_payload(&[record]).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert_eq!(span["droppedEventsCount"], 872);
+        assert_eq!(span["droppedAttributesCount"], 36);
     }
 
     #[test]

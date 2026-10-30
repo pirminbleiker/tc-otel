@@ -53,7 +53,7 @@
 //!   dispatcher stays a library primitive in this PR; the callers migrate in
 //!   a separate commit.
 
-use crate::ams::{AmsHeader, AmsNetId};
+use crate::ams::{len_u32, AmsHeader, AmsNetId};
 use crate::error::AdsError;
 use parking_lot::RwLock;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
@@ -70,11 +70,11 @@ use tokio::task::JoinHandle;
 const AMS_HEADER_LEN: usize = 32;
 /// Max ADS payload (raw bytes after AMS header). Matches the PLC-side
 /// `Config.nBufferLen` ceiling for `FB_LogBuffer` (16 MiB).
-pub(crate) const MAX_AMS_PAYLOAD: usize = 16 * 1024 * 1024;
+pub const MAX_AMS_PAYLOAD: usize = 16 * 1024 * 1024;
 /// Max wire frame = AMS header + payload. Receive caps must use this — a
 /// payload at `MAX_AMS_PAYLOAD` ships with a 32-byte AMS header, so a cap
 /// of just `MAX_AMS_PAYLOAD` rejects fully-loaded frames by 32 bytes.
-pub(crate) const MAX_AMS_FRAME: usize = AMS_HEADER_LEN + MAX_AMS_PAYLOAD;
+pub const MAX_AMS_FRAME: usize = AMS_HEADER_LEN + MAX_AMS_PAYLOAD;
 /// State-flags bit indicating a reply, per Beckhoff AMS spec. Set on all
 /// responses and on all notification "command=8" frames.
 const AMS_STATE_RESPONSE: u16 = 0x0001;
@@ -219,9 +219,10 @@ impl InboundSink for NullSink {
     fn deliver(&self, _header: AmsHeader, _payload: Vec<u8>) {}
 }
 
-/// A [`oneshot::Sender`] registered under an invoke-id for request/response
-/// correlation.
-type PendingMap = Arc<Mutex<HashMap<u32, oneshot::Sender<ResponseFrame>>>>;
+/// A [`oneshot::Sender`] registered under `(peer net id, peer port, invoke-id)`
+/// for request/response correlation. Scoping the key to the peer keeps one
+/// peer from completing another peer's waiter by echoing its invoke-id.
+type PendingMap = Arc<Mutex<HashMap<(AmsNetId, u16, u32), oneshot::Sender<ResponseFrame>>>>;
 
 /// Decoded response frame passed to the waiter.
 #[derive(Debug, Clone)]
@@ -444,7 +445,10 @@ impl AmsDispatcher {
         );
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(invoke_id, tx);
+        self.pending
+            .lock()
+            .await
+            .insert((target_net_id, target_port, invoke_id), tx);
 
         // Publish on the right transport.
         let publish_result = match transport {
@@ -453,7 +457,10 @@ impl AmsDispatcher {
         };
 
         if let Err(e) = publish_result {
-            self.pending.lock().await.remove(&invoke_id);
+            self.pending
+                .lock()
+                .await
+                .remove(&(target_net_id, target_port, invoke_id));
             return Err(e);
         }
 
@@ -470,11 +477,17 @@ impl AmsDispatcher {
                 }
             }
             Ok(Err(_)) => {
-                self.pending.lock().await.remove(&invoke_id);
+                self.pending
+                    .lock()
+                    .await
+                    .remove(&(target_net_id, target_port, invoke_id));
                 Err(DispatcherError::Closed)
             }
             Err(_) => {
-                self.pending.lock().await.remove(&invoke_id);
+                self.pending
+                    .lock()
+                    .await
+                    .remove(&(target_net_id, target_port, invoke_id));
                 Err(DispatcherError::Timeout(timeout))
             }
         }
@@ -614,7 +627,11 @@ async fn run_tcp_reader(
 
         let is_response = header.state_flags & AMS_STATE_RESPONSE != 0;
         if is_response {
-            if let Some(waiter) = pending.lock().await.remove(&header.invoke_id) {
+            if let Some(waiter) = pending.lock().await.remove(&(
+                header.source_net_id,
+                header.source_port,
+                header.invoke_id,
+            )) {
                 let _ = waiter.send(ResponseFrame { header, payload });
                 continue;
             }
@@ -651,7 +668,7 @@ pub fn build_ams_frame(
         source_port,
         command_id: cmd,
         state_flags,
-        data_length: payload.len() as u32,
+        data_length: len_u32(payload.len()),
         error_code: 0,
         invoke_id,
     };
@@ -755,7 +772,11 @@ async fn handle_incoming_mqtt(
         if header.target_net_id != our_net_id || header.target_port != our_port {
             return;
         }
-        if let Some(waiter) = pending.lock().await.remove(&header.invoke_id) {
+        if let Some(waiter) = pending.lock().await.remove(&(
+            header.source_net_id,
+            header.source_port,
+            header.invoke_id,
+        )) {
             let _ = waiter.send(ResponseFrame {
                 header,
                 payload: body,
@@ -995,7 +1016,10 @@ mod tests {
         let sink: Arc<dyn InboundSink> = Arc::new(NullSink);
 
         let (tx, rx) = oneshot::channel();
-        pending.lock().await.insert(99, tx);
+        pending
+            .lock()
+            .await
+            .insert((AmsNetId([1, 2, 3, 4, 5, 6]), 851, 99), tx);
 
         // Build a response frame addressed to us with invoke_id=99 and the
         // response state-flag set.
@@ -1089,7 +1113,10 @@ mod tests {
         let sink: Arc<dyn InboundSink> = Arc::new(NullSink);
 
         let (tx, mut rx) = oneshot::channel();
-        pending.lock().await.insert(99, tx);
+        pending
+            .lock()
+            .await
+            .insert((AmsNetId([1, 2, 3, 4, 5, 6]), 851, 99), tx);
 
         let header_bytes = AmsHeader {
             target_net_id: AmsNetId([10, 10, 10, 10, 1, 1]),
@@ -1119,6 +1146,57 @@ mod tests {
         // The waiter should NOT have been resolved.
         assert!(rx.try_recv().is_err());
         // The pending entry should still be present.
-        assert!(pending.lock().await.contains_key(&99));
+        assert!(pending
+            .lock()
+            .await
+            .contains_key(&(AmsNetId([1, 2, 3, 4, 5, 6]), 851, 99)));
+    }
+
+    /// Feed a response from `(src_net, src_port)` with invoke-id 99 to the MQTT
+    /// handler and report whether the waiter registered for peer
+    /// `1.2.3.4.5.6:851` was completed.
+    async fn response_completes_waiter(src_net: AmsNetId, src_port: u16) -> bool {
+        let routes = RouteTable::new();
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let sink: Arc<dyn InboundSink> = Arc::new(NullSink);
+        let (tx, mut rx) = oneshot::channel();
+        pending
+            .lock()
+            .await
+            .insert((AmsNetId([1, 2, 3, 4, 5, 6]), 851, 99), tx);
+        let frame = AmsHeader {
+            target_net_id: AmsNetId([10, 10, 10, 10, 1, 1]),
+            target_port: 16150,
+            source_net_id: src_net,
+            source_port: src_port,
+            command_id: crate::ams::ADS_CMD_READ,
+            state_flags: AMS_STATE_RESPONSE,
+            data_length: 0,
+            error_code: 0,
+            invoke_id: 99,
+        }
+        .serialize();
+        handle_incoming_mqtt(
+            "AdsOverMqtt/10.10.10.10.1.1/ams/res",
+            frame,
+            "AdsOverMqtt",
+            &routes,
+            &pending,
+            sink,
+            AmsNetId([10, 10, 10, 10, 1, 1]),
+            16150,
+        )
+        .await;
+        rx.try_recv().is_ok()
+    }
+
+    #[tokio::test]
+    async fn response_from_other_peer_does_not_complete_waiter() {
+        // Same invoke-id, different net id: must not complete A's waiter.
+        assert!(!response_completes_waiter(AmsNetId([9, 9, 9, 9, 1, 1]), 851).await);
+        // Same net id, different source port.
+        assert!(!response_completes_waiter(AmsNetId([1, 2, 3, 4, 5, 6]), 852).await);
+        // Matching peer completes it.
+        assert!(response_completes_waiter(AmsNetId([1, 2, 3, 4, 5, 6]), 851).await);
     }
 }

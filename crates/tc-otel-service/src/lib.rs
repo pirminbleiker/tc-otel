@@ -1,5 +1,7 @@
 //! tc-otel service library — shared components for integration testing
 
+#![forbid(unsafe_code)]
+
 #[cfg(feature = "client-bridge")]
 pub mod client_bridge;
 pub mod cycle_time;

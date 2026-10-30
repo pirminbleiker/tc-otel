@@ -21,6 +21,8 @@
 //! - [`notify`]: [`notify::Notifier`] — AddDeviceNotification subscriptions
 //!   and stamp fan-out.
 
+#![forbid(unsafe_code)]
+
 pub mod browse;
 pub mod cache;
 pub mod client;

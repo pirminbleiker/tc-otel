@@ -19,11 +19,9 @@ const MAX_CONTEXT_VARS: usize = 64;
 /// Maximum total message size (1 MB)
 const MAX_MESSAGE_SIZE: usize = 1_048_576;
 /// Maximum number of events per span
-#[allow(dead_code)]
-const MAX_SPAN_EVENTS: usize = 128;
+pub const MAX_SPAN_EVENTS: usize = 128;
 /// Maximum number of attributes per span or span event
-#[allow(dead_code)]
-const MAX_SPAN_ATTRIBUTES: usize = 64;
+pub const MAX_SPAN_ATTRIBUTES: usize = 64;
 /// Maximum number of attributes per metric
 const MAX_METRIC_ATTRIBUTES: usize = 32;
 /// Maximum number of histogram buckets
@@ -257,10 +255,14 @@ impl AdsParser {
         // Level (2 bytes - UINT, PLC uses _WriteUInt for eLogLevel)
         let level_bytes = reader.read_bytes(2)?;
         let level_u16 = u16::from_le_bytes([level_bytes[0], level_bytes[1]]);
-        let level = LogLevel::from_u8(level_u16 as u8).ok_or(AdsError::ParseError(format!(
-            "Invalid log level: {}",
-            level_u16
-        )))?;
+        // A word above 255 is invalid; truncating it would map e.g. 0x0102 onto level 2.
+        let level = u8::try_from(level_u16)
+            .ok()
+            .and_then(LogLevel::from_u8)
+            .ok_or(AdsError::ParseError(format!(
+                "Invalid log level: {}",
+                level_u16
+            )))?;
 
         // Timestamps (8 bytes each, FILETIME format)
         let plc_timestamp = reader.read_filetime()?;
@@ -1276,7 +1278,7 @@ impl<'a> BytesReader<'a> {
         const UNIX_TO_DC_EPOCH_SECS: i64 = 946_684_800;
         let secs = dc_ns / 1_000_000_000;
         let nanos = (dc_ns.rem_euclid(1_000_000_000)) as u32;
-        DateTime::<Utc>::from_timestamp(UNIX_TO_DC_EPOCH_SECS + secs, nanos).ok_or(
+        DateTime::<Utc>::from_timestamp(UNIX_TO_DC_EPOCH_SECS.saturating_add(secs), nanos).ok_or(
             AdsError::InvalidTimestamp("Invalid DC timestamp".to_string()),
         )
     }
@@ -1388,7 +1390,8 @@ impl<'a> BytesReader<'a> {
                 // LTIME (100ns as u64)
                 let b = self.read_bytes(8)?;
                 let ns100 = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-                let total_ns = ns100 * 100;
+                // Saturate: a wire value near u64::MAX must not overflow the nanosecond conversion.
+                let total_ns = ns100.saturating_mul(100);
                 let d = total_ns / 86_400_000_000_000;
                 let h = (total_ns % 86_400_000_000_000) / 3_600_000_000_000;
                 let m = (total_ns % 3_600_000_000_000) / 60_000_000_000;
@@ -1604,7 +1607,8 @@ impl<'a> BytesReader<'a> {
                 // LTIME (100ns as u64)
                 let b = self.read_bytes(8)?;
                 let ns100 = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-                let total_ns = ns100 * 100;
+                // Saturate: a wire value near u64::MAX must not overflow the nanosecond conversion.
+                let total_ns = ns100.saturating_mul(100);
                 let d = total_ns / 86_400_000_000_000;
                 let h = (total_ns % 86_400_000_000_000) / 3_600_000_000_000;
                 let m = (total_ns % 3_600_000_000_000) / 60_000_000_000;
@@ -1861,6 +1865,35 @@ mod tests {
             Err(AdsError::InvalidVersion(v)) => assert_eq!(v, 255),
             _ => panic!("Expected InvalidVersion error"),
         }
+    }
+
+    #[test]
+    fn test_parse_log_level_word_above_u8_is_rejected() {
+        // Level word sits after: version(1) + msg(1+4) + logger(1+6).
+        const LEVEL_OFFSET: usize = 13;
+        let mut payload = build_test_payload("Test", "logger", 2);
+        assert_eq!(AdsParser::parse(&payload).unwrap().level, LogLevel::Info);
+
+        // 0x0102 must not be truncated onto level 2.
+        payload[LEVEL_OFFSET..LEVEL_OFFSET + 2].copy_from_slice(&0x0102u16.to_le_bytes());
+        assert!(AdsParser::parse(&payload).is_err());
+    }
+
+    #[test]
+    fn test_read_dc_task_time_extreme_values() {
+        let data = i64::MAX.to_le_bytes();
+        let mut reader = BytesReader::new(&data);
+        // Either a defined value or an error; never a panic.
+        let _ = reader.read_dc_task_time();
+    }
+
+    #[test]
+    fn test_read_value_ltime_saturates_instead_of_overflowing() {
+        let mut data = 20001i16.to_le_bytes().to_vec();
+        data.extend_from_slice(&u64::MAX.to_le_bytes());
+        let mut reader = BytesReader::new(&data);
+        let v = reader.read_value().unwrap();
+        assert!(v.as_str().unwrap().starts_with("LTIME#"));
     }
 
     #[test]

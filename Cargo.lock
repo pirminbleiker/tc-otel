@@ -2901,6 +2901,7 @@ dependencies = [
  "hyper-util",
  "mockall",
  "parking_lot",
+ "proptest",
  "reqwest",
  "schemars 1.2.3",
  "serde",
