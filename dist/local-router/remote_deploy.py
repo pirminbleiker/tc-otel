@@ -2,7 +2,10 @@
 Optional: deploy this dist to a TwinCAT target over SSH from a developer
 machine. Run as:
 
-    py remote_deploy.py --host 172.21.101.62 --user Administrator [--password XXX]
+    py remote_deploy.py --host 192.0.2.10 --user Administrator [--password XXX]
+
+Host, user and password also read TC_OTEL_HOST, TC_OTEL_USER and
+TC_OTEL_PASSWORD (CLI > env > default).
 
 Requires `paramiko` (`py -m pip install paramiko`). The target needs
 OpenSSH server enabled (Windows Optional Feature). The script:
@@ -18,7 +21,6 @@ skips the GitHub download.
 from __future__ import annotations
 import argparse
 import os
-import paramiko
 import sys
 import time
 
@@ -29,16 +31,21 @@ DEFAULT_REMOTE_DIR = "/C:/deploy/local-router"
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--host", required=True, help="Target IP or hostname")
-    p.add_argument("--user", default="Administrator")
-    p.add_argument("--password", default=None,
-                   help="SSH password (omit to use key-based auth)")
+    p.add_argument("--host", default=os.environ.get("TC_OTEL_HOST"),
+                   help="Target IP or hostname (env TC_OTEL_HOST)")
+    p.add_argument("--user", default=os.environ.get("TC_OTEL_USER", "Administrator"),
+                   help="SSH user (env TC_OTEL_USER, default Administrator)")
+    p.add_argument("--password", default=os.environ.get("TC_OTEL_PASSWORD"),
+                   help="SSH password (env TC_OTEL_PASSWORD; omit to use key-based auth)")
     p.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR,
                    help=f"Where to stage files on the target (default {DEFAULT_REMOTE_DIR})")
     p.add_argument("--vl-exe", default=None,
                    help="If set, pass to install.ps1 -VlExe to skip the GitHub download")
     p.add_argument("--skip-firewall", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.host:
+        p.error("--host or TC_OTEL_HOST is required")
+    return args
 
 
 def ssh_stream(client, cmd, label="install"):
@@ -59,6 +66,8 @@ def ssh_stream(client, cmd, label="install"):
 
 def main():
     args = parse_args()
+    import paramiko
+
     here = os.path.dirname(os.path.abspath(__file__))
 
     print(f">>> Connecting to {args.host} as {args.user} ...")

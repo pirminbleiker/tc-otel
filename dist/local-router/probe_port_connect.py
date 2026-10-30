@@ -4,6 +4,7 @@ Local AMS port registration test:
 - Connect 2: register any port, send ADS WRITE to <localNetId>:16150
 - Connect 1 should receive the frame via the local router
 """
+import argparse
 import socket
 import struct
 import sys
@@ -72,7 +73,10 @@ def make_ams_frame(target_netid, target_port, source_netid, source_port,
 
 
 def main():
-    listen_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+    ap = argparse.ArgumentParser(description="Probe the local AMS router with PortConnect.")
+    ap.add_argument("listen_sec", nargs="?", type=int, default=5,
+                    help="Seconds to listen for incoming frames (default 5)")
+    listen_sec = ap.parse_args().listen_sec
 
     # === Connection 1: register port 16150, listen ===
     print(f"[L] Connecting + registering port {TARGET_PORT}...", flush=True)
