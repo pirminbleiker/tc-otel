@@ -18,7 +18,7 @@ log batch pipeline. Traces capture:
   serialisation.
 
 Traces replace the dormant legacy `AdsSpanEntry` format. For the wire format details,
-see [OpenTelemetry Traces — Design](traces-design.md).
+see [Traces — Wire Format & Propagation](traces-internals.md).
 
 ## Architecture
 
@@ -188,8 +188,8 @@ a 12-byte header (event type, local_id, task_index, flags, dc_time) followed by
 event-specific payload. Typical frames are 20–50 bytes for Begin and Add operations,
 larger for Event frames with inline attributes.
 
-Full byte-level layout, payload schemas, and bandwidth calculations are in
-[OpenTelemetry Traces — Design](traces-design.md#wire-format).
+Full byte-level layout and payload schemas are in
+[Traces — Wire Format & Propagation](traces-internals.md#wire-format).
 
 ## Observability Stack
 
@@ -305,7 +305,7 @@ no data bus) use `F_HashWorkpieceId()` to derive a deterministic
 trace_id from the workpiece identifier so every station aggregates
 under one trace.
 
-See [`traces-propagation.md`](traces-propagation.md) for patterns,
-cross-PLC clock-sync guidance, and the live test
-(`PRG_TestTracePropagation`) that exercises all three handoff
-mechanisms on the `TcOtel_Tester` project.
+See [`traces-internals.md`](traces-internals.md#distributed-trace-propagation)
+for the traceparent format and the producer/consumer machinery. The live test
+`PRG_TestTracePropagation` on the `TcOtel_Tester` project exercises all three
+handoff mechanisms.
