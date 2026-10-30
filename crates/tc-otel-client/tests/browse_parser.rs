@@ -192,3 +192,37 @@ fn stops_at_declared_symbol_count_even_with_more_bytes() {
     assert!(tree.get("B").is_some());
     assert!(tree.get("C").is_none());
 }
+
+#[test]
+fn huge_declared_symbol_count_is_clamped_to_buffer() {
+    let e1 = build_entry("A", "BOOL", "", 0, 0, 1, 33, 0);
+    let e2 = build_entry("B", "BOOL", "", 0, 1, 1, 33, 0);
+    let e3 = build_entry("C", "BOOL", "", 0, 2, 1, 33, 0);
+    let body: Vec<u8> = [e1, e2, e3].concat();
+
+    let info = UploadInfo {
+        symbol_count: u32::MAX,
+        symbol_length: body.len() as u32,
+        datatype_count: 0,
+        datatype_length: 0,
+        extra_count: 0,
+        extra_length: 0,
+    };
+    let tree = parse_upload(&body, &info).unwrap();
+    assert_eq!(tree.len(), 3);
+    assert!(tree.get("C").is_some());
+}
+
+#[test]
+fn huge_declared_symbol_count_with_empty_buffer_does_not_panic() {
+    let info = UploadInfo {
+        symbol_count: u32::MAX,
+        symbol_length: 0,
+        datatype_count: 0,
+        datatype_length: 0,
+        extra_count: 0,
+        extra_length: 0,
+    };
+    let tree = parse_upload(&[], &info).unwrap();
+    assert_eq!(tree.len(), 0);
+}
