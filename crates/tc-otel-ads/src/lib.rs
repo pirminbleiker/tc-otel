@@ -6,6 +6,8 @@
 //! The ADS protocol is a proprietary Beckhoff protocol for device communication.
 //! TC-OTel uses ADS for receiving log entries from TwinCAT PLCs.
 
+#![forbid(unsafe_code)]
+
 pub mod ads_client;
 pub mod ams;
 pub mod ams_server;

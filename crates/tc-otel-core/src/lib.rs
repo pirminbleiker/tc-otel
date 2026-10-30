@@ -3,6 +3,8 @@
 //! This crate defines the fundamental types and structures used throughout TC-OTel,
 //! including LogEntry, LogLevel, LogRecord, and configuration structures.
 
+#![forbid(unsafe_code)]
+
 pub mod config;
 pub mod config_watcher;
 pub mod error;

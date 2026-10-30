@@ -1,5 +1,7 @@
 //! Performance benchmarking utilities and fixtures for TC-OTel
 
+#![forbid(unsafe_code)]
+
 use tc_otel_core::{LogEntry, LogLevel};
 
 /// Create test log entries with various complexity levels

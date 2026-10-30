@@ -16,6 +16,8 @@
 //! - Log record transformation to OTEL LogRecord format
 //! - Batching and retry logic for exports
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod exporter;
 pub mod grpc;
