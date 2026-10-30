@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use tc_otel_ads::ams::{AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_READ_STATE, ADS_CMD_WRITE};
+use tc_otel_ads::ams::{AmsHeader, AmsNetId, ADS_CMD_READ, ADS_CMD_WRITE};
 use tc_otel_ads::ams::{ADS_STATE_REQUEST, ADS_STATE_RESPONSE};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -188,11 +188,6 @@ impl FakePlc {
         payload.extend_from_slice(&index_offset.to_le_bytes());
         payload.extend_from_slice(&len.to_le_bytes());
         Ok(self.request(ADS_CMD_READ, &payload).await?.payload)
-    }
-
-    /// ADS READ_STATE; returns the full response payload.
-    pub async fn read_state(&mut self) -> std::io::Result<Vec<u8>> {
-        Ok(self.request(ADS_CMD_READ_STATE, &[]).await?.payload)
     }
 
     /// Read until EOF/reset or `wait` elapses, discarding any data.
