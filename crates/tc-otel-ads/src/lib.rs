@@ -48,7 +48,7 @@ pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;
 pub use mqtt_health_metrics::MqttHealthCollector;
-pub use parser::AdsParser;
+pub use parser::{AdsParser, MAX_SPAN_ATTRIBUTES, MAX_SPAN_EVENTS};
 pub use protocol::{
     AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, AttrValue,
     RegistrationKey, RegistrationMessage, TaskMetadata, TraceWireEvent,
