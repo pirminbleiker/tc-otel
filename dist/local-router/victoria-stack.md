@@ -49,7 +49,7 @@ Useful LogsQL queries against tc-otel data:
 
 ```
 *                                            -- all logs
-host.name:"plc-172.28.41.37.1.1"             -- one specific PLC
+host.name:"plc-192.0.2.10.1.1"             -- one specific PLC
 severity_text:"ERROR" | sort by (_time) desc -- errors, newest first
 _msg:"connection lost"                       -- free text
 service.name:"tc-otel" AND task.name:"PlcTask"
