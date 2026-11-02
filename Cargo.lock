@@ -2867,10 +2867,13 @@ dependencies = [
 name = "tc-otel-integration-tests"
 version = "0.1.2"
 dependencies = [
+ "axum",
  "bytes",
  "chrono",
  "hex",
  "mockall",
+ "opentelemetry-proto",
+ "prost",
  "serde",
  "serde_json",
  "tc-otel-ads",
