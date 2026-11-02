@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tc_otel_ads::protocol::RegistrationKey;
 use tc_otel_ads::registry::TaskRegistry;
-use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent};
+use tc_otel_ads::{AmsNetId, AttrValue, TraceWireEvent, MAX_SPAN_ATTRIBUTES, MAX_SPAN_EVENTS};
 use tc_otel_core::{build_otel_resource, SpanStatusCode, TraceRecord};
 use tokio::sync::mpsc;
 
@@ -48,6 +48,10 @@ pub struct PendingSpan {
     pub start_time: DateTime<Utc>,
     pub attrs: HashMap<String, AttrValue>,
     pub events: Vec<SpanEvent>,
+    /// Events discarded because the span already held `MAX_SPAN_EVENTS`.
+    pub dropped_events_count: u32,
+    /// Attributes discarded because the span already held `MAX_SPAN_ATTRIBUTES`.
+    pub dropped_attributes_count: u32,
     pub deadline: Instant,
     #[allow(dead_code)]
     pub orphan_reason: Option<String>,
@@ -352,6 +356,8 @@ impl SpanDispatcher {
             start_time: dc_time_to_datetime(dc_time),
             attrs,
             events: Vec::new(),
+            dropped_events_count: 0,
+            dropped_attributes_count: 0,
             deadline: Instant::now() + self.span_ttl,
             orphan_reason,
             ams_net_id: net_id,
@@ -380,7 +386,19 @@ impl SpanDispatcher {
         // Phase 6 Stage 3: Look up span by span_id via pending_by_span_id index
         if let Some(&span_key) = self.pending_by_span_id.get(&span_id) {
             if let Some(pending) = self.pending.get_mut(&span_key) {
-                pending.attrs.insert(key, value);
+                if pending.attrs.contains_key(&key) || pending.attrs.len() < MAX_SPAN_ATTRIBUTES {
+                    pending.attrs.insert(key, value);
+                } else {
+                    if pending.dropped_attributes_count == 0 {
+                        tracing::debug!(
+                            "span {:?} reached {} attributes, dropping further attributes",
+                            span_id,
+                            MAX_SPAN_ATTRIBUTES
+                        );
+                    }
+                    pending.dropped_attributes_count =
+                        pending.dropped_attributes_count.saturating_add(1);
+                }
             }
         } else {
             tracing::debug!(
@@ -404,11 +422,22 @@ impl SpanDispatcher {
         // Phase 6 Stage 3: Look up span by span_id via pending_by_span_id index
         if let Some(&span_key) = self.pending_by_span_id.get(&span_id) {
             if let Some(pending) = self.pending.get_mut(&span_key) {
-                pending.events.push(SpanEvent {
-                    time: dc_time_to_datetime(dc_time),
-                    name,
-                    attrs,
-                });
+                if pending.events.len() < MAX_SPAN_EVENTS {
+                    pending.events.push(SpanEvent {
+                        time: dc_time_to_datetime(dc_time),
+                        name,
+                        attrs,
+                    });
+                } else {
+                    if pending.dropped_events_count == 0 {
+                        tracing::debug!(
+                            "span {:?} reached {} events, dropping further events",
+                            span_id,
+                            MAX_SPAN_EVENTS
+                        );
+                    }
+                    pending.dropped_events_count = pending.dropped_events_count.saturating_add(1);
+                }
             }
         } else {
             tracing::debug!(
@@ -540,6 +569,8 @@ impl SpanDispatcher {
                         .collect(),
                 })
                 .collect(),
+            dropped_events_count: pending.dropped_events_count,
+            dropped_attributes_count: pending.dropped_attributes_count,
         };
 
         let _ = self.trace_tx.try_send(trace_record);
@@ -687,7 +718,9 @@ pub fn dc_time_to_datetime(dc_nanos: i64) -> DateTime<Utc> {
 
     // 946_684_800 s between 1970-01-01 and 2000-01-01 UTC → nanoseconds.
     const DC_EPOCH_OFFSET_NS: i64 = 946_684_800_000_000_000;
-    let unix_nanos = dc_nanos + DC_EPOCH_OFFSET_NS;
+    // Saturate: a hostile `i64::MAX` DC time yields the latest representable
+    // instant (or the `Utc::now()` fallback below) instead of overflowing.
+    let unix_nanos = dc_nanos.saturating_add(DC_EPOCH_OFFSET_NS);
 
     let secs = unix_nanos / 1_000_000_000;
     let nanos = (unix_nanos % 1_000_000_000) as u32;
@@ -750,6 +783,88 @@ mod tests {
         let dt = dc_time_to_datetime(dc_nanos);
         // Should fall back to now, since DC clock is 0
         assert!(dt <= Utc::now());
+    }
+
+    #[test]
+    fn test_dc_time_conversion_extreme_values_do_not_panic() {
+        // Must neither panic (debug) nor wrap to a past instant (release).
+        let dt = dc_time_to_datetime(i64::MAX);
+        assert!(dt > Utc::now());
+        let _ = dc_time_to_datetime(i64::MAX - 1);
+        let _ = dc_time_to_datetime(i64::MIN);
+    }
+
+    fn begun_dispatcher() -> (
+        SpanDispatcher,
+        mpsc::Receiver<TraceRecord>,
+        AmsNetId,
+        [u8; 8],
+    ) {
+        let (tx, rx) = mpsc::channel(10);
+        let mut dispatcher = SpanDispatcher::new(tx, Duration::from_secs(10), 1024);
+        let net_id = AmsNetId::from_str_ref("192.168.1.1.1.1").unwrap();
+        let span_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        dispatcher.on_begin(
+            net_id,
+            0,
+            1,
+            0,
+            0,
+            TEST_PARENT_SPAN_ID_ROOT,
+            0,
+            "test".to_string(),
+            None,
+            TEST_TRACE_ID,
+            span_id,
+            String::new(),
+        );
+        (dispatcher, rx, net_id, span_id)
+    }
+
+    #[test]
+    fn test_dispatcher_caps_events_and_counts_dropped() {
+        let (mut dispatcher, mut rx, net_id, span_id) = begun_dispatcher();
+        for i in 0..1000 {
+            dispatcher.on_event_ev(net_id, span_id, 0, 100 + i, format!("ev{i}"), Vec::new());
+        }
+        dispatcher.on_end(net_id, span_id, 0, 5000, 1, String::new());
+
+        let tr = rx.try_recv().unwrap();
+        assert_eq!(tr.events.len(), MAX_SPAN_EVENTS);
+        assert_eq!(tr.events.len(), 128);
+        assert_eq!(tr.dropped_events_count, 872);
+        assert_eq!(tr.dropped_attributes_count, 0);
+        // The first events are the ones kept.
+        assert_eq!(tr.events[0].name, "ev0");
+    }
+
+    #[test]
+    fn test_dispatcher_caps_attributes_and_counts_dropped() {
+        let (mut dispatcher, mut rx, net_id, span_id) = begun_dispatcher();
+        for i in 0..100 {
+            dispatcher.on_attr(net_id, span_id, 0, format!("k{i}"), AttrValue::I64(i));
+        }
+        // An existing key is still updated at the cap.
+        dispatcher.on_attr(net_id, span_id, 0, "k0".to_string(), AttrValue::I64(-1));
+        dispatcher.on_end(net_id, span_id, 0, 5000, 1, String::new());
+
+        let tr = rx.try_recv().unwrap();
+        assert_eq!(tr.span_attributes.len(), MAX_SPAN_ATTRIBUTES);
+        assert_eq!(tr.dropped_attributes_count, 36);
+        assert_eq!(tr.dropped_events_count, 0);
+        assert_eq!(tr.span_attributes["k0"], serde_json::json!(-1));
+    }
+
+    #[test]
+    fn test_dispatcher_within_caps_drops_nothing() {
+        let (mut dispatcher, mut rx, net_id, span_id) = begun_dispatcher();
+        for i in 0..MAX_SPAN_EVENTS as i64 {
+            dispatcher.on_event_ev(net_id, span_id, 0, 100 + i, "e".to_string(), Vec::new());
+        }
+        dispatcher.on_end(net_id, span_id, 0, 5000, 1, String::new());
+        let tr = rx.try_recv().unwrap();
+        assert_eq!(tr.events.len(), MAX_SPAN_EVENTS);
+        assert_eq!(tr.dropped_events_count, 0);
     }
 
     #[test]

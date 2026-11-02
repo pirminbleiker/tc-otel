@@ -3,6 +3,8 @@
 //! Receives ADS data via AMS/TCP (port 48898) and exports logs, metrics,
 //! and traces via OpenTelemetry to any compatible backend.
 
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;

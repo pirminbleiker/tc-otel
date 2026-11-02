@@ -52,5 +52,6 @@ gethostname.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true
+proptest.workspace = true
 tempfile = "3.27"
 tower.workspace = true

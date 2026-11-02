@@ -128,7 +128,7 @@ fn build_span(record: &TraceRecord) -> Span {
         start_time_unix_nano: datetime_to_unix_nano(record.start_time),
         end_time_unix_nano: datetime_to_unix_nano(record.end_time),
         attributes: build_attributes(&record.span_attributes),
-        dropped_attributes_count: 0,
+        dropped_attributes_count: record.dropped_attributes_count,
         events: record
             .events
             .iter()
@@ -139,7 +139,7 @@ fn build_span(record: &TraceRecord) -> Span {
                 dropped_attributes_count: 0,
             })
             .collect(),
-        dropped_events_count: 0,
+        dropped_events_count: record.dropped_events_count,
         // tc-otel doesn't carry span links today.
         links: Vec::new(),
         dropped_links_count: 0,
@@ -192,6 +192,8 @@ mod tests {
                     m
                 },
             }],
+            dropped_events_count: 0,
+            dropped_attributes_count: 0,
         }
     }
 
@@ -199,6 +201,18 @@ mod tests {
     fn empty_batch_produces_empty_request() {
         assert!(build_request(&[]).resource_spans.is_empty());
         assert!(build(&[]).is_empty());
+    }
+
+    #[test]
+    fn dropped_counts_are_exported() {
+        let mut r = span_record();
+        r.dropped_events_count = 872;
+        r.dropped_attributes_count = 36;
+        let bytes = build(std::slice::from_ref(&r));
+        let decoded = ExportTraceServiceRequest::decode(&bytes[..]).unwrap();
+        let span = &decoded.resource_spans[0].scope_spans[0].spans[0];
+        assert_eq!(span.dropped_events_count, 872);
+        assert_eq!(span.dropped_attributes_count, 36);
     }
 
     #[test]
