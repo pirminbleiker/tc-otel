@@ -48,15 +48,15 @@ It sends just the `PortConnect` and prints the raw reply. A healthy
 target prints something like:
 
 ```
-[L] Registered: netId=172.28.41.37.1.1 port=16150
-[S] Registered: netId=172.28.41.37.1.1 port=45453
-[L] >> FRAME: target=172.28.41.37.1.1:16150 src=172.28.41.37.1.1:45453 cmd=0x0003 err=0x0
+[L] Registered: netId=192.0.2.10.1.1 port=16150
+[S] Registered: netId=192.0.2.10.1.1 port=45453
+[L] >> FRAME: target=192.0.2.10.1.1:16150 src=192.0.2.10.1.1:45453 cmd=0x0003 err=0x0
 ```
 
 ## PLC sends to the wrong NetId
 
 After this deployment, the PLC must call `PRG_TaskLog.Init('')` (empty
-string = local). If it was previously calling `Init('172.28.41.37.1.2')`
+string = local). If it was previously calling `Init('192.0.2.10.1.2')`
 (or any other remote NetId) the writes go to the old NetId, never reach
 the local router's port 16150, and tc-otel sits idle.
 

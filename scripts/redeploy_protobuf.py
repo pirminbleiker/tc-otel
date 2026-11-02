@@ -11,23 +11,54 @@ Full re-deploy after the protobuf-metrics rebuild:
    - Metrics → /api/v1/series?match[]={__name__=~".+"} (this fails in
      JSON mode, succeeds with protobuf)
    - Traces → /select/jaeger/api/services
+
+Usage:
+
+    py redeploy_protobuf.py --host 192.0.2.10 [--user Administrator] [--password XXX]
+
+Every option falls back to a TC_OTEL_* environment variable (CLI > env >
+default). Without a password, paramiko uses key / agent authentication.
+Requires `paramiko` (`py -m pip install paramiko`).
 """
 from __future__ import annotations
+import argparse
 import json
-import paramiko
+import os
 import re
 import sys
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HOST = "172.21.229.252"
-USER = "Administrator"
-PASS = "1"
-TC_OTEL_LOCAL  = r"D:\cargo-target\log4tc\release\tc-otel.exe"
-DIST_DIR       = r"Z:\Open Source\log4TC\dist\local-router"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Full re-deploy of tc-otel + Victoria backends to a Windows target.")
+    p.add_argument("--host", default=os.environ.get("TC_OTEL_HOST"),
+                   help="Target IP or hostname (env TC_OTEL_HOST)")
+    p.add_argument("--user", default=os.environ.get("TC_OTEL_USER", "Administrator"),
+                   help="SSH user (env TC_OTEL_USER, default Administrator)")
+    p.add_argument("--password", default=os.environ.get("TC_OTEL_PASSWORD"),
+                   help="SSH password (env TC_OTEL_PASSWORD; omit to use key-based auth)")
+    p.add_argument("--exe",
+                   default=os.environ.get(
+                       "TC_OTEL_EXE", str(REPO_ROOT / "target" / "release" / "tc-otel.exe")),
+                   help="Local tc-otel.exe to upload (env TC_OTEL_EXE, "
+                        "default <repo>/target/release/tc-otel.exe)")
+    p.add_argument("--dist-dir",
+                   default=os.environ.get(
+                       "TC_OTEL_DIST_DIR", str(REPO_ROOT / "dist" / "local-router")),
+                   help="Local dir holding config.json (env TC_OTEL_DIST_DIR, "
+                        "default <repo>/dist/local-router)")
+    args = p.parse_args()
+    if not args.host:
+        p.error("--host or TC_OTEL_HOST is required")
+    return args
 
 
 def ssh_run(c, cmd, timeout=30):
@@ -51,9 +82,14 @@ def ssh_run(c, cmd, timeout=30):
 
 
 def main():
+    args = parse_args()
+    host = args.host
+
+    import paramiko
+
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username=USER, password=PASS, timeout=10)
+    c.connect(host, username=args.user, password=args.password, timeout=10)
 
     print(">>> Stopping all four Scheduled Tasks ...")
     for t in ("tc-otel", "VictoriaLogs", "VictoriaMetrics", "VictoriaTraces", "otelcol"):
@@ -71,8 +107,8 @@ def main():
 
     print(">>> Uploading new tc-otel.exe + config.json ...")
     sftp = c.open_sftp()
-    sftp.put(TC_OTEL_LOCAL, "/C:/tc-otel/tc-otel.exe")
-    sftp.put(rf"{DIST_DIR}\config.json", "/C:/tc-otel/config.json")
+    sftp.put(args.exe, "/C:/tc-otel/tc-otel.exe")
+    sftp.put(os.path.join(args.dist_dir, "config.json"), "/C:/tc-otel/config.json")
     sftp.close()
 
     # Show config so we know what's live
@@ -103,7 +139,7 @@ def main():
     print(">>> [Logs] VL count, last 2 min:")
     try:
         req = urllib.request.Request(
-            f"http://{HOST}:9428/select/logsql/query",
+            f"http://{host}:9428/select/logsql/query",
             data=b"query=*&start=2m", method="POST",
         )
         body = urllib.request.urlopen(req, timeout=8).read().decode()
@@ -116,7 +152,7 @@ def main():
 
     print(">>> [Metrics] VM series count:")
     try:
-        url = (f"http://{HOST}:8428/api/v1/series?match%5B%5D="
+        url = (f"http://{host}:8428/api/v1/series?match%5B%5D="
                + urllib.parse.quote('{__name__=~".+"}'))
         body = urllib.request.urlopen(url, timeout=8).read().decode()
         data = json.loads(body)
@@ -130,13 +166,13 @@ def main():
     print(">>> [Traces] VT services + traces:")
     try:
         body = urllib.request.urlopen(
-            f"http://{HOST}:10428/select/jaeger/api/services",
+            f"http://{host}:10428/select/jaeger/api/services",
             timeout=5).read().decode()
         print(f"   services: {body}")
         d = json.loads(body)
         for svc in d.get("data", []):
             traces = urllib.request.urlopen(
-                f"http://{HOST}:10428/select/jaeger/api/traces?service={svc}&limit=5",
+                f"http://{host}:10428/select/jaeger/api/traces?service={svc}&limit=5",
                 timeout=5).read()
             td = json.loads(traces)
             print(f"   {svc}: {len(td.get('data', []))} traces")
@@ -144,9 +180,9 @@ def main():
         print(f"   {e}")
 
     print()
-    print(f"   VL UI:    http://{HOST}:9428/select/vmui/")
-    print(f"   VM VMUI:  http://{HOST}:8428/vmui/")
-    print(f"   VT API:   http://{HOST}:10428/select/jaeger/api/services")
+    print(f"   VL UI:    http://{host}:9428/select/vmui/")
+    print(f"   VM VMUI:  http://{host}:8428/vmui/")
+    print(f"   VT API:   http://{host}:10428/select/jaeger/api/services")
 
     c.close()
 

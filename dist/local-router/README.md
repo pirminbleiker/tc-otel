@@ -67,8 +67,12 @@ If the target has OpenSSH server enabled and you'd rather push from a
 dev box, install paramiko (`py -m pip install paramiko`) and:
 
 ```powershell
-py remote_deploy.py --host 172.21.101.62 --user Administrator --password 1
+py remote_deploy.py --host 192.0.2.10 --user Administrator
 ```
+
+Pass `--password` (or set `TC_OTEL_PASSWORD`) for password auth; without
+it the script uses key-based auth. `--host` and `--user` also read
+`TC_OTEL_HOST` and `TC_OTEL_USER`.
 
 That uploads this whole directory to `C:\deploy\local-router` on the
 target and runs `install.ps1` with admin elevation.
@@ -99,7 +103,7 @@ END_IF
 ```
 
 If the PLC was previously configured with a remote NetId for tc-otel
-(e.g. `'172.28.41.37.1.2'`), change it to `''` (empty) — tc-otel now
+(e.g. `'192.0.2.10.1.2'`), change it to `''` (empty) — tc-otel now
 shares the local TwinCAT NetId.
 
 ## Verify it's running
