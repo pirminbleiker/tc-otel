@@ -10,7 +10,7 @@ use crate::ams::{
     len_u32, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_READ, ADS_STATE_REQUEST,
     ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
-use crate::dispatcher::MAX_AMS_FRAME;
+use crate::dispatcher::{MAX_AMS_FRAME, MAX_AMS_PAYLOAD};
 use crate::error::{AdsError, Result};
 use crate::symbol::{
     parse_symbol_table, AdsSymbolEntry, AdsSymbolUploadInfo, ADSIGRP_SYM_UPLOAD,
@@ -20,6 +20,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+/// Largest data a single READ response can carry: the payload limit minus
+/// the 8-byte READ response header (result u32 + length u32).
+const MAX_READ_RESPONSE_DATA: usize = MAX_AMS_PAYLOAD - 8;
 
 /// ADS READ request payload
 ///
@@ -321,6 +325,16 @@ impl AdsClient {
         // First, get the table size
         let info = self.read_symbol_info().await?;
 
+        // A table that does not fit into one response frame would only fail
+        // later at the frame-length check, with the rest left on the stream.
+        // Reject it before the READ is sent.
+        if info.symbol_size as usize > MAX_READ_RESPONSE_DATA {
+            return Err(AdsError::ParseError(format!(
+                "symbol table size {} exceeds single-frame limit {MAX_READ_RESPONSE_DATA}",
+                info.symbol_size
+            )));
+        }
+
         // Read the full symbol table
         let response = self
             .ads_read(ADSIGRP_SYM_UPLOAD, 0, info.symbol_size)
@@ -569,12 +583,16 @@ mod tests {
         AmsTcpFrame::parse(&all).unwrap()
     }
 
-    fn info_response(req: &AmsTcpFrame) -> Vec<u8> {
+    fn info_response_with(req: &AmsTcpFrame, symbol_count: u32, symbol_size: u32) -> Vec<u8> {
         let info = AdsSymbolUploadInfo {
-            symbol_count: 3,
-            symbol_size: 120,
+            symbol_count,
+            symbol_size,
         };
         build_read_response_frame(req, 0, &info.serialize()).serialize()
+    }
+
+    fn info_response(req: &AmsTcpFrame) -> Vec<u8> {
+        info_response_with(req, 3, 120)
     }
 
     #[tokio::test]
@@ -648,5 +666,50 @@ mod tests {
         assert!(
             matches!(err, AdsError::IoError(ref e) if e.kind() == std::io::ErrorKind::TimedOut)
         );
+    }
+
+    #[tokio::test]
+    async fn oversize_symbol_table_is_rejected_before_read() {
+        let (mut client, listener) = client_with_listener().await;
+        let too_big = MAX_READ_RESPONSE_DATA + 1;
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let req = read_request(&mut sock).await;
+            sock.write_all(&info_response_with(&req, 1, too_big as u32))
+                .await
+                .unwrap();
+            // EOF (0 bytes) once the client is dropped: no table READ was sent.
+            sock.read(&mut [0u8; 6]).await.unwrap()
+        });
+        let err = client.read_symbol_table().await.unwrap_err();
+        assert!(matches!(err, AdsError::ParseError(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains(&too_big.to_string()), "{msg}");
+        assert!(msg.contains(&MAX_READ_RESPONSE_DATA.to_string()), "{msg}");
+        drop(client);
+        let n = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 0, "table READ reached the peer");
+    }
+
+    #[tokio::test]
+    async fn symbol_table_at_limit_is_requested() {
+        let (mut client, listener) = client_with_listener().await;
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let req = read_request(&mut sock).await;
+            sock.write_all(&info_response_with(&req, 1, MAX_READ_RESPONSE_DATA as u32))
+                .await
+                .unwrap();
+            read_request(&mut sock).await
+        });
+        let err = client.read_symbol_table().await.unwrap_err();
+        assert!(!err.to_string().contains("exceeds"), "{err}");
+        let second = server.await.unwrap();
+        let read = AdsReadRequest::parse(&second.payload).unwrap();
+        assert_eq!(read.index_group, ADSIGRP_SYM_UPLOAD);
+        assert_eq!(read.read_length, MAX_READ_RESPONSE_DATA as u32);
     }
 }
