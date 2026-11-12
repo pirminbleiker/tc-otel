@@ -258,7 +258,8 @@ impl AdsClient {
         // routed connection other traffic can share the stream, so frames
         // whose invoke-id, source, command or state flags differ are
         // discarded (requests or notifications that collide on the invoke-id
-        // included), each still bounded by MAX_AMS_FRAME. The request timeout ends the loop.
+        // included), each still bounded by MAX_AMS_FRAME. The request timeout
+        // ends the loop.
         let resp_ams;
         let rest;
         loop {
@@ -657,18 +658,24 @@ mod tests {
         let _server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
             let req = read_request(&mut sock).await;
-            let info = AdsSymbolUploadInfo {
-                symbol_count: 3,
-                symbol_size: 120,
+            // Each decoy carries a distinct payload, so accepting it changes the result.
+            let decoy_request = AdsSymbolUploadInfo {
+                symbol_count: 99,
+                symbol_size: 990,
+            };
+            let decoy_notification = AdsSymbolUploadInfo {
+                symbol_count: 77,
+                symbol_size: 770,
             };
 
             // Request-flag frame with the same invoke-id.
-            let mut as_request = build_read_response_frame(&req, 0, &info.serialize());
+            let mut as_request = build_read_response_frame(&req, 0, &decoy_request.serialize());
             as_request.ams_header.state_flags = ADS_STATE_REQUEST;
             sock.write_all(&as_request.serialize()).await.unwrap();
 
             // Notification command with the same invoke-id, response flag kept.
-            let mut as_notification = build_read_response_frame(&req, 0, &info.serialize());
+            let mut as_notification =
+                build_read_response_frame(&req, 0, &decoy_notification.serialize());
             as_notification.ams_header.command_id = ADS_CMD_NOTIFICATION;
             sock.write_all(&as_notification.serialize()).await.unwrap();
 
