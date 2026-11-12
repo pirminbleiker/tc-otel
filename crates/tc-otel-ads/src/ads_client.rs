@@ -633,16 +633,28 @@ mod tests {
             let (mut sock, _) = listener.accept().await.unwrap();
             let req = read_request(&mut sock).await;
 
+            // Each decoy carries a distinct payload, so accepting it changes the result.
+
             // Wrong invoke-id.
             let mut wrong_id = req.clone();
             wrong_id.ams_header.invoke_id = req.ams_header.invoke_id + 1000;
-            sock.write_all(&info_response(&wrong_id)).await.unwrap();
+            sock.write_all(&info_response_with(&wrong_id, 11, 110))
+                .await
+                .unwrap();
+
+            // The wire frame is the 6-byte TCP prefix followed by the AMS
+            // header; the source net id sits at wire bytes 14..20, the source
+            // port at 20..22.
 
             // Right invoke-id, wrong source net id.
-            let mut wrong_src = info_response(&req);
-            // AMS source net id sits at bytes 6 + 14..20 of the wire frame.
-            wrong_src[20] ^= 0xff;
-            sock.write_all(&wrong_src).await.unwrap();
+            let mut wrong_net_id = info_response_with(&req, 22, 220);
+            wrong_net_id[14] ^= 0xff;
+            sock.write_all(&wrong_net_id).await.unwrap();
+
+            // Right invoke-id, wrong source port.
+            let mut wrong_port = info_response_with(&req, 33, 330);
+            wrong_port[20] ^= 0xff;
+            sock.write_all(&wrong_port).await.unwrap();
 
             // The real response.
             sock.write_all(&info_response(&req)).await.unwrap();
