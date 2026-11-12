@@ -6,6 +6,8 @@
 //! The ADS protocol is a proprietary Beckhoff protocol for device communication.
 //! TC-OTel uses ADS for receiving log entries from TwinCAT PLCs.
 
+#![forbid(unsafe_code)]
+
 pub mod ads_client;
 pub mod ams;
 pub mod ams_server;
@@ -30,8 +32,8 @@ pub use ads_client::{
     build_read_request_frame, build_read_response_frame, AdsClient, AdsReadRequest, AdsReadResponse,
 };
 pub use ams::{
-    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADS_CMD_READ, ADS_CMD_WRITE,
-    ADS_LOG_PORT, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
+    AdsWriteRequest, AmsHeader, AmsNetId, AmsTcpFrame, AmsTcpHeader, ADSERR_DEVICE_INVALIDSIZE,
+    ADS_CMD_READ, ADS_CMD_WRITE, ADS_LOG_PORT, ADS_STATE_REQUEST, ADS_STATE_RESPONSE, AMS_TCP_PORT,
 };
 pub use ams_server::AmsTcpServer;
 pub use connection_manager::{
@@ -43,16 +45,18 @@ pub use diagnostics::{
     SAMPLE_FLAG_CYCLE_EXCEED, SAMPLE_FLAG_FIRST_CYCLE, SAMPLE_FLAG_OVERFLOW,
     SAMPLE_FLAG_RT_VIOLATION,
 };
+pub use dispatcher::{MAX_AMS_FRAME, MAX_AMS_PAYLOAD};
 pub use error::{AdsError, Result};
 pub use health_metrics::AdsHealthCollector;
 pub use listener::AdsListener;
 pub use mqtt_health_metrics::MqttHealthCollector;
-pub use parser::AdsParser;
+pub use parser::{AdsParser, MAX_SPAN_ATTRIBUTES, MAX_SPAN_EVENTS};
 pub use protocol::{
     AdsLogEntry, AdsMetricEntry, AdsProtocolVersion, AdsSpanEntry, AdsSpanEvent, AttrValue,
     RegistrationKey, RegistrationMessage, TaskMetadata, TraceWireEvent,
 };
 pub use registry::TaskRegistry;
+pub use router::MAX_READ_LEN;
 pub use symbol::{
     parse_symbol_table, AdsSymbolEntry, AdsSymbolUploadInfo, ADSIGRP_SYM_UPLOAD,
     ADSIGRP_SYM_UPLOADINFO,

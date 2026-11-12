@@ -23,12 +23,22 @@ pub const ADS_STATE_RESPONSE: u16 = 0x0005;
 // ADS response payload. See Beckhoff ADS Return Codes.
 pub const ADSERR_NOERR: u32 = 0x0000;
 pub const ADSERR_DEVICE_SRVNOTSUPP: u32 = 0x0701;
+pub const ADSERR_DEVICE_INVALIDSIZE: u32 = 0x0705;
 pub const ADSERR_DEVICE_INVALIDPARM: u32 = 0x0708;
 
 // ADS Index Groups for symbol operations
 pub const ADSIGRP_SYM_HNDBYNAME: u32 = 0xF003; // Get symbol handle by name
 pub const ADSIGRP_SYM_VALBYHND: u32 = 0xF005; // Read/write symbol by handle
 pub const ADSIGRP_SYM_RELEASEHND: u32 = 0xF006; // Release symbol handle
+
+/// Convert a payload length to the `u32` the wire format carries.
+///
+/// Payloads are bounded well below `u32::MAX` by `MAX_AMS_PAYLOAD` and the
+/// router's `MAX_READ_LEN`, so the clamp is unreachable in practice; it makes
+/// that explicit instead of truncating silently.
+pub(crate) fn len_u32(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
+}
 
 /// AMS Net ID (6 bytes: xxx.xxx.xxx.xxx.1.1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -203,7 +213,7 @@ impl AdsWriteRequest {
         let mut buf = Vec::with_capacity(12 + self.data.len());
         buf.extend_from_slice(&self.index_group.to_le_bytes());
         buf.extend_from_slice(&self.index_offset.to_le_bytes());
-        buf.extend_from_slice(&(self.data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&len_u32(self.data.len()).to_le_bytes());
         buf.extend_from_slice(&self.data);
         buf
     }
@@ -285,7 +295,7 @@ impl AmsTcpFrame {
 
     /// Create a response frame
     pub fn make_response(&self, error_code: u32, response_data: Vec<u8>) -> Self {
-        let response_data_length = response_data.len() as u32;
+        let response_data_length = len_u32(response_data.len());
 
         let response_ams_header = self.ams_header.make_response(error_code);
         // Override the data_length in the response header

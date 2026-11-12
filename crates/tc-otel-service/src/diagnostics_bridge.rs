@@ -46,7 +46,10 @@ fn dc_time_to_datetime(dc_ns: i64) -> DateTime<Utc> {
     const UNIX_TO_DC_EPOCH_SECS: i64 = 946_684_800;
     let secs = dc_ns / 1_000_000_000;
     let nanos_in_sec = (dc_ns.rem_euclid(1_000_000_000)) as u32;
-    DateTime::from_timestamp(UNIX_TO_DC_EPOCH_SECS + secs, nanos_in_sec).unwrap_or_else(Utc::now)
+    // Wire-derived value: saturate instead of overflowing. An out-of-range
+    // result still falls back to `Utc::now()` via `from_timestamp`.
+    DateTime::from_timestamp(UNIX_TO_DC_EPOCH_SECS.saturating_add(secs), nanos_in_sec)
+        .unwrap_or_else(Utc::now)
 }
 
 /// Convert a single decoded diagnostic event into zero or more OTel metrics.
@@ -262,7 +265,7 @@ fn metric_aggregate_to_entries(
         return out;
     }
 
-    let span_ns = (dc_time_end - dc_time_start).max(0);
+    let span_ns = dc_time_end.saturating_sub(dc_time_start).max(0);
     let denom = (samples.len() as i64 - 1).max(1);
     let overflow_flag = flags & METRIC_FLAG_RING_OVERFLOWED != 0;
 
@@ -283,12 +286,14 @@ fn metric_aggregate_to_entries(
             dc
         } else {
             match (sample_cycle_offsets, cycle_time_ns) {
-                (Some(offs), Some(cns)) if i < offs.len() => dc_time_start + (offs[i] as i64) * cns,
+                (Some(offs), Some(cns)) if i < offs.len() => {
+                    dc_time_start.saturating_add((offs[i] as i64).saturating_mul(cns))
+                }
                 _ => {
                     if samples.len() == 1 {
                         dc_time_start
                     } else {
-                        dc_time_start + (i as i64) * span_ns / denom
+                        dc_time_start.saturating_add((i as i64).saturating_mul(span_ns) / denom)
                     }
                 }
             }
@@ -1523,5 +1528,79 @@ mod tests {
         for entry in &out {
             assert_eq!(delta_ns_from(entry, dc), 0);
         }
+    }
+
+    #[test]
+    fn dc_time_to_datetime_extreme_values_do_not_panic() {
+        for dc in [i64::MAX, i64::MIN, 0, -1] {
+            let _ = dc_time_to_datetime(dc);
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_extreme_dc_times_do_not_panic() {
+        use tc_otel_ads::diagnostics::{MetricAggregateSample, MetricBodySchema};
+
+        let samples: Vec<MetricAggregateSample> = (0..4)
+            .map(|i| MetricAggregateSample::Numeric(i as f64))
+            .collect();
+        for (start, end) in [
+            (i64::MAX - 1, i64::MAX),
+            (i64::MIN, i64::MAX),
+            (i64::MAX, i64::MIN),
+        ] {
+            let ev = DiagEvent::MetricAggregateBatch {
+                metric_id: 1,
+                task_index: 1,
+                flags: 0,
+                body_schema: MetricBodySchema::Numeric,
+                sample_size: 8,
+                stat_mask: 0,
+                cycle_count_start: 0,
+                cycle_count_end: 0,
+                dc_time_start: start,
+                dc_time_end: end,
+                name: "m".to_string(),
+                unit: String::new(),
+                trace_id: None,
+                span_id: None,
+                samples: samples.clone(),
+                sample_cycle_offsets: None,
+                sample_dc_times: None,
+                scope_namespace: String::new(),
+            };
+            let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+            assert_eq!(out.len(), samples.len());
+        }
+    }
+
+    #[test]
+    fn metric_aggregate_extreme_cycle_offsets_do_not_panic() {
+        use tc_otel_ads::diagnostics::{
+            MetricAggregateSample, MetricBodySchema, METRIC_FLAG_HAS_SAMPLE_TS,
+        };
+
+        let ev = DiagEvent::MetricAggregateBatch {
+            metric_id: 1,
+            task_index: 1,
+            flags: METRIC_FLAG_HAS_SAMPLE_TS,
+            body_schema: MetricBodySchema::Numeric,
+            sample_size: 8,
+            stat_mask: 0,
+            cycle_count_start: 0,
+            cycle_count_end: 1,
+            dc_time_start: i64::MIN,
+            dc_time_end: i64::MAX,
+            name: "m".to_string(),
+            unit: String::new(),
+            trace_id: None,
+            span_id: None,
+            samples: vec![MetricAggregateSample::Numeric(1.0)],
+            sample_cycle_offsets: Some(vec![u16::MAX]),
+            sample_dc_times: None,
+            scope_namespace: String::new(),
+        };
+        let out = diag_event_to_metrics(net(), ev, &HashMap::new());
+        assert_eq!(out.len(), 1);
     }
 }

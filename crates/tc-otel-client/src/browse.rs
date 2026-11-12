@@ -124,6 +124,11 @@ pub fn parse_upload_info(bytes: &[u8]) -> Result<UploadInfo> {
     })
 }
 
+/// Smallest entry `parse_upload` accepts: the fixed header plus the null
+/// terminators of the name and type strings. Anything shorter fails the
+/// `comment_end > entry_end` check.
+const MIN_ENTRY_LEN: usize = EntryHeader::BYTE_LEN + 2;
+
 /// Decode the packed symbol table returned by `SYM_UPLOAD`.
 ///
 /// `info` is used as a sanity bound: we stop either at `info.symbol_count`
@@ -140,8 +145,11 @@ pub fn parse_upload(bytes: &[u8], info: &UploadInfo) -> Result<SymbolTree> {
         )));
     }
 
-    let mut nodes = Vec::with_capacity(info.symbol_count as usize);
-    let mut index_by_name = HashMap::with_capacity(info.symbol_count as usize);
+    // `symbol_count` comes off the wire; never pre-allocate more entries than
+    // the buffer could possibly hold.
+    let cap = (info.symbol_count as usize).min(bytes.len() / MIN_ENTRY_LEN);
+    let mut nodes = Vec::with_capacity(cap);
+    let mut index_by_name = HashMap::with_capacity(cap);
     let mut cursor = 0usize;
     let limit = expected_bytes.max(bytes.len());
 

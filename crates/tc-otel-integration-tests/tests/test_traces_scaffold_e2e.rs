@@ -392,6 +392,8 @@ fn test_otlp_payload_construction() {
             name: "event1".to_string(),
             attributes: HashMap::new(),
         }],
+        dropped_events_count: 0,
+        dropped_attributes_count: 0,
     };
 
     // Verify key fields exist for OTLP export

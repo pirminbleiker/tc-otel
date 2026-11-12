@@ -625,6 +625,12 @@ pub struct TraceRecord {
     pub scope_attributes: HashMap<String, serde_json::Value>,
     pub span_attributes: HashMap<String, serde_json::Value>,
     pub events: Vec<TraceEventRecord>,
+    /// Events discarded because the span exceeded its event cap.
+    #[serde(default)]
+    pub dropped_events_count: u32,
+    /// Attributes discarded because the span exceeded its attribute cap.
+    #[serde(default)]
+    pub dropped_attributes_count: u32,
 }
 
 /// OTEL TraceEventRecord — an event within a span for export
@@ -706,6 +712,8 @@ impl TraceRecord {
             scope_attributes: HashMap::new(),
             span_attributes,
             events,
+            dropped_events_count: 0,
+            dropped_attributes_count: 0,
         }
     }
 }
