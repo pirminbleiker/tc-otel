@@ -256,8 +256,9 @@ impl AdsClient {
 
         // Read frames until the response to this request arrives. On a
         // routed connection other traffic can share the stream, so frames
-        // whose invoke-id or source differ are discarded, each still bounded
-        // by MAX_AMS_FRAME. The request timeout ends the loop.
+        // whose invoke-id, source, command or state flags differ are
+        // discarded (requests or notifications that collide on the invoke-id
+        // included), each still bounded by MAX_AMS_FRAME. The request timeout ends the loop.
         let resp_ams;
         let rest;
         loop {
@@ -278,6 +279,8 @@ impl AdsClient {
             if h.invoke_id == invoke_id
                 && h.source_net_id == self.target_net_id
                 && h.source_port == self.target_port
+                && h.command_id == ADS_CMD_READ
+                && h.state_flags == ADS_STATE_RESPONSE
             {
                 resp_ams = h;
                 rest = buf;
@@ -286,17 +289,13 @@ impl AdsClient {
             tracing::debug!(
                 invoke_id = h.invoke_id,
                 expected = invoke_id,
+                command_id = h.command_id,
+                state_flags = h.state_flags,
                 "ads client: discarding non-matching frame"
             );
         }
 
         // Verify response
-        if resp_ams.state_flags != ADS_STATE_RESPONSE {
-            return Err(AdsError::ParseError(format!(
-                "expected response state flags {:#06x}, got {:#06x}",
-                ADS_STATE_RESPONSE, resp_ams.state_flags
-            )));
-        }
         if resp_ams.error_code != 0 {
             return Err(AdsError::ParseError(format!(
                 "ADS error code: {:#010x}",
@@ -551,6 +550,7 @@ mod tests {
 
     // ---- loopback client tests ----
 
+    use crate::ams::ADS_CMD_NOTIFICATION;
     use tokio::net::TcpListener;
 
     fn peer() -> (AmsNetId, AmsNetId) {
@@ -642,6 +642,35 @@ mod tests {
             // AMS source net id sits at bytes 6 + 14..20 of the wire frame.
             wrong_src[20] ^= 0xff;
             sock.write_all(&wrong_src).await.unwrap();
+
+            // The real response.
+            sock.write_all(&info_response(&req)).await.unwrap();
+        });
+        let info = client.read_symbol_info().await.unwrap();
+        assert_eq!(info.symbol_count, 3);
+        assert_eq!(info.symbol_size, 120);
+    }
+
+    #[tokio::test]
+    async fn non_read_response_frames_with_same_invoke_id_are_discarded() {
+        let (mut client, listener) = client_with_listener().await;
+        let _server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let req = read_request(&mut sock).await;
+            let info = AdsSymbolUploadInfo {
+                symbol_count: 3,
+                symbol_size: 120,
+            };
+
+            // Request-flag frame with the same invoke-id.
+            let mut as_request = build_read_response_frame(&req, 0, &info.serialize());
+            as_request.ams_header.state_flags = ADS_STATE_REQUEST;
+            sock.write_all(&as_request.serialize()).await.unwrap();
+
+            // Notification command with the same invoke-id, response flag kept.
+            let mut as_notification = build_read_response_frame(&req, 0, &info.serialize());
+            as_notification.ams_header.command_id = ADS_CMD_NOTIFICATION;
+            sock.write_all(&as_notification.serialize()).await.unwrap();
 
             // The real response.
             sock.write_all(&info_response(&req)).await.unwrap();
