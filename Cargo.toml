@@ -73,7 +73,7 @@ thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 bytes = "1.5"
-parking_lot = "0.12"
+parking_lot = "0.13"
 gethostname = "1.1"
 # Used to enumerate local interface IPs for OTel sem-conv `source.address`
 # without relying on a default-route / Internet UDP-connect probe.
